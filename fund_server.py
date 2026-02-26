@@ -1,4 +1,4 @@
-import os
+import os, sys, time
 
 os.makedirs("cache", exist_ok=True)
 
@@ -10,6 +10,10 @@ from dotenv import load_dotenv
 from flask import Flask, request, render_template, redirect, url_for, jsonify, \
     send_file
 from loguru import logger
+
+# 确保 INFO 级别日志（含 HTTP 计时）在终端输出；级别由 config.xml 的 http_timing.log_level 控制
+logger.remove()
+logger.add(sys.stderr, level="INFO")
 
 import fund
 from src.auth import login_required, get_current_user_id, get_current_username, login_user, logout_user
@@ -151,6 +155,7 @@ def get_sector_funds():
 @login_required
 def api_fund_add():
     """添加基金"""
+    start = time.perf_counter()
     try:
         data = request.json
         codes = data.get('codes', '')
@@ -160,16 +165,22 @@ def api_fund_add():
         importlib.reload(fund)
         my_fund = fund.LanFund(user_id=user_id, db=db)
         my_fund.add_code(codes)
-        return {'success': True, 'message': f'已添加基金: {codes}'}
+        result = {'success': True, 'message': f'已添加基金: {codes}'}
+        return result
     except Exception as e:
         logger.error(f"添加基金失败: {e}")
-        return {'success': False, 'message': f'添加失败: {str(e)}'}
+        result = {'success': False, 'message': f'添加失败: {str(e)}'}
+        return result
+    finally:
+        elapsed = (time.perf_counter() - start) * 1000
+        logger.info(f"[API] /api/fund/add elapsed_ms={elapsed:.1f}")
 
 
 @app.route('/api/fund/delete', methods=['POST'])
 @login_required
 def api_fund_delete():
     """删除基金"""
+    start = time.perf_counter()
     try:
         data = request.json
         codes = data.get('codes', '')
@@ -179,16 +190,22 @@ def api_fund_delete():
         importlib.reload(fund)
         my_fund = fund.LanFund(user_id=user_id, db=db)
         my_fund.delete_code(codes)
-        return {'success': True, 'message': f'已删除基金: {codes}'}
+        result = {'success': True, 'message': f'已删除基金: {codes}'}
+        return result
     except Exception as e:
         logger.error(f"删除基金失败: {e}")
-        return {'success': False, 'message': f'删除失败: {str(e)}'}
+        result = {'success': False, 'message': f'删除失败: {str(e)}'}
+        return result
+    finally:
+        elapsed = (time.perf_counter() - start) * 1000
+        logger.info(f"[API] /api/fund/delete elapsed_ms={elapsed:.1f}")
 
 
 @app.route('/api/fund/hold', methods=['POST'])
 @login_required
-def api_fund_hold():
+def api_fund_set_hold():
     """设置/取消持有标记"""
+    start = time.perf_counter()
     try:
         data = request.json
         codes = data.get('codes', '')
@@ -204,16 +221,22 @@ def api_fund_hold():
                 my_fund.CACHE_MAP[code]['is_hold'] = hold
         my_fund.save_cache()
         action = '标记持有' if hold else '取消持有'
-        return {'success': True, 'message': f'已{action}: {codes}'}
+        result = {'success': True, 'message': f'已{action}: {codes}'}
+        return result
     except Exception as e:
         logger.error(f"设置持有标记失败: {e}")
-        return {'success': False, 'message': f'操作失败: {str(e)}'}
+        result = {'success': False, 'message': f'操作失败: {str(e)}'}
+        return result
+    finally:
+        elapsed = (time.perf_counter() - start) * 1000
+        logger.info(f"[API] /api/fund/hold elapsed_ms={elapsed:.1f}")
 
 
 @app.route('/api/fund/sector', methods=['POST'])
 @login_required
-def api_fund_sector():
+def api_fund_set_sector():
     """设置板块标记"""
+    start = time.perf_counter()
     try:
         data = request.json
         codes = data.get('codes', '')
@@ -228,16 +251,22 @@ def api_fund_sector():
         code_list = [c.strip() for c in codes.split(',')]
         # 使用Web专用方法
         my_fund.mark_fund_sector_web(code_list, sectors)
-        return {'success': True, 'message': f'已标注板块: {codes} -> {", ".join(sectors)}'}
+        result = {'success': True, 'message': f'已标注板块: {codes} -> {', '.join(sectors)}'}
+        return result
     except Exception as e:
         logger.error(f"标注板块失败: {e}")
-        return {'success': False, 'message': f'操作失败: {str(e)}'}
+        result = {'success': False, 'message': f'操作失败: {str(e)}'}
+        return result
+    finally:
+        elapsed = (time.perf_counter() - start) * 1000
+        logger.info(f"[API] /api/fund/sector elapsed_ms={elapsed:.1f}")
 
 
 @app.route('/api/fund/sector/remove', methods=['POST'])
 @login_required
-def api_fund_sector_remove():
+def api_fund_remove_sector():
     """删除板块标记"""
+    start = time.perf_counter()
     try:
         data = request.json
         codes = data.get('codes', '')
@@ -249,18 +278,24 @@ def api_fund_sector_remove():
         code_list = [c.strip() for c in codes.split(',')]
         # 使用Web专用方法
         my_fund.unmark_fund_sector_web(code_list)
-        return {'success': True, 'message': f'已删除板块标记: {codes}'}
+        result = {'success': True, 'message': f'已删除板块标记: {codes}'}
+        return result
     except Exception as e:
         logger.error(f"删除板块标记失败: {e}")
-        return {'success': False, 'message': f'操作失败: {str(e)}'}
+        result = {'success': False, 'message': f'操作失败: {str(e)}'}
+        return result
+    finally:
+        elapsed = (time.perf_counter() - start) * 1000
+        logger.info(f"[API] /api/fund/sector/remove elapsed_ms={elapsed:.1f}")
 
 
-# ==================== File Upload/Download ====================
+# ==================== fund_map File Upload/Download ====================
 
 @app.route('/api/fund/upload', methods=['POST'])
 @login_required
 def api_fund_upload():
     """上传fund_map.json文件"""
+    start = time.perf_counter()
     try:
         if 'file' not in request.files:
             return {'success': False, 'message': '未找到上传文件'}
@@ -291,15 +326,21 @@ def api_fund_upload():
         success = db.save_user_funds(user_id, fund_map)
 
         if success:
-            return {'success': True, 'message': f'成功导入{len(fund_map)}个基金'}
+            result = {'success': True, 'message': f'成功导入{len(fund_map)}个基金'}
         else:
-            return {'success': False, 'message': '保存失败'}
+            result = {'success': False, 'message': '保存失败'}
+        return result
 
     except json.JSONDecodeError:
-        return {'success': False, 'message': 'JSON格式错误'}
+        result = {'success': False, 'message': 'JSON格式错误'}
+        return result
     except Exception as e:
         logger.error(f"上传文件失败: {e}")
-        return {'success': False, 'message': f'上传失败: {str(e)}'}
+        result = {'success': False, 'message': f'上传失败: {str(e)}'}
+        return result
+    finally:
+        elapsed = (time.perf_counter() - start) * 1000
+        logger.info(f"[API] /api/fund/upload elapsed_ms={elapsed:.1f}")
 
 
 @app.route('/api/fund/download', methods=['GET'])
@@ -757,21 +798,8 @@ def get_fund():
 @app.route('/market', methods=['GET'])
 @login_required
 def get_market():
-    """7*24快讯页面 - 只展示快讯"""
-    user_id = get_current_user_id()
-    importlib.reload(fund)
-    my_fund = fund.LanFund(user_id=user_id, db=db)
-
-    # 只加载快讯数据
-    try:
-        news_content = my_fund.kx_html()
-        logger.debug("✓ 7*24快讯")
-    except Exception as e:
-        news_content = f"<p style='color:#f44336;'>加载失败: {str(e)}</p>"
-
-    from src.module_html import get_news_page_html
-    html = get_news_page_html(news_content, username=get_current_username())
-    return html
+    # old 7*24快讯 route removed, redirect to portfolio
+    return redirect('/portfolio')
 
 
 @app.route('/precious-metals', methods=['GET'])
@@ -804,47 +832,8 @@ def get_precious_metals():
 @app.route('/market-indices', methods=['GET'])
 @login_required
 def get_market_indices():
-    """市场指数页面 - 全球指数和成交量趋势"""
-    user_id = get_current_user_id()
-    importlib.reload(fund)
-    my_fund = fund.LanFund(user_id=user_id, db=db)
-
-    # 加载市场数据（全球指数、成交量趋势）
-    market_charts = {}
-    chart_data = {}
-    try:
-        market_charts['indices'] = my_fund.marker_html()
-        chart_data['indices'] = my_fund.get_market_chart_data()
-        logger.debug("✓ 全球指数")
-    except Exception as e:
-        market_charts['indices'] = f"<p style='color:#f44336;'>加载失败: {str(e)}</p>"
-        chart_data['indices'] = {'labels': [], 'prices': [], 'changes': []}
-
-    try:
-        market_charts['volume'] = my_fund.seven_A_html()
-        chart_data['volume'] = my_fund.get_volume_chart_data()
-        logger.debug("✓ 成交量趋势")
-    except Exception as e:
-        market_charts['volume'] = f"<p style='color:#f44336;'>加载失败: {str(e)}</p>"
-        chart_data['volume'] = {'labels': [], 'total': [], 'sh': [], 'sz': [], 'bj': []}
-
-    # 加载上证分时数据
-    try:
-        market_charts['timing'] = my_fund.A_html()
-        chart_data['timing'] = my_fund.get_timing_chart_data()
-        logger.debug("✓ 上证分时")
-    except Exception as e:
-        market_charts['timing'] = f"<p style='color:#f44336;'>加载失败: {str(e)}</p>"
-        chart_data['timing'] = {'labels': [], 'prices': [], 'change_pcts': [], 'change_amounts': [], 'volumes': [], 'amounts': []}
-
-    from src.module_html import get_market_indices_page_html
-    html = get_market_indices_page_html(
-        market_charts=market_charts,
-        chart_data=chart_data,
-        timing_data=chart_data.get('timing'),
-        username=get_current_username()
-    )
-    return html
+    # market indices page removed; redirect to portfolio
+    return redirect('/portfolio')
 
 
 @app.route('/portfolio', methods=['GET'])
@@ -1009,5 +998,27 @@ def get_sectors():
     return html
 
 
+class FilteredWSGIRequestLogger:
+    """
+    WSGI中间件，过滤静态资源请求日志（如/static/、/favicon.ico等）。
+    """
+    def __init__(self, app):
+        self.app = app
+
+    def __call__(self, environ, start_response):
+        path = environ.get('PATH_INFO', '')
+        # 过滤静态资源和favicon请求
+        if path.startswith('/static/') or path.endswith('.ico') or path.startswith('/favicon'):
+            # 禁止Flask默认日志输出
+            import logging
+            logging.getLogger('werkzeug').setLevel(logging.ERROR)
+        else:
+            import logging
+            logging.getLogger('werkzeug').setLevel(logging.INFO)
+        return self.app(environ, start_response)
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8311)
+    # 用中间件包裹Flask app，过滤静态资源日志
+    from werkzeug.serving import run_simple
+    app.wsgi_app = FilteredWSGIRequestLogger(app.wsgi_app)
+    run_simple('0.0.0.0', 8311, app, use_reloader=True, use_debugger=False)

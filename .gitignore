@@ -1,5 +1,7 @@
 .idea/
 build/
+.pycache/
+__pycache__/
 # 环境变量文件（包含API密钥，不应提交）
 .env
 .claude

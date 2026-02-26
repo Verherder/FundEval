@@ -1299,11 +1299,11 @@
         async function fetchPortfolioData() {
             try {
                 // Fetch timing data
-                const timingRes = await fetch('/api/timing');
-                const timingResult = await timingRes.json();
-                if (timingResult.success && timingResult.data) {
-                    updateTimingChart(timingResult.data);
-                }
+                // const timingRes = await fetch('/api/timing');
+                // const timingResult = await timingRes.json();
+                // if (timingResult.success && timingResult.data) {
+                //     updateTimingChart(timingResult.data);
+                // }
 
                 // Note: Fund list is already loaded via sharesData
                 // Auto-colorize will be called after table updates

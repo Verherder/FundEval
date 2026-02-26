@@ -1,0 +1,20 @@
+# 基金估值项目配置示例
+# 可根据实际需求调整字段
+
+data_sources:
+  - name: "example_source"
+    url: "https://api.example.com/fund"
+    api_key: "your_api_key_here"
+    timeout: 10  # 请求超时时间（秒）
+    enable: true
+
+logging:
+  level: "INFO"
+  log_response_time: true
+  log_file: "logs/fund_eval.log"
+
+# HTTP详细请求日志终端输出开关
+http_timing:
+  console_log: false
+
+update_interval: 300  # 单位：秒

@@ -17,6 +17,7 @@ from loguru import logger
 from tabulate import tabulate
 
 from src.ai_analyzer import AIAnalyzer
+from src.http_timing import timed_http_request
 from src.module_html import get_table_html
 
 # 加载环境变量
@@ -80,8 +81,11 @@ class LanFund:
         self.user_id = user_id  # 用户ID，如果为None则使用文件模式
         self.db = db  # 数据库实例，从外部传入
 
+        # 普通 HTTP 会话使用requests（fund123）
         self.session = requests.Session()
-        self.baidu_session = curl_requests.Session(impersonate="chrome")
+        # 百度行情等使用 curl_cffi，会抛 CurlError/Timeout，需要全局容错
+        # self.baidu_session = curl_requests.Session(impersonate="chrome")
+        self.baidu_session = requests.Session()
         self.baidu_session.headers = {
             "accept": "application/vnd.finance-web.v1+json",
             "accept-language": "zh-CN,zh;q=0.9",
@@ -99,11 +103,19 @@ class LanFund:
         }
         self._csrf = ""
         self.report_dir = None  # 默认不输出报告文件（需通过 -o 参数指定）
-        self.load_cache()
-        self.init()
         self.result = []
+        
+        # 加载缓存数据，外部接口失败时不影响基础功能
+        self.load_cache()
+        try:
+            self.init()
+        except Exception as e:
+            logger.error(f"初始化失败(网络或接口问题，不影响登录等基础功能): {e}")
 
     def load_cache(self):
+        """
+        加载缓存数据，优先从数据库加载（如果有user_id），否则从文件加载。
+        """
         """加载缓存数据，优先从数据库加载（如果有user_id），否则从文件加载"""
         if self.user_id is not None and self.db is not None:
             # 从数据库加载
@@ -119,7 +131,9 @@ class LanFund:
         #     logger.debug(f"加载 {len(self.CACHE_MAP)} 个基金代码缓存成功")
 
     def save_cache(self):
-        """保存缓存数据，优先保存到数据库（如果有user_id），否则保存到文件"""
+        """
+        保存缓存数据，优先保存到数据库（如果有user_id），否则保存到json文件。
+        """
         if self.user_id is not None and self.db is not None:
             # 保存到数据库
             self.db.save_user_funds(self.user_id, self.CACHE_MAP)
@@ -129,25 +143,61 @@ class LanFund:
                 json.dump(self.CACHE_MAP, f, ensure_ascii=False, indent=4)
 
     def init(self):
-        res = self.session.get("https://www.fund123.cn/fund", headers={
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
-        }, timeout=10, verify=False)
-        self._csrf = re.findall('\"csrf\":\"(.*?)\"', res.text)[0]
+        """
+        初始化外部网站所需的 csrf / cookie 等。
+        任何网络超时、DNS 解析失败等异常都只记录日志，不向外抛出。
+        """
+        # fund123: 获取 csrf
+        try:
+            res = timed_http_request(
+                self.session,
+                "GET",
+                "https://www.fund123.cn/fund",
+                source="fund123",
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+                },
+                timeout=10,
+                verify=False,
+            )
+            csrf_matches = re.findall('\"csrf\":\"(.*?)\"', res.text)
+            if csrf_matches:
+                self._csrf = csrf_matches[0]
+            else:
+                logger.warning("未能在 fund123 页面中解析到 csrf，部分功能可能不可用")
+        except Exception as e:
+            logger.error(f"获取 fund123 csrf 失败（网络或接口问题）: {e}")
 
-        self.baidu_session.get("https://gushitong.baidu.com/index/ab-000001", headers={
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
-            "referer": "https://gushitong.baidu.com/"
-        }, timeout=10, verify=False)
+        # 百度行情预热：可能因 DNS/网络失败，但不影响主流程
+        try:
+            timed_http_request(
+                self.baidu_session,
+                "GET",
+                "https://gushitong.baidu.com/index/ab-000001",
+                source="baidu",
+                headers={
+                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+                    "referer": "https://gushitong.baidu.com/"
+                },
+                timeout=10,
+                verify=False,
+            )
+        except Exception as e:
+            logger.error(f"预热百度行情接口失败（网络或接口问题）: {e}")
         # self.baidu_session.cookies.update({
         #     "BDUSS": "3hJYkhPNEM3Z2xOeH5TLVU4OEhhU1hPUFYxdVV3V0pkd1VEMEhCTEgxRENMWEJsSVFBQUFBJCQAAAAAAAAAAAEAAAAVl0lPamRrZGpiZGIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMKgSGXCoEhlM",
         #     "BDUSS_BFESS": "3hJYkhPNEM3Z2xOeH5TLVU4OEhhU1hPUFYxdVV3V0pkd1VEMEhCTEgxRENMWEJsSVFBQUFBJCQAAAAAAAAAAAEAAAAVl0lPamRrZGpiZGIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMKgSGXCoEhlM",
         # })
 
     def add_code(self, codes):
+        """
+        添加基金代码到缓存，并同步到数据库或文件。
+        codes: str, 多个基金代码以逗号分隔。
+        """
         codes = codes.split(",")
         codes = [code.strip() for code in codes if code.strip()]
         for code in codes:
@@ -169,7 +219,17 @@ class LanFund:
                 data = {
                     "fundCode": code
                 }
-                response = self.session.post(url, headers=headers, params=params, json=data, timeout=10, verify=False)
+                response = timed_http_request(
+                    self.session,
+                    "POST",
+                    url,
+                    source="fund123",
+                    headers=headers,
+                    params=params,
+                    json=data,
+                    timeout=10,
+                    verify=False,
+                )
                 if response.json()["success"]:
                     fund_key = response.json()["fundInfo"]["key"]
                     fund_name = response.json()["fundInfo"]["fundName"]
@@ -187,6 +247,10 @@ class LanFund:
         self.save_cache()
 
     def delete_code(self, codes):
+        """
+        删除基金代码。
+        codes: str, 多个基金代码以逗号分隔。
+        """
         codes = codes.split(",")
         codes = [code.strip() for code in codes if code.strip()]
         for code in codes:
@@ -200,8 +264,11 @@ class LanFund:
                 logger.error(f"删除基金代码【{code}】失败: {e}")
         self.save_cache()
 
-    def mark_fund_sector(self):
-        """标记基金板块（独立功能）"""
+    def mark_fund_sector_cli(self):
+        """
+        标记基金板块（命令行交互）。
+        这是独立功能
+        """
         now_codes = list(self.CACHE_MAP.keys())
         logger.debug(f"当前缓存基金代码: {now_codes}")
         logger.info("请输入基金代码, 多个基金代码以英文逗号分隔:")
@@ -271,8 +338,8 @@ class LanFund:
         """标记基金板块（Web API使用）
 
         Args:
-            codes: list of str, 基金代码列表
-            sectors: list of str, 板块名称列表
+            codes: list[str], 基金代码列表
+            sectors: list[str], 板块名称列表
         """
         for code in codes:
             if code in self.CACHE_MAP:
@@ -286,7 +353,7 @@ class LanFund:
         """删除基金板块标记（Web API使用）
 
         Args:
-            codes: list of str, 基金代码列表
+            codes: list[str], 基金代码列表
         """
         for code in codes:
             if code in self.CACHE_MAP:
@@ -296,8 +363,10 @@ class LanFund:
                 logger.warning(f"基金代码 {code} 不存在")
         self.save_cache()
 
-    def unmark_fund_sector(self):
-        """删除基金板块标记（独立功能）"""
+    def unmark_fund_sector_cli(self):
+        """
+        删除基金板块标记（命令行交互）。
+        """
         # 找出所有有板块标记的基金
         marked_codes = [code for code, data in self.CACHE_MAP.items() if data.get("sectors", [])]
         if not marked_codes:
@@ -341,7 +410,15 @@ class LanFund:
                     "accept": "json"
                 }
                 url = f"https://www.fund123.cn/matiaria?fundCode={fund}"
-                response = self.session.get(url, headers=headers, timeout=10, verify=False)
+                response = timed_http_request(
+                    self.session,
+                    "GET",
+                    url,
+                    source="fund123",
+                    headers=headers,
+                    timeout=10,
+                    verify=False,
+                )
                 dayOfGrowth = re.findall(r'"dayOfGrowth":"(.*?)"', response.text)[0]
                 dayOfGrowth = str(round(float(dayOfGrowth), 2)) + "%"
 
@@ -356,7 +433,17 @@ class LanFund:
                     "productId": fund_key,
                     "dateInterval": "ONE_MONTH"
                 }
-                response = self.session.post(url, headers=headers, params=params, json=data, timeout=10, verify=False)
+                response = timed_http_request(
+                    self.session,
+                    "POST",
+                    url,
+                    source="fund123",
+                    headers=headers,
+                    params=params,
+                    json=data,
+                    timeout=10,
+                    verify=False,
+                )
                 if not response.json()["success"]:
                     logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
                     return
@@ -428,7 +515,17 @@ class LanFund:
                     "format": True,
                     "source": "WEALTHBFFWEB"
                 }
-                response = self.session.post(url, headers=headers, params=params, json=data, timeout=10, verify=False)
+                response = timed_http_request(
+                    self.session,
+                    "POST",
+                    url,
+                    source="fund123",
+                    headers=headers,
+                    params=params,
+                    json=data,
+                    timeout=10,
+                    verify=False,
+                )
                 if response.json()["success"]:
                     if not response.json()["list"]:
                         now_time = "N/A"
@@ -503,7 +600,17 @@ class LanFund:
             "format": True,
             "source": "WEALTHBFFWEB"
         }
-        response = self.session.post(url, headers=headers, params=params, json=data, timeout=10, verify=False)
+        response = timed_http_request(
+            self.session,
+            "POST",
+            url,
+            source="fund123",
+            headers=headers,
+            params=params,
+            json=data,
+            timeout=10,
+            verify=False,
+        )
         if response.json()["success"]:
             if not response.json()["list"]:
                 return []
@@ -641,7 +748,7 @@ class LanFund:
 
                     for line_msg in format_table_msg([
                         ["基金代码", "基金名称", "持仓份额", "持仓市值", "预估收益", "预估涨跌", "实际收益",
-                         "实际涨跌"],
+                        "实际涨跌"],
                         *table_data
                     ]).split("\n"):
                         logger.info(line_msg)
@@ -766,7 +873,7 @@ class LanFund:
         }
 
     def modify_shares(self):
-        """CLI交互式修改基金持仓份额"""
+        """修改基金持仓份额（CLI交互式）"""
         now_codes = list(self.CACHE_MAP.keys())
         if not now_codes:
             logger.warning("暂无基金代码，请先添加基金")
@@ -1082,7 +1189,15 @@ class LanFund:
             "sec-ch-ua-platform": "\"Windows\""
         }
 
-        response = requests.get(url, headers=headers, params=params, timeout=30)
+        response = timed_http_request(
+            requests,
+            "GET",
+            url,
+            source="eastmoney",
+            headers=headers,
+            params=params,
+            timeout=30,
+        )
         text = json.loads(response.text.replace("var rankData =", "").strip())
         datas = text["datas"]
         fund_results = []
@@ -1123,106 +1238,117 @@ class LanFund:
         ]).split("\n"):
             logger.info(line_msg)
 
+
     def run(self, is_add=False, is_delete=False, is_hold=False, is_not_hold=False, report_dir=None,
             deep_mode=False, fast_mode=False, with_ai=False, select_mode=False, mark_sector=False, unmark_sector=False,
             modify_shares=False):
+        """
+        高层入口：根据参数执行数据更新、添加、删除、持有标记、AI分析等。
+        记录整体耗时日志（仅输出到终端）。
+        """
+        import time
+        start = time.perf_counter()
 
-        if select_mode:
-            self.select_fund()
-            return
-
-        # 处理修改份额功能
-        if modify_shares:
-            self.modify_shares()
-            return
-
-        # 处理标记板块功能
-        if mark_sector:
-            self.mark_fund_sector()
-            return
-
-        # 处理删除标记板块功能
-        if unmark_sector:
-            self.unmark_fund_sector()
-            return
-
-        # 存储报告目录到实例属性（None 表示不保存报告文件）
-        self.report_dir = report_dir
-
-        if not self.CACHE_MAP:
-            logger.warning("暂无缓存代码信息, 请先添加基金代码")
-            is_add = True
-            is_delete = False
-            is_hold = False
-            is_not_hold = False
-        if is_not_hold:
-            hold_codes = [code for code, data in self.CACHE_MAP.items() if data.get("is_hold", False)]
-            if not hold_codes:
-                logger.warning("暂无持有标注基金代码")
+        try:
+            if select_mode:
+                self.select_fund()
                 return
-            logger.debug(f"当前持有标注基金代码: {hold_codes}")
-            logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
-            codes = input()
-            codes = codes.split(",")
-            codes = [code.strip() for code in codes if code.strip()]
-            for code in codes:
-                try:
-                    if code in self.CACHE_MAP:
-                        self.CACHE_MAP[code]["is_hold"] = False
-                        logger.info(f"删除持有标注【{code}】成功")
-                    else:
-                        logger.warning(f"删除持有标注【{code}】失败: 不存在该基金代码")
-                except Exception as e:
-                    logger.error(f"删除持有标注【{code}】失败: {e}")
-            self.save_cache()
-            return
-        if is_hold:
-            now_codes = list(self.CACHE_MAP.keys())
-            logger.debug(f"当前缓存基金代码: {now_codes}")
-            logger.info("请输入基金代码, 多个基金代码以英文逗号分隔:")
-            codes = input()
-            codes = codes.split(",")
-            codes = [code.strip() for code in codes if code.strip()]
 
-            for code in codes:
-                try:
-                    if code not in self.CACHE_MAP:
-                        logger.warning(f"添加持有标注【{code}】失败: 不存在该基金代码, 请先添加该基金代码")
-                        continue
-
-                    self.CACHE_MAP[code]["is_hold"] = True
-                    logger.info(f"添加持有标注【{code}】成功")
-
-                except Exception as e:
-                    logger.error(f"添加持有标注【{code}】失败: {e}")
-            self.save_cache()
-            return
-
-        if is_delete:
-            now_codes = list(self.CACHE_MAP.keys())
-            logger.debug(f"当前缓存基金代码: {now_codes}")
-            logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
-            codes = input()
-            self.delete_code(codes)
-            logger.success("删除基金代码成功")
-            if not is_add:
+            # 处理修改份额功能
+            if modify_shares:
+                self.modify_shares()
                 return
-        if is_add:
-            logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
-            codes = input()
-            self.add_code(codes)
-            logger.success("添加基金代码成功")
-        else:
-            self.kx()
-            self.bk()
-            self.real_time_gold()
-            self.gold()
-            self.seven_A()
-            self.A()
-            self.get_market_info()
-            self.search_code()
-            if with_ai:
-                self.ai_analysis(deep_mode=deep_mode, fast_mode=fast_mode)
+
+            # 处理标记板块功能
+            if mark_sector:
+                self.mark_fund_sector_cli()
+                return
+
+            # 处理删除标记板块功能
+            if unmark_sector:
+                self.unmark_fund_sector_cli()
+                return
+
+            # 存储报告目录到实例属性（None 表示不保存报告文件）
+            self.report_dir = report_dir
+
+            if not self.CACHE_MAP:
+                logger.warning("暂无缓存代码信息, 请先添加基金代码")
+                is_add = True
+                is_delete = False
+                is_hold = False
+                is_not_hold = False
+            if is_not_hold:
+                hold_codes = [code for code, data in self.CACHE_MAP.items() if data.get("is_hold", False)]
+                if not hold_codes:
+                    logger.warning("暂无持有标注基金代码")
+                    return
+                logger.debug(f"当前持有标注基金代码: {hold_codes}")
+                logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
+                codes = input()
+                codes = codes.split(",")
+                codes = [code.strip() for code in codes if code.strip()]
+                for code in codes:
+                    try:
+                        if code in self.CACHE_MAP:
+                            self.CACHE_MAP[code]["is_hold"] = False
+                            logger.info(f"删除持有标注【{code}】成功")
+                        else:
+                            logger.warning(f"删除持有标注【{code}】失败: 不存在该基金代码")
+                    except Exception as e:
+                        logger.error(f"删除持有标注【{code}】失败: {e}")
+                self.save_cache()
+                return
+            if is_hold:
+                now_codes = list(self.CACHE_MAP.keys())
+                logger.debug(f"当前缓存基金代码: {now_codes}")
+                logger.info("请输入基金代码, 多个基金代码以英文逗号分隔:")
+                codes = input()
+                codes = codes.split(",")
+                codes = [code.strip() for code in codes if code.strip()]
+
+                for code in codes:
+                    try:
+                        if code not in self.CACHE_MAP:
+                            logger.warning(f"添加持有标注【{code}】失败: 不存在该基金代码, 请先添加该基金代码")
+                            continue
+
+                        self.CACHE_MAP[code]["is_hold"] = True
+                        logger.info(f"添加持有标注【{code}】成功")
+
+                    except Exception as e:
+                        logger.error(f"添加持有标注【{code}】失败: {e}")
+                self.save_cache()
+                return
+
+            if is_delete:
+                now_codes = list(self.CACHE_MAP.keys())
+                logger.debug(f"当前缓存基金代码: {now_codes}")
+                logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
+                codes = input()
+                self.delete_code(codes)
+                logger.success("删除基金代码成功")
+                if not is_add:
+                    return
+            if is_add:
+                logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
+                codes = input()
+                self.add_code(codes)
+                logger.success("添加基金代码成功")
+            else:
+                self.kx()
+                self.bk()
+                self.real_time_gold()
+                self.gold()
+                self.seven_A()
+                self.A()
+                self.get_market_info()
+                self.search_code()
+                if with_ai:
+                    self.ai_analysis(deep_mode=deep_mode, fast_mode=fast_mode)
+        finally:
+            elapsed = (time.perf_counter() - start) * 1000
+            print(f"[FUNC] LanFund.run total_elapsed_ms={elapsed:.1f}")
 
     def get_market_info(self, is_return=False):
         result = []
@@ -1230,7 +1356,7 @@ class LanFund:
             markets = ["asia", "america"]
             for market in markets:
                 url = f"https://finance.pae.baidu.com/api/getbanner?market={market}&finClientType=pc"
-                response = self.baidu_session.get(url, timeout=10, verify=False)
+                response = timed_http_request(self.baidu_session, "GET", url, source="baidu", timeout=10, verify=False)
                 if response.json()["ResultCode"] == "0":
                     market_list = response.json()["Result"]["list"]
                     for market_info in market_list:
@@ -1260,7 +1386,15 @@ class LanFund:
                 "name": "创业板指",
                 "finClientType": "pc"
             }
-            response = self.baidu_session.get(url, params=params, timeout=10, verify=False)
+            response = timed_http_request(
+                self.baidu_session,
+                "GET",
+                url,
+                source="baidu",
+                params=params,
+                timeout=10,
+                verify=False,
+            )
             if str(response.json()["ResultCode"]) == "0":
                 cur = response.json()["Result"]["cur"]
                 ratio = cur["ratio"]
@@ -1418,7 +1552,15 @@ class LanFund:
                 "fs": "m:90 t:2",
                 "fields": "f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f204,f205,f124,f1,f13"
             }
-            response = requests.get(url, params=params, timeout=10, verify=False)
+            response = timed_http_request(
+                requests,
+                "GET",
+                url,
+                source="eastmoney",
+                params=params,
+                timeout=10,
+                verify=False,
+            )
             if str(response.json()["data"]):
                 data = response.json()["data"]
                 for bk in data["diff"]:
@@ -1482,7 +1624,7 @@ class LanFund:
         url = f"https://finance.pae.baidu.com/selfselect/expressnews?rn={count}&pn=0&tag=A股&finClientType=pc"
         kx_list = []
         try:
-            response = self.baidu_session.get(url, timeout=10, verify=False)
+            response = timed_http_request(self.baidu_session, "GET", url, source="baidu", timeout=10, verify=False)
             if response.json()["ResultCode"] == "0":
                 kx_list = response.json()["Result"]["content"]["list"]
         except:
@@ -1558,7 +1700,16 @@ class LanFund:
                 "currentPage": "1",
                 "_": int(time.time() * 1000)
             }
-            response = requests.get(url, headers=headers, params=params, timeout=10, verify=False)
+            response = timed_http_request(
+                requests,
+                "GET",
+                url,
+                source="jijinhao",
+                headers=headers,
+                params=params,
+                timeout=10,
+                verify=False,
+            )
             data = json.loads(response.text.replace("var quote_json = ", ""))["data"]
 
             url = "https://api.jijinhao.com/quoteCenter/history.htm"
@@ -1570,7 +1721,16 @@ class LanFund:
                 "currentPage": "1",
                 "_": int(time.time() * 1000)
             }
-            response = requests.get(url, headers=headers, params=params, timeout=10, verify=False)
+            response = timed_http_request(
+                requests,
+                "GET",
+                url,
+                source="jijinhao",
+                headers=headers,
+                params=params,
+                timeout=10,
+                verify=False,
+            )
             data2 = json.loads(response.text.replace("var quote_json = ", ""))["data"]
 
             gold_list = []
@@ -1636,7 +1796,16 @@ class LanFund:
                 "codes": "JO_71,JO_92233,JO_92232,JO_75",
                 "_": str(int(time.time() * 1000))
             }
-            response = requests.get(url, headers=headers, params=params, timeout=10, verify=False)
+            response = timed_http_request(
+                requests,
+                "GET",
+                url,
+                source="jijinhao",
+                headers=headers,
+                params=params,
+                timeout=10,
+                verify=False,
+            )
             data = json.loads(response.text.replace("var quote_json = ", ""))
             result = [[], [], []]
             columns = ["名称", "最新价", "涨跌额", "涨跌幅", "开盘价", "最高价", "最低价", "昨收价", "更新时间", "单位"]
@@ -1722,7 +1891,15 @@ class LanFund:
             "name": "上证指数",
             "finClientType": "pc"
         }
-        response = self.baidu_session.get(url, params=params, timeout=10, verify=False)
+        response = timed_http_request(
+            self.baidu_session,
+            "GET",
+            url,
+            source="baidu",
+            params=params,
+            timeout=10,
+            verify=False,
+        )
         try:
             if str(response.json()["ResultCode"]) == "0":
                 marketData = response.json()["Result"]["newMarketData"]["marketData"][0]["p"]
@@ -1777,7 +1954,15 @@ class LanFund:
             "finClientType": "pc"
         }
         try:
-            response = self.baidu_session.get(url, params=params, timeout=10, verify=False)
+            response = timed_http_request(
+                self.baidu_session,
+                "GET",
+                url,
+                source="baidu",
+                params=params,
+                timeout=10,
+                verify=False,
+            )
             if str(response.json()["ResultCode"]) == "0":
                 trend = response.json()["Result"]["trend"]
                 result = []
