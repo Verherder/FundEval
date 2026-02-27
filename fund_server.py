@@ -19,6 +19,7 @@ import fund
 from src.auth import login_required, get_current_user_id, get_current_username, login_user, logout_user
 from src.database import Database
 from src.module_html import enhance_fund_tab_content
+from src.yaml_config import get_page_refresh_config
 
 # 加载环境变量
 load_dotenv()
@@ -251,7 +252,8 @@ def api_fund_set_sector():
         code_list = [c.strip() for c in codes.split(',')]
         # 使用Web专用方法
         my_fund.mark_fund_sector_web(code_list, sectors)
-        result = {'success': True, 'message': f'已标注板块: {codes} -> {', '.join(sectors)}'}
+        sectors_str = ", ".join(sectors)
+        result = {'success': True, 'message': f'已标注板块: {codes} -> {sectors_str}'}
         return result
     except Exception as e:
         logger.error(f"标注板块失败: {e}")
@@ -836,6 +838,30 @@ def get_market_indices():
     return redirect('/portfolio')
 
 
+@app.route('/api/portfolio/fund-table', methods=['GET'])
+@login_required
+def api_portfolio_fund_table():
+    """获取投资组合的基金表格数据（用于刷新）"""
+    try:
+        user_id = get_current_user_id()
+        importlib.reload(fund)
+        my_fund = fund.LanFund(user_id=user_id, db=db)
+        
+        # 获取基金表格HTML
+        fund_table_html = my_fund.fund_html()
+        
+        return jsonify({
+            'success': True,
+            'html': fund_table_html
+        })
+    except Exception as e:
+        logger.error(f"获取基金表格失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'获取基金表格失败: {str(e)}'
+        }), 500
+
+
 @app.route('/portfolio', methods=['GET'])
 @login_required
 def get_portfolio():
@@ -964,6 +990,13 @@ def api_fund_chart_default():
 
     db.update_chart_default(user_id, fund_code)
     return jsonify({'success': True})
+
+
+@app.route('/api/config/refresh', methods=['GET'])
+def api_config_refresh():
+    """获取页面刷新配置"""
+    config = get_page_refresh_config()
+    return jsonify(config)
 
 
 @app.route('/sectors', methods=['GET'])

@@ -18,3 +18,8 @@ http_timing:
   console_log: false
 
 update_interval: 300  # 单位：秒
+
+# 页面刷新配置
+page_refresh:
+  # 自动刷新间隔时长（毫秒）
+  auto_refresh_interval: 60000  # 60 秒

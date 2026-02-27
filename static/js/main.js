@@ -183,6 +183,52 @@
         return isNaN(num) ? val.toLowerCase() : num;
     }
 
+    // 页面加载时加载份额数据并计算持仓统计
+    // This function is called only in portfolio.html, not globally
+    async function loadSharesData() {
+        try {
+            // 从后端API获取用户的基金数据（包含份额）
+            const response = await fetch('/api/fund/data');
+            if (response.ok) {
+                const fundData = await response.json();
+
+                // 初始化全局份额数据存储
+                window.fundSharesData = {};
+                window.fundSectorsData = {};  // 存储板块数据
+
+                // 填充份额数据到全局存储
+                for (const [code, data] of Object.entries(fundData)) {
+                    if (data.shares !== undefined && data.shares !== null) {
+                        window.fundSharesData[code] = parseFloat(data.shares) || 0;
+                    }
+                    // 存储板块数据
+                    if (data.sectors && data.sectors.length > 0) {
+                        window.fundSectorsData[code] = data.sectors;
+                    }
+
+                    // 如果有份额输入框，也填充（旧版页面兼容）
+                    const sharesInput = document.getElementById('shares_' + code);
+                    if (sharesInput && data.shares) {
+                        sharesInput.value = data.shares;
+                    }
+                }
+
+                console.log('已加载份额数据:', window.fundSharesData);
+
+                // 计算持仓统计
+                if (typeof calculatePositionSummary === 'function') {
+                    calculatePositionSummary();
+                }
+            }
+        } catch (e) {
+            console.error('加载份额数据失败:', e);
+            // 即使加载失败，也尝试计算持仓统计
+            if (typeof calculatePositionSummary === 'function') {
+                calculatePositionSummary();
+            }
+        }
+    }
+
     function openTab(evt, tabId) {
         // Hide all tab contents
         const allContents = document.querySelectorAll('.tab-content');
@@ -1049,49 +1095,8 @@
             }
         }
 
-        // 页面加载时加载份额数据并计算持仓统计
-        async function loadSharesData() {
-            try {
-                // 从后端API获取用户的基金数据（包含份额）
-                const response = await fetch('/api/fund/data');
-                if (response.ok) {
-                    const fundData = await response.json();
-
-                    // 初始化全局份额数据存储
-                    window.fundSharesData = {};
-                    window.fundSectorsData = {};  // 存储板块数据
-
-                    // 填充份额数据到全局存储
-                    for (const [code, data] of Object.entries(fundData)) {
-                        if (data.shares !== undefined && data.shares !== null) {
-                            window.fundSharesData[code] = parseFloat(data.shares) || 0;
-                        }
-                        // 存储板块数据
-                        if (data.sectors && data.sectors.length > 0) {
-                            window.fundSectorsData[code] = data.sectors;
-                        }
-
-                        // 如果有份额输入框，也填充（旧版页面兼容）
-                        const sharesInput = document.getElementById('shares_' + code);
-                        if (sharesInput && data.shares) {
-                            sharesInput.value = data.shares;
-                        }
-                    }
-
-                    console.log('已加载份额数据:', window.fundSharesData);
-
-                    // 计算持仓统计
-                    calculatePositionSummary();
-                }
-            } catch (e) {
-                console.error('加载份额数据失败:', e);
-                // 即使加载失败，也尝试计算持仓统计
-                calculatePositionSummary();
-            }
-        }
-
-        // 初始化
-        loadSharesData();
+        // Note: loadSharesData() is called only in portfolio.html, not globally
+        // This prevents unnecessary requests to /api/fund/data on other pages
 
         // 展开/收起基金行详情
         window.toggleFundExpand = function(fundCode) {
@@ -1231,7 +1236,65 @@
 
         // ==================== Auto-Refresh System ====================
         let refreshInterval;
-        const REFRESH_INTERVAL = 60000; // 60 seconds
+        let REFRESH_INTERVAL = 60000; // 默认 60 秒（毫秒）
+        let lastRefreshTime = null; // 记录最后刷新时间
+
+        // 初始化刷新配置（从后端API读取）
+        async function initRefreshConfig() {
+            try {
+                const response = await fetch('/api/config/refresh');
+                if (response.ok) {
+                    const config = await response.json();
+                    REFRESH_INTERVAL = config.auto_refresh_interval || 60000;
+                    console.log(`✅ Refresh config loaded: interval=${REFRESH_INTERVAL}ms`);
+                    // 暴露配置到 window，用于调试
+                    window._refreshConfig = { REFRESH_INTERVAL };
+                } else {
+                    console.warn(`❌ Failed to fetch refresh config: HTTP ${response.status}`);
+                    window._refreshConfig = { error: `HTTP ${response.status}` };
+                }
+            } catch (e) {
+                console.error('❌ Failed to load refresh config:', e);
+                window._refreshConfig = { error: e.message };
+            }
+        }
+
+        // 更新刷新时间显示
+        function updateRefreshTimeDisplay(pageType = null) {
+            let timeDisplay;
+            if (pageType) {
+                timeDisplay = document.getElementById(`lastRefreshTime-${pageType}`);
+            } else {
+                // 更新所有可见的时间显示
+                ['portfolio', 'metals', 'sectors'].forEach(type => {
+                    const display = document.getElementById(`lastRefreshTime-${type}`);
+                    if (display && getComputedStyle(display).display !== 'none') {
+                        updateRefreshTimeForType(type, display);
+                    }
+                });
+                return;
+            }
+            if (!timeDisplay) return;
+            updateRefreshTimeForType(pageType, timeDisplay);
+        }
+
+        function updateRefreshTimeForType(pageType, timeDisplay) {
+
+            if (!lastRefreshTime) {
+                timeDisplay.textContent = '';
+                return;
+            }
+
+            // 显示具体的时分秒
+            const hours = String(lastRefreshTime.getHours()).padStart(2, '0');
+            const minutes = String(lastRefreshTime.getMinutes()).padStart(2, '0');
+            const seconds = String(lastRefreshTime.getSeconds()).padStart(2, '0');
+            
+            timeDisplay.textContent = `${hours}:${minutes}:${seconds}`;
+        }
+
+        // 定时更新刷新时间显示
+        setInterval(updateRefreshTimeDisplay, 1000);
 
         // Start auto-refresh
         function startAutoRefresh() {
@@ -1241,7 +1304,7 @@
             refreshInterval = setInterval(() => {
                 refreshCurrentPage();
             }, REFRESH_INTERVAL);
-            console.log('Auto-refresh started (60s interval)');
+            console.log(`Auto-refresh started (${REFRESH_INTERVAL}ms interval)`);
         }
 
         // Stop auto-refresh
@@ -1253,30 +1316,50 @@
             }
         }
 
-        // Refresh current page data based on route
+        // Refresh current page data based on route (只更新数据，不重新加载页面)
         async function refreshCurrentPage() {
             const path = window.location.pathname;
-            const refreshBtn = document.getElementById('refreshBtn');
 
-            // Update button state if exists
-            if (refreshBtn) {
-                refreshBtn.disabled = true;
-                refreshBtn.innerHTML = '⏳ 刷新中...';
+            // 快速检查：避免重复点击刷新按钮
+            // 通过检查对应页面的刷新按钮是否已禁用
+            let refreshBtn = null;
+            switch (path) {
+                case '/portfolio':
+                    refreshBtn = document.getElementById('refreshBtn-portfolio');
+                    break;
+                case '/precious-metals':
+                    refreshBtn = document.getElementById('refreshBtn-metals');
+                    break;
+                case '/sectors':
+                    // sectors 可能有两个按钮
+                    refreshBtn = document.getElementById('refreshBtn-sectors') || document.getElementById('refreshBtn-sectors-query');
+                    break;
+            }
+            
+            // 如果按钮已禁用，说明已经在刷新中，拒絕重複點擊
+            if (refreshBtn && refreshBtn.disabled) {
+                console.log('Refresh already in progress, ignoring click');
+                return;
             }
 
+            // 注意：按钮状态的管理由各个 fetch 函数来处理
+            // 这里只负责调用对应的数据更新函数
             try {
+                console.log(`Refreshing ${path}`);
                 switch (path) {
                     case '/portfolio':
                         await fetchPortfolioData();
                         break;
-                    case '/market-indices':
-                        await fetchMarketIndicesData();
-                        break;
                     case '/precious-metals':
+                        // 只更新数据，不重新加载页面
                         await fetchPreciousMetalsData();
                         break;
                     case '/sectors':
+                        // 只更新数据，不重新加载页面
                         await fetchSectorsData();
+                        break;
+                    case '/market-indices':
+                        await fetchMarketIndicesData();
                         break;
                     case '/market':
                         await fetchNewsData();
@@ -1286,30 +1369,102 @@
                 }
             } catch (e) {
                 console.error('Refresh failed:', e);
-            } finally {
-                // Restore button state
-                if (refreshBtn) {
-                    refreshBtn.disabled = false;
-                    refreshBtn.innerHTML = '🔄 刷新';
-                }
             }
         }
 
-        // Portfolio page data fetch
+        // Portfolio page data fetch (更新基金表格和持仓统计)
         async function fetchPortfolioData() {
             try {
-                // Fetch timing data
-                // const timingRes = await fetch('/api/timing');
-                // const timingResult = await timingRes.json();
-                // if (timingResult.success && timingResult.data) {
-                //     updateTimingChart(timingResult.data);
-                // }
+                const refreshBtn = document.getElementById('refreshBtn-portfolio');
+                
+                // 显示加载状态
+                if (refreshBtn) {
+                    refreshBtn.disabled = true;
+                    refreshBtn.innerHTML = '⏳ 更新中...';
+                }
 
-                // Note: Fund list is already loaded via sharesData
-                // Auto-colorize will be called after table updates
-                autoColorize();
+                // 1. 获取最新的基金表格
+                const tableResponse = await fetch('/api/portfolio/fund-table');
+                if (!tableResponse.ok) {
+                    throw new Error(`Failed to fetch fund table: ${tableResponse.status}`);
+                }
+                const tableData = await tableResponse.json();
+                
+                if (!tableData.success) {
+                    throw new Error(tableData.message || '获取基金表格失败');
+                }
+
+                // 2. 替换基金表格内容（提取tbody）
+                const newTableHTML = tableData.html;
+                const parser = new DOMParser();
+                const newTableDoc = parser.parseFromString(newTableHTML, 'text/html');
+                const newTableBody = newTableDoc.querySelector('tbody');
+                
+                if (newTableBody) {
+                    const currentTable = document.querySelector('.style-table');
+                    if (currentTable) {
+                        const currentTableBody = currentTable.querySelector('tbody');
+                        if (currentTableBody) {
+                            // 替换tbody内容
+                            currentTableBody.innerHTML = newTableBody.innerHTML;
+                        }
+                    }
+                }
+
+                // 3. 获取最新的份额数据
+                const fundDataResponse = await fetch('/api/fund/data');
+                if (fundDataResponse.ok) {
+                    const fundData = await fundDataResponse.json();
+                    
+                    // 更新 window.fundSharesData 中的份额数据
+                    if (!window.fundSharesData) {
+                        window.fundSharesData = {};
+                    }
+                    
+                    for (const [code, data] of Object.entries(fundData)) {
+                        const shares = parseFloat(data.shares) || 0;
+                        window.fundSharesData[code] = shares;
+                    }
+                }
+
+                // 4. 重新计算持仓统计（会自动使用新的表格数据 + 最新份额）
+                if (typeof calculatePositionSummary === 'function') {
+                    await calculatePositionSummary();
+                    
+                    // 5. 重新着色
+                    if (typeof autoColorize === 'function') {
+                        autoColorize();
+                    }
+                    
+                    // 记录刷新时间并更新显示
+                    lastRefreshTime = new Date();
+                    updateRefreshTimeDisplay('portfolio');
+                    
+                    // 显示成功提示（2秒后恢复）
+                    if (refreshBtn) {
+                        refreshBtn.innerHTML = '✅ 更新完成';
+                        
+                        setTimeout(() => {
+                            refreshBtn.innerHTML = '🔄 刷新';
+                            refreshBtn.disabled = false;
+                            refreshBtn.style.background = ''; // 恢复CSS样式
+                        }, 2000);
+                    }
+                } else {
+                    throw new Error('calculatePositionSummary function not found');
+                }
             } catch (e) {
                 console.error('Failed to refresh portfolio data:', e);
+                const refreshBtn = document.getElementById('refreshBtn-portfolio');
+                if (refreshBtn) {
+                    refreshBtn.innerHTML = '❌ 更新失败';
+
+                    setTimeout(() => {
+                        refreshBtn.innerHTML = '🔄 刷新';
+                        refreshBtn.disabled = false;
+                        refreshBtn.style.background = ''; // 恢复CSS样式
+                    }, 2000);
+                }
             }
         }
 
@@ -1339,6 +1494,15 @@
 
         // Precious metals page data fetch
         async function fetchPreciousMetalsData() {
+            let hasAnySuccess = false;
+            const refreshBtn = document.getElementById('refreshBtn-metals');
+            
+            // 显示加载状态
+            if (refreshBtn) {
+                refreshBtn.disabled = true;
+                refreshBtn.innerHTML = '⏳ 更新中...';
+            }
+
             try {
                 // Fetch real-time gold prices
                 const realtimeRes = await fetch('/api/gold/real-time');
@@ -1350,20 +1514,66 @@
 
                 if (realtimeResult.success) {
                     updateRealtimeGoldTable(realtimeResult.data);
+                    hasAnySuccess = true;
                 }
                 if (historyResult.success) {
                     updateGoldHistoryTable(historyResult.data);
+                    hasAnySuccess = true;
                 }
 
                 autoColorize();
+                
+                // 只要至少有一部分数据更新成功，就显示成功
+                if (hasAnySuccess) {
+                    // 记录刷新时间并更新显示
+                    lastRefreshTime = new Date();
+                    updateRefreshTimeDisplay('metals');
+                    
+                    // 显示成功提示（2秒后恢复）
+                    if (refreshBtn) {
+                        refreshBtn.innerHTML = '✅ 更新完成';
+                        
+                        setTimeout(() => {
+                            refreshBtn.innerHTML = '🔄 刷新';
+                            refreshBtn.disabled = false;
+                            refreshBtn.style.background = ''; // 恢复CSS样式
+                        }, 2000);
+                    }
+                } else {
+                    // 完全没有获取到任何数据
+                    throw new Error('Failed to fetch any precious metals data');
+                }
             } catch (e) {
                 console.error('Failed to refresh precious metals:', e);
+                if (refreshBtn) {
+                    refreshBtn.innerHTML = '❌ 更新失败';
+
+                    setTimeout(() => {
+                        refreshBtn.innerHTML = '🔄 刷新';
+                        refreshBtn.disabled = false;
+                        refreshBtn.style.background = ''; // 恢复CSS样式
+                    }, 2000);
+                }
             }
         }
 
         // Sectors page data fetch
         async function fetchSectorsData() {
             try {
+                // 获取两个 tab 中可能存在的刷新按钮
+                const refreshBtn1 = document.getElementById('refreshBtn-sectors');
+                const refreshBtn2 = document.getElementById('refreshBtn-sectors-query');
+                
+                // 显示加载状态 - 同时更新两个按钮
+                if (refreshBtn1) {
+                    refreshBtn1.disabled = true;
+                    refreshBtn1.innerHTML = '⏳ 更新中...';
+                }
+                if (refreshBtn2) {
+                    refreshBtn2.disabled = true;
+                    refreshBtn2.innerHTML = '⏳ 更新中...';
+                }
+
                 // Fetch sectors data
                 const sectorsRes = await fetch('/api/sectors');
                 const sectorsResult = await sectorsRes.json();
@@ -1373,8 +1583,61 @@
                 }
 
                 autoColorize();
+                
+                // 记录刷新时间并更新显示
+                lastRefreshTime = new Date();
+                updateRefreshTimeDisplay('sectors');
+                
+                // 显示成功提示（2秒后恢复）- 同时更新两个按钮
+                if (refreshBtn1) {
+                    refreshBtn1.innerHTML = '✅ 更新完成';
+                    refreshBtn1.style.background = 'var(--accent)';
+                }
+                if (refreshBtn2) {
+                    refreshBtn2.innerHTML = '✅ 更新完成';
+                    refreshBtn2.style.background = 'var(--accent)';
+                }
+                
+                setTimeout(() => {
+                    if (refreshBtn1) {
+                        refreshBtn1.innerHTML = '🔄 刷新';
+                        refreshBtn1.disabled = false;
+                        refreshBtn1.style.background = 'var(--accent)';  // 恢复到蓝色，不是白色
+                    }
+                    if (refreshBtn2) {
+                        refreshBtn2.innerHTML = '🔄 刷新';
+                        refreshBtn2.disabled = false;
+                        refreshBtn2.style.background = 'var(--accent)';  // 恢复到蓝色，不是白色
+                    }
+                }, 2000);
             } catch (e) {
                 console.error('Failed to refresh sectors:', e);
+                // 获取两个可能的按钮
+                const refreshBtn1 = document.getElementById('refreshBtn-sectors');
+                const refreshBtn2 = document.getElementById('refreshBtn-sectors-query');
+                
+                // 同时更新两个按钮的错误状态
+                if (refreshBtn1) {
+                    refreshBtn1.innerHTML = '❌ 更新失败';
+                    refreshBtn1.style.background = 'var(--accent)';
+                }
+                if (refreshBtn2) {
+                    refreshBtn2.innerHTML = '❌ 更新失败';
+                    refreshBtn2.style.background = 'var(--accent)';
+                }
+
+                setTimeout(() => {
+                    if (refreshBtn1) {
+                        refreshBtn1.innerHTML = '🔄 刷新';
+                        refreshBtn1.disabled = false;
+                        refreshBtn1.style.background = 'var(--accent)';  // 恢复到蓝色，不是白色
+                    }
+                    if (refreshBtn2) {
+                        refreshBtn2.innerHTML = '🔄 刷新';
+                        refreshBtn2.disabled = false;
+                        refreshBtn2.style.background = 'var(--accent)';  // 恢复到蓝色，不是白色
+                    }
+                }, 2000);
             }
         }
 
@@ -1442,48 +1705,155 @@
         }
 
         function updateRealtimeGoldTable(data) {
-            const table = document.querySelector('.style-table');
-            if (table && data) {
-                const tbody = table.querySelector('tbody');
-                if (tbody) {
-                    tbody.innerHTML = data.map(item => `
-                        <tr>
-                            <td>${item.name}</td>
-                            <td>${item.price}</td>
-                            <td>${item.change_amount}</td>
-                            <td>${item.change_pct}</td>
-                            <td>${item.open_price}</td>
-                            <td>${item.high_price}</td>
-                            <td>${item.low_price}</td>
-                            <td>${item.prev_close}</td>
-                            <td>${item.update_time}</td>
-                            <td>${item.unit}</td>
-                        </tr>
-                    `).join('');
+            // 在贵金属页面，表格在 .metal-card-realtime 下的 .metal-card-content 里
+            const metalCard = document.querySelector('.metal-card-realtime');
+            if (metalCard && data) {
+                const table = metalCard.querySelector('.style-table');
+                if (table) {
+                    const tbody = table.querySelector('tbody');
+                    if (tbody) {
+                        tbody.innerHTML = data.map(item => `
+                            <tr>
+                                <td>${item.name}</td>
+                                <td>${item.price}</td>
+                                <td>${item.change_amount}</td>
+                                <td>${item.change_pct}</td>
+                                <td>${item.open_price}</td>
+                                <td>${item.high_price}</td>
+                                <td>${item.low_price}</td>
+                                <td>${item.prev_close}</td>
+                                <td>${item.update_time}</td>
+                                <td>${item.unit}</td>
+                            </tr>
+                        `).join('');
+                        // 更新后重新着色
+                        autoColorize();
+                    }
                 }
             }
         }
 
         function updateGoldHistoryTable(data) {
-            // Similar implementation for gold history table
-            const tables = document.querySelectorAll('.style-table');
-            if (tables.length > 1 && data) {
-                const tbody = tables[1].querySelector('tbody');
-                if (tbody) {
-                    tbody.innerHTML = data.map(item => `
-                        <tr>
-                            <td>${item.date}</td>
-                            <td>${item.china_gold_price}</td>
-                            <td>${item.chow_tai_fook_price}</td>
-                            <td>${item.china_gold_change}</td>
-                            <td>${item.chow_tai_fook_change}</td>
-                        </tr>
-                    `).join('');
+            // 更新历史金价表格，同时重新生成图表
+            const metalCard = document.querySelector('.metal-card-history');
+            if (metalCard && data) {
+                const table = metalCard.querySelector('.style-table');
+                if (table) {
+                    const tbody = table.querySelector('tbody');
+                    if (tbody) {
+                        tbody.innerHTML = data.map(item => `
+                            <tr>
+                                <td>${item.date}</td>
+                                <td>${item.china_gold_price}</td>
+                                <td>${item.chow_tai_fook_price}</td>
+                                <td>${item.china_gold_change}</td>
+                                <td>${item.chow_tai_fook_change}</td>
+                            </tr>
+                        `).join('');
+                    }
                 }
+                
+                // 重新生成图表
+                recreateGoldChart(data);
             }
+        }
+        
+        function recreateGoldChart(historyData) {
+            if (!historyData || historyData.length === 0) return;
+            
+            const labels = [];
+            const prices = [];
+            
+            historyData.forEach(item => {
+                labels.push(item.date);
+                prices.push(parseFloat(item.china_gold_price));
+            });
+            
+            const ctx = document.getElementById('goldPriceChart');
+            if (!ctx) return;
+            
+            // 销毁旧图表
+            if (window.goldChartInstance) {
+                window.goldChartInstance.destroy();
+            }
+            
+            // 创建新图表
+            const dataLabelPlugin = {
+                id: 'dataLabelPlugin',
+                afterDatasetsDraw(chart, args, options) {
+                    const { ctx } = chart;
+                    chart.data.datasets.forEach((dataset, datasetIndex) => {
+                        const meta = chart.getDatasetMeta(datasetIndex);
+                        meta.data.forEach((datapoint, index) => {
+                            const value = dataset.data[index];
+                            const x = datapoint.x;
+                            const y = datapoint.y;
+
+                            ctx.save();
+                            ctx.fillStyle = '#f59e0b';
+                            ctx.font = 'bold 11px sans-serif';
+                            ctx.textAlign = 'center';
+                            ctx.textBaseline = 'bottom';
+                            ctx.fillText(value.toFixed(2), x, y - 5);
+                            ctx.restore();
+                        });
+                    });
+                }
+            };
+            
+            window.goldChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels.reverse(),
+                    datasets: [{
+                        label: '金价 (元/克)',
+                        data: prices.reverse(),
+                        borderColor: '#f59e0b',
+                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 4,
+                        pointBackgroundColor: '#f59e0b',
+                        pointBorderColor: '#fff',
+                        pointBorderWidth: 2,
+                        pointHoverRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#9ca3af'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: {
+                                color: '#9ca3af'
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            }
+                        },
+                        y: {
+                            ticks: {
+                                color: '#9ca3af'
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            }
+                        }
+                    }
+                },
+                plugins: [dataLabelPlugin]
+            });
         }
 
         function updateSectorsTable(data) {
+            // 行业板块页面的表格
             const table = document.querySelector('.style-table');
             if (table && data) {
                 const tbody = table.querySelector('tbody');
@@ -1498,6 +1868,8 @@
                             <td>${item.small_inflow_pct}</td>
                         </tr>
                     `).join('');
+                    // 更新后重新着色
+                    autoColorize();
                 }
             }
         }
@@ -1539,11 +1911,15 @@
             }
         });
 
-        // Start auto-refresh on page load
-        startAutoRefresh();
+        // Initialize refresh config and start auto-refresh on page load
+        (async function() {
+            await initRefreshConfig();
+            startAutoRefresh();
+        })();
 
         // Expose refresh function globally for manual refresh button
         window.refreshCurrentPage = refreshCurrentPage;
+        window.initRefreshConfig = initRefreshConfig;
 
         // 切换敏感数值显示/隐藏（显示为****）
         function initSensitiveValuesToggle() {

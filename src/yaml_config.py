@@ -1,6 +1,6 @@
 import yaml
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Dict
 
 def load_yaml_config(config_path: Optional[str] = None) -> dict:
     """
@@ -24,3 +24,25 @@ def load_yaml_config(config_path: Optional[str] = None) -> dict:
                 raise FileNotFoundError("config.yaml not found")
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def get_page_refresh_config() -> Dict[str, int]:
+    """
+    获取页面刷新配置（从config.yaml）
+    返回：{
+        'auto_refresh_interval': 毫秒
+    }
+    """
+    try:
+        config = load_yaml_config()
+        page_refresh = config.get('page_refresh', {})
+        return {
+            'auto_refresh_interval': page_refresh.get('auto_refresh_interval', 60000)
+        }
+    except Exception as e:
+        # 返回默认值
+        import logging
+        logging.warning(f"Failed to load page_refresh config: {e}, using defaults")
+        return {
+            'auto_refresh_interval': 60000
+        }

@@ -931,6 +931,7 @@ class LanFund:
 
     def fund_html(self):
         result = self.search_code(True)
+        # 组装为表格形式
         return get_table_html(
             [
                 "基金代码", "基金名称", "当前时间", "净值", "估值", "日涨幅", "连涨/跌", "近30天"
