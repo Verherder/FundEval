@@ -9,6 +9,44 @@
         // Initialize Auto Colorize
         autoColorize();
 
+        // 基金表格“标记”列：点击五角星切换持有/取消持有（事件委托，动态内容也生效）
+        if (!window._fundHoldStarListenerAdded) {
+            window._fundHoldStarListenerAdded = true;
+            document.body.addEventListener('click', async function(e) {
+                const star = e.target.closest('.fund-hold-star');
+                if (!star) return;
+                e.preventDefault();
+                e.stopPropagation();
+
+                const code = star.dataset.code;
+                const currentlyHeld = star.dataset.hold === '1';
+                const newHold = !currentlyHeld;
+
+                // 简单防抖：请求期间禁用点击
+                if (star.dataset.loading === '1') return;
+                star.dataset.loading = '1';
+
+                try {
+                    const response = await fetch('/api/fund/hold', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ codes: code, hold: newHold })
+                    });
+                    const result = await response.json();
+                    if (result.success) {
+                        star.textContent = newHold ? '⭐' : '☆';
+                        star.dataset.hold = newHold ? '1' : '0';
+                    } else {
+                        alert(result.message || '操作失败');
+                    }
+                } catch (err) {
+                    alert('操作失败: ' + (err?.message || err));
+                } finally {
+                    star.dataset.loading = '0';
+                }
+            });
+        }
+
         // Legacy Sidebar Toggle (id="sidebar")
         // Used by /market, /market-indices, /precious-metals, /sectors pages
         // Note: /portfolio uses sidebarNav with sidebar-nav.js instead
@@ -1394,21 +1432,14 @@
                     throw new Error(tableData.message || '获取基金表格失败');
                 }
 
-                // 2. 替换基金表格内容（提取tbody）
+                // 2. 替换基金表格内容（整表 thead+tbody，保证持仓份额列与表头一致）
                 const newTableHTML = tableData.html;
                 const parser = new DOMParser();
                 const newTableDoc = parser.parseFromString(newTableHTML, 'text/html');
-                const newTableBody = newTableDoc.querySelector('tbody');
-                
-                if (newTableBody) {
-                    const currentTable = document.querySelector('.style-table');
-                    if (currentTable) {
-                        const currentTableBody = currentTable.querySelector('tbody');
-                        if (currentTableBody) {
-                            // 替换tbody内容
-                            currentTableBody.innerHTML = newTableBody.innerHTML;
-                        }
-                    }
+                const newTable = newTableDoc.querySelector('.style-table');
+                const currentTable = document.querySelector('.style-table');
+                if (newTable && currentTable) {
+                    currentTable.innerHTML = newTable.innerHTML;
                 }
 
                 // 3. 获取最新的份额数据

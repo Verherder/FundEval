@@ -564,7 +564,7 @@ class LanFund:
                     # 合并近30天涨跌和总涨幅
                     monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
                     self.result.append([
-                        fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, consecutive_info, monthly_info
+                        fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, netValueDate, consecutive_info, monthly_info
                     ])
                 else:
                     logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
@@ -931,13 +931,35 @@ class LanFund:
 
     def fund_html(self):
         result = self.search_code(True)
-        # 组装为表格形式
+        total = len(result)
+        hold_count = sum(1 for r in result if self.CACHE_MAP.get(r[0], {}).get("is_hold", False))
+        # 列：标记、基金代码、基金名称(共X个持有Y个)、估值、日涨幅、连涨/跌、近30天
+        titles = ["标记", "基金代码", f"基金名称 (共{total}个持有{hold_count}个)", "估值", "日涨幅", "连涨/跌", "近30天"]
+        rows = []
+        for row in result:
+            code = row[0]
+            is_hold = self.CACHE_MAP.get(code, {}).get("is_hold", False)
+            star_char = "⭐" if is_hold else "☆"
+            star_html = (
+                f'<span class="fund-hold-star" data-code="{code}" data-hold="{1 if is_hold else 0}" '
+                f'title="点击切换持有" style="cursor:pointer;user-select:none;">{star_char}</span>'
+            )
+            name = row[1]
+            if name.startswith("⭐ "):
+                name = name[2:]
+            now_time = row[2]
+            forecast_growth = row[4]
+            day_growth = row[5]
+            net_value_date = row[6]
+            consecutive_info = row[7]
+            monthly_info = row[8]
+            estimate_cell = f"{forecast_growth}<br><span style='font-size:11px;color:var(--text-dim)'>{now_time}</span>"
+            daygrowth_cell = f"{day_growth}<br><span style='font-size:11px;color:var(--text-dim)'>{net_value_date}</span>"
+            rows.append([star_html, code, name, estimate_cell, daygrowth_cell, consecutive_info, monthly_info])
         return get_table_html(
-            [
-                "基金代码", "基金名称", "当前时间", "净值", "估值", "日涨幅", "连涨/跌", "近30天"
-            ],
-            result,
-            sortable_columns=[4, 5, 6, 7]
+            titles,
+            rows,
+            sortable_columns=[3, 4, 5, 6],
         )
 
     @staticmethod

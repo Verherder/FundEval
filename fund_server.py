@@ -846,10 +846,10 @@ def api_portfolio_fund_table():
         user_id = get_current_user_id()
         importlib.reload(fund)
         my_fund = fund.LanFund(user_id=user_id, db=db)
-        
-        # 获取基金表格HTML
         fund_table_html = my_fund.fund_html()
-        
+        fund_map = db.get_user_funds(user_id)
+        shares_map = {code: data.get('shares', 0) for code, data in fund_map.items()}
+        fund_table_html = enhance_fund_tab_content(fund_table_html, shares_map)
         return jsonify({
             'success': True,
             'html': fund_table_html

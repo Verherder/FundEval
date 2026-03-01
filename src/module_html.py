@@ -143,24 +143,23 @@ def enhance_fund_tab_content(content, shares_map=None):
         </div>
     """
 
-    # 添加操作按钮面板
-    operations_panel = """
-        <div class="fund-operations">
-            <div class="operation-group">
-                <button class="btn btn-success" onclick="openFundSelectionModal('hold')">⭐ 标记持有</button>
-                <button class="btn btn-secondary" onclick="openFundSelectionModal('unhold')">☆ 取消持有</button>
+    # 操作区域：把板块/删除操作放到“添加”按钮后，并用 | 分隔
+    operations_panel = ""  # 兼容旧逻辑：不再单独渲染按钮面板
+
+    add_fund_area = """
+        <div class="add-fund-input" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <input type="text" id="fundCodesInput"
+                   placeholder="输入基金代码（逗号分隔，如：016858,007872）"
+                   style="flex: 1 1 260px; min-width: 200px;">
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <button class="btn btn-primary" onclick="addFunds()">添加</button>
+                <span style="opacity:0.6; user-select:none;">|</span>
                 <button class="btn btn-info" onclick="openFundSelectionModal('sector')">🏷️ 标注板块</button>
+                <span style="opacity:0.6; user-select:none;">|</span>
                 <button class="btn btn-warning" onclick="openFundSelectionModal('unsector')">🏷️ 删除板块</button>
+                <span style="opacity:0.6; user-select:none;">|</span>
                 <button class="btn btn-danger" onclick="openFundSelectionModal('delete')">🗑️ 删除基金</button>
             </div>
-        </div>
-    """
-
-    # 简化的添加基金输入框
-    add_fund_area = """
-        <div class="add-fund-input">
-            <input type="text" id="fundCodesInput" placeholder="输入基金代码（逗号分隔，如：016858,007872）">
-            <button class="btn btn-primary" onclick="addFunds()">添加</button>
         </div>
     """
 
@@ -2966,6 +2965,36 @@ def get_javascript_code():
                 }
             }
         );
+    }
+
+    // 表格中“标记”列五角星点击：切换持有/取消持有（事件委托，仅绑定一次）
+    if (!window._fundHoldStarListenerAdded) {
+        window._fundHoldStarListenerAdded = true;
+        document.body.addEventListener('click', async function(e) {
+            const star = e.target.closest('.fund-hold-star');
+            if (!star) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const code = star.dataset.code;
+            const currentlyHeld = star.dataset.hold === '1';
+            const newHold = !currentlyHeld;
+            try {
+                const response = await fetch('/api/fund/hold', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ codes: code, hold: newHold })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    star.textContent = newHold ? '⭐' : '☆';
+                    star.dataset.hold = newHold ? '1' : '0';
+                } else {
+                    alert(result.message);
+                }
+            } catch (err) {
+                alert('操作失败: ' + (err.message || err));
+            }
+        });
     }
 
     // 板块选择相关
