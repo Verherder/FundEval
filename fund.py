@@ -947,14 +947,23 @@ class LanFund:
             name = row[1]
             if name.startswith("⭐ "):
                 name = name[2:]
+            # 将板块标注（🏷️ ...）放到基金名称下一行
+            if "🏷️" in name and "<span" in name:
+                name = name.replace(" <span", "<br><span", 1)
             now_time = row[2]
             forecast_growth = row[4]
             day_growth = row[5]
             net_value_date = row[6]
             consecutive_info = row[7]
             monthly_info = row[8]
-            estimate_cell = f"{forecast_growth}<br><span style='font-size:11px;color:var(--text-dim)'>{now_time}</span>"
-            daygrowth_cell = f"{day_growth}<br><span style='font-size:11px;color:var(--text-dim)'>{net_value_date}</span>"
+            estimate_cell = (
+                f"{forecast_growth}"
+                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{now_time}</span>"
+            )
+            daygrowth_cell = (
+                f"{day_growth}"
+                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{net_value_date}</span>"
+            )
             rows.append([star_html, code, name, estimate_cell, daygrowth_cell, consecutive_info, monthly_info])
         return get_table_html(
             titles,

@@ -118,19 +118,19 @@
     padding: 10px 14px;
     border: 1px solid rgba(102, 126, 234, 0.2);
     border-radius: 6px;
-    background: rgba(22, 27, 34, 0.6);
-    color: #e6edf3;
+    background: #ffffff;
+    color: var(--gh-text-primary);
     font-size: 14px;
 }
 
 .add-fund-input input::placeholder {
-    color: #6e7681;
+    color: var(--gh-text-tertiary);
 }
 
 .add-fund-input input:focus {
     outline: none;
     border-color: #667eea;
-    background: rgba(22, 27, 34, 0.9);
+    background: #ffffff;
     box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
 }
 
@@ -234,36 +234,48 @@
 
 
 :root {
-            /* Dark Mode Purple Gradient Theme (LanFund 懒基金品牌色) */
-            --gh-bg-primary: #0d1117;
-            --gh-bg-secondary: #161b22;
-            --gh-bg-tertiary: #1c2128;
-            --gh-border-primary: #30363d;
-            --gh-border-secondary: #21262d;
-            --gh-border-tertiary: #373e47;
-            --gh-text-primary: #e6edf3;
-            --gh-text-secondary: #8b949e;
-            --gh-text-tertiary: #6e7681;
-            /* Purple Gradient Brand Colors (matching login page) */
+            /* Light Theme (白底黑字) */
+            --gh-bg-primary: #ffffff;    /* 卡片/表格背景 */
+            --gh-bg-secondary: #ffffff;  /* 页面背景 */
+            --gh-bg-tertiary: #f6f8fa;   /* 次级区域背景 */
+            --gh-border-primary: #d0d7de;
+            --gh-border-secondary: #d8dee4;
+            --gh-border-tertiary: #eaeef2;
+            --gh-text-primary: #1f2328;
+            --gh-text-secondary: #374151;  /* 比主体略浅的深灰 */
+            --gh-text-tertiary: #4b5563;
+
+            /* Purple Gradient Brand Colors (保持品牌色) */
             --gh-accent-fg: #667eea;
             --gh-accent-secondary: #764ba2;
-            --gh-accent-bg: #1a1535;
-            --gh-success-fg: #3fb950;
-            --gh-success-bg: #0d2818;
-            --gh-danger-fg: #f85149;
-            --gh-danger-bg: #2d1519;
+            --gh-accent-bg: #eef2ff;
+            --gh-success-fg: #1a7f37;
+            --gh-success-bg: #dafbe1;
+            --gh-danger-fg: #d1242f;
+            --gh-danger-bg: #ffebe9;
             --gh-btn-primary-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             --gh-btn-primary-hover-bg: linear-gradient(135deg, #7c8ef0 0%, #8a5bb0 100%);
             --gh-btn-primary-text: #ffffff;
-            --gh-btn-secondary-bg: #21262d;
-            --gh-btn-secondary-hover-bg: #30363d;
-            --gh-btn-secondary-text: #e6edf3;
-            --gh-btn-danger-bg: #2d1519;
-            --gh-btn-danger-hover-bg: #3d1f23;
-            --gh-btn-danger-text: #f85149;
-            --gh-header-bg: #010409;
-            --gh-header-text: #e6edf3;
-            --gh-header-border: #21262d;
+            --gh-btn-secondary-bg: #f6f8fa;
+            --gh-btn-secondary-hover-bg: #eef2f7;
+            --gh-btn-secondary-text: #1f2328;
+            --gh-btn-danger-bg: #ffebe9;
+            --gh-btn-danger-hover-bg: #ffd7d5;
+            --gh-btn-danger-text: #d1242f;
+            --gh-header-bg: #ffffff;
+            --gh-header-text: #1f2328;
+            --gh-header-border: #d0d7de;
+
+            /* Legacy/inline variables used elsewhere */
+            --card-bg: var(--gh-bg-primary);
+            --border: var(--gh-border-primary);
+            --text-main: var(--gh-text-primary);
+            --text-dim: var(--gh-text-secondary);
+            --text-muted: var(--gh-text-tertiary);
+            --hover-bg: #eef2f7;
+            --text-primary: var(--gh-text-primary);
+            --text-secondary: var(--gh-text-secondary);
+
             /* Financial Colors (中国习惯：红涨绿跌) */
             --up-color: #ff4d4f;
             --down-color: #52c41a;
@@ -420,6 +432,14 @@
             font-weight: 400;
             text-align: center;
             vertical-align: middle;
+        }
+
+        /* 强调数值列：估值 / 日涨幅 / 连涨/跌 / 近30天 */
+        .style-table td:nth-child(4),
+        .style-table td:nth-child(5),
+        .style-table td:nth-child(6),
+        .style-table td:nth-child(7) {
+            font-weight: 600;
         }
 
         .style-table tbody tr:hover {

@@ -6,5 +6,6 @@ __pycache__/
 .env
 .claude
 CLAUDE.md
+*.DS_Store
 cache/fund_data.db
 dist/

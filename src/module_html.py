@@ -1133,14 +1133,14 @@ def get_css_style():
     return r"""
     <style>
         :root {
-            /* Professional Trading Terminal Theme */
-            --terminal-bg: #0b0e14;
-            --card-bg: #151921;
-            --border: #2d343f;
+            /* Light Theme (白底黑字) */
+            --terminal-bg: #ffffff;
+            --card-bg: #ffffff;
+            --border: #e5e7eb;
             --accent: #3b82f6;
-            --text-main: #f1f5f9;
-            --text-dim: #94a3b8;
-            --text-muted: #64748b;
+            --text-main: #111827;
+            --text-dim: #6b7280;
+            --text-muted: #9ca3af;
             --up: #ef4444;    /* 专业红 */
             --down: #10b981;  /* 专业绿 */
             --font-mono: 'JetBrains Mono', 'Courier New', Consolas, monospace;
