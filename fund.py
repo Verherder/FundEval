@@ -950,6 +950,11 @@ class LanFund:
             # 将板块标注（🏷️ ...）放到基金名称下一行
             if "🏷️" in name and "<span" in name:
                 name = name.replace(" <span", "<br><span", 1)
+            # 让基金名称可点击以展开/收起行内趋势图
+            name_cell = (
+                f'<span class="fund-name-cell" data-code="{code}" '
+                f'style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">{name}</span>'
+            )
             now_time = row[2]
             forecast_growth = row[4]
             day_growth = row[5]
@@ -964,7 +969,7 @@ class LanFund:
                 f"{day_growth}"
                 f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{net_value_date}</span>"
             )
-            rows.append([star_html, code, name, estimate_cell, daygrowth_cell, consecutive_info, monthly_info])
+            rows.append([star_html, code, name_cell, estimate_cell, daygrowth_cell, consecutive_info, monthly_info])
         return get_table_html(
             titles,
             rows,

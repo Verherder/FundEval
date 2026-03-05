@@ -4028,25 +4028,6 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 </p>
             </div>
 
-            <!-- 基金估值趋势图 -->
-            <div id="fundChartContainer" class="chart-card" style="background-color: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 20px;">
-                <div class="chart-card-header" style="padding: 12px 15px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
-                    <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
-                        <h3 id="fundChartTitle" style="margin: 0; font-size: 1rem; color: var(--text-main); flex-shrink: 0;">📈 基金估值</h3>
-                        <div class="fund-selector-wrapper" id="fundSelectorWrapper" style="flex: 1; min-width: 280px; max-width: 100%;">
-                            <input type="text" id="fundSelector" list="fundList" placeholder="选择或搜索基金代码/名称..." autocomplete="off">
-                            <span id="fundSelectorClear" class="input-clear-btn">✕</span>
-                            <datalist id="fundList">
-                                <!-- 动态填充基金选项 -->
-                            </datalist>
-                        </div>
-                    </div>
-                </div>
-                <div class="chart-card-content" style="padding: 15px; height: 300px;">
-                    <canvas id="fundChart"></canvas>
-                </div>
-            </div>
-
             <!-- 基金内容 -->
             <div class="fund-content">
                 {fund_content}
@@ -4400,31 +4381,176 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             }});
         }}
 
-        async function loadFundChartData(fundCode) {{
-            try {{
-                const response = await fetch('/api/fund/chart-data?code=' + fundCode);
-                const data = await response.json();
+        // ==================== 行内基金估值图：供 main.js 调用 ====================
+        window.currentFundChartCode = null;
+        window.fundRowChartInstance = null;
 
-                // 更新全局数据
-                fundChartData = data.chart_data;
-
-                // 重新渲染图表
-                const canvas = document.getElementById('fundChart');
-                if (window.fundChartInstance) {{
-                    window.fundChartInstance.destroy();
-                }}
-                initFundChart();
-
-                // 保存用户偏好
-                await fetch('/api/fund/chart-default', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ fund_code: fundCode }})
-                }});
-            }} catch (error) {{
-                console.error('Failed to load fund chart data:', error);
+        async function loadFundChartDataInline(fundCode) {{
+            const response = await fetch('/api/fund/chart-data?code=' + fundCode);
+            if (!response.ok) {{
+                throw new Error('Failed to fetch chart data');
             }}
+            const data = await response.json();
+            return data.chart_data;
         }}
+
+        function renderFundRowChart(canvas, chartData) {{
+            const growthData = chartData.growth || [];
+            const netValues = chartData.net_values || [];
+            const lastGrowth = growthData.length > 0 ? growthData[growthData.length - 1] : 0;
+            const lastNetValue = netValues.length > 0 ? netValues[netValues.length - 1] : 0;
+
+            if (window.fundRowChartInstance) {{
+                window.fundRowChartInstance.destroy();
+            }}
+
+            window.fundRowChartInstance = new Chart(canvas.getContext('2d'), {{
+                type: 'line',
+                data: {{
+                    labels: chartData.labels || [],
+                    datasets: [{{
+                        label: '涨幅 (%)',
+                        data: growthData,
+                        borderColor: function(context) {{
+                            const index = context.dataIndex;
+                            if (index === undefined || index < 0) return '#9ca3af';
+                            const pct = growthData[index];
+                            return pct > 0 ? '#f44336' : (pct < 0 ? '#4caf50' : '#9ca3af');
+                        }},
+                        segment: {{
+                            borderColor: function(context) {{
+                                const pct = growthData[context.p1DataIndex];
+                                return pct > 0 ? '#f44336' : (pct < 0 ? '#4caf50' : '#9ca3af');
+                            }}
+                        }},
+                        backgroundColor: function(context) {{
+                            const chart = context.chart;
+                            const {{ctx, chartArea}} = chart;
+                            if (!chartArea) return null;
+                            const lastPct = growthData[growthData.length - 1] || 0;
+                            const color = lastPct >= 0 ? '244, 67, 54' : '76, 175, 80';
+                            const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+                            gradient.addColorStop(0, 'rgba(' + color + ', 0.2)');
+                            gradient.addColorStop(1, 'rgba(' + color + ', 0.0)');
+                            return gradient;
+                        }},
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 0,
+                        pointHoverRadius: 4,
+                        borderWidth: 2
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {{
+                        mode: 'index',
+                        intersect: false,
+                    }},
+                    plugins: {{
+                        legend: {{ display: false }},
+                        tooltip: {{
+                            callbacks: {{
+                                title: function(context) {{
+                                    return '时间: ' + context[0].label;
+                                }},
+                                label: function(context) {{
+                                    const index = context.dataIndex;
+                                    const growth = growthData[index];
+                                    const netValue = netValues[index];
+                                    return [
+                                        '涨幅: ' + (growth >= 0 ? '+' : '') + growth.toFixed(2) + '%',
+                                        '净值: ' + netValue.toFixed(4)
+                                    ];
+                                }}
+                            }}
+                        }}
+                    }},
+                    scales: {{
+                        x: {{
+                            ticks: {{
+                                color: '#9ca3af',
+                                font: {{ size: 10 }},
+                                maxTicksLimit: 6
+                            }},
+                            grid: {{
+                                color: 'rgba(148, 163, 184, 0.2)'
+                            }}
+                        }},
+                        y: {{
+                            title: {{
+                                display: true,
+                                text: '涨幅 (%)',
+                                color: '#9ca3af',
+                                font: {{ size: 11 }}
+                            }},
+                            ticks: {{
+                                color: '#9ca3af',
+                                callback: function(value) {{
+                                    return (value >= 0 ? '+' : '') + value.toFixed(2) + '%';
+                                }}
+                            }},
+                            grid: {{
+                                color: 'rgba(148, 163, 184, 0.2)'
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+        }}
+
+        window.toggleFundRowChart = async function(fundCode) {{
+            try {{
+                const tableBody = document.querySelector('.style-table tbody');
+                if (!tableBody) return;
+
+                // 如果当前已展开的是同一只基金，则收起
+                if (window.currentFundChartCode === fundCode) {{
+                    const existingRow = tableBody.querySelector('tr.fund-chart-row');
+                    if (existingRow) existingRow.remove();
+                    window.currentFundChartCode = null;
+                    if (window.fundRowChartInstance) {{
+                        window.fundRowChartInstance.destroy();
+                        window.fundRowChartInstance = null;
+                    }}
+                    return;
+                }}
+
+                // 收起之前的行
+                const oldRow = tableBody.querySelector('tr.fund-chart-row');
+                if (oldRow) oldRow.remove();
+
+                // 找到目标基金所在行（第二列是基金代码）
+                const rows = Array.from(tableBody.querySelectorAll('tr'));
+                const targetRow = rows.find(r => {{
+                    const codeCell = r.cells[1];
+                    return codeCell && codeCell.textContent.trim() === fundCode;
+                }});
+                if (!targetRow) return;
+
+                const colCount = targetRow.cells.length;
+                const chartRow = document.createElement('tr');
+                chartRow.className = 'fund-chart-row';
+                const chartCell = document.createElement('td');
+                chartCell.colSpan = colCount;
+                chartCell.innerHTML = `
+                    <div class="inline-fund-chart" style="height:260px; padding: 10px 20px;">
+                        <canvas></canvas>
+                    </div>
+                `;
+                chartRow.appendChild(chartCell);
+                targetRow.parentNode.insertBefore(chartRow, targetRow.nextSibling);
+
+                const canvas = chartCell.querySelector('canvas');
+                const chartData = await loadFundChartDataInline(fundCode);
+                renderFundRowChart(canvas, chartData);
+
+                window.currentFundChartCode = fundCode;
+            }} catch (e) {{
+                console.error('toggleFundRowChart error:', e);
+            }}
+        }};
     </script>
 </body>
 </html>'''.format(css_style=css_style, username_display=username_display, fund_content=fund_content, fund_chart_data_json=fund_chart_data_json, fund_chart_info_json=fund_chart_info_json)
