@@ -140,9 +140,31 @@ function autoColorize() {
     // Use requestAnimationFrame to ensure DOM is updated
     requestAnimationFrame(() => {
         const cells = document.querySelectorAll('.style-table td');
+
+        const extractSignedNumber = (text) => {
+            // 优先提取百分号前的最后一个数字（适配“3/20 -1.23%”）
+            const pctMatches = [...text.matchAll(/([+-]?\d+(?:\.\d+)?)\s*%/g)];
+            if (pctMatches.length > 0) {
+                return parseFloat(pctMatches[pctMatches.length - 1][1]);
+            }
+
+            // 再提取文本中的最后一个带符号数字
+            const signedMatches = text.match(/[+-]?\d+(?:\.\d+)?/g);
+            if (signedMatches && signedMatches.length > 0) {
+                return parseFloat(signedMatches[signedMatches.length - 1]);
+            }
+
+            return NaN;
+        };
+
         cells.forEach(cell => {
             // Clear existing color classes first
             cell.classList.remove('positive', 'negative');
+
+            // 跳过基金名称列（如 A100 等名称中的数字不应触发着色）
+            if (cell.querySelector('.fund-name-cell')) {
+                return;
+            }
 
             const text = cell.textContent.trim();
 
@@ -160,25 +182,19 @@ function autoColorize() {
                 return;
             }
 
-            // Check for percentage format (including cases like +0.15% or -0.15%)
-            if (text.includes('%')) {
-                const cleanText = text.replace(/[%,亿万手]/g, '');
-                const val = parseFloat(cleanText);
-
-                if (!isNaN(val)) {
-                    if (val < 0 || text.startsWith('-')) {
-                        cell.classList.add('negative');  // Green for negative
-                    } else if (val > 0 || text.startsWith('+')) {
-                        cell.classList.add('positive');   // Red for positive
-                    }
-                    // val === 0 gets no color (neutral)
-                }
+            // 仅对“像涨跌值”的文本进行着色，避免普通名称中的数字被误判
+            const hasFinancialHint = text.includes('%') || /^[+-]/.test(text) || /[+-]\d/.test(text);
+            if (!hasFinancialHint) {
+                return;
             }
-            // Check for values starting with + or - (not percentages)
-            else if (text.startsWith('+')) {
-                cell.classList.add('positive');
-            } else if (text.startsWith('-')) {
-                cell.classList.add('negative');
+
+            const val = extractSignedNumber(text);
+            if (!isNaN(val)) {
+                if (val < 0) {
+                    cell.classList.add('negative');  // Green for negative
+                } else if (val > 0) {
+                    cell.classList.add('positive');   // Red for positive
+                }
             }
         });
     });

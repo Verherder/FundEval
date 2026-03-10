@@ -562,7 +562,14 @@ class LanFund:
                     # 合并连涨天数和连涨幅
                     consecutive_info = f"{consecutive_count}天 {consecutive_growth}"
                     # 合并近30天涨跌和总涨幅
-                    monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
+                    if is_return:
+                        rate_color = "var(--down-color)" if "-" in montly_growth_rate else "var(--up-color)"
+                        monthly_info = (
+                            f"<span style='color: var(--up-color) !important; font-weight: 600;'>{montly_growth_day}/{montly_growth_day_count}</span> "
+                            f"<span style='color: {rate_color} !important; font-weight: 600;'>{montly_growth_rate}</span>"
+                        )
+                    else:
+                        monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
                     self.result.append([
                         fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, netValueDate, consecutive_info, monthly_info
                     ])

@@ -4098,21 +4098,47 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
         document.addEventListener('DOMContentLoaded', function() {{
             // 自动颜色化
             const cells = document.querySelectorAll('.style-table td');
+            const extractSignedNumber = (text) => {{
+                // 优先提取百分号前的最后一个数字（适配“3/20 -1.23%”）
+                const pctMatches = [...text.matchAll(/([+-]?\\d+(?:\\.\\d+)?)\\s*%/g)];
+                if (pctMatches.length > 0) {{
+                    return parseFloat(pctMatches[pctMatches.length - 1][1]);
+                }}
+
+                // 其次提取文本中最后一个带符号数字
+                const signedMatches = text.match(/[+-]?\\d+(?:\\.\\d+)?/g);
+                if (signedMatches && signedMatches.length > 0) {{
+                    return parseFloat(signedMatches[signedMatches.length - 1]);
+                }}
+
+                return NaN;
+            }};
+
             cells.forEach(cell => {{
+                cell.classList.remove('positive', 'negative');
+
+                // 跳过基金名称列（如 A100 等名称中的数字不应触发着色）
+                if (cell.querySelector('.fund-name-cell')) {{
+                    return;
+                }}
+
                 const text = cell.textContent.trim();
-                const cleanText = text.replace(/[%,亿万手]/g, '');
-                const val = parseFloat(cleanText);
+                if (!text || text === '-' || text === 'N/A' || text === '---') {{
+                    return;
+                }}
+
+                // 仅对“像涨跌值”的文本进行着色，避免普通名称中的数字被误判
+                const hasFinancialHint = text.includes('%') || /^[+-]/.test(text) || /[+-]\\d/.test(text);
+                if (!hasFinancialHint) {{
+                    return;
+                }}
+
+                const val = extractSignedNumber(text);
 
                 if (!isNaN(val)) {{
-                    if (text.includes('%') || text.includes('涨跌')) {{
-                        if (text.includes('-')) {{
-                            cell.classList.add('negative');
-                        }} else if (val > 0) {{
-                            cell.classList.add('positive');
-                        }}
-                    }} else if (text.startsWith('-')) {{
+                    if (val < 0) {{
                         cell.classList.add('negative');
-                    }} else if (text.startsWith('+')) {{
+                    }} else if (val > 0) {{
                         cell.classList.add('positive');
                     }}
                 }}
@@ -4189,11 +4215,11 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             const extractFundCode = (input) => {{
                 const trimmed = input.trim();
                 // 如果直接是基金代码（6位数字）
-                if (/^\d{{6}}$/.test(trimmed)) {{
+                if (/^\\d{{6}}$/.test(trimmed)) {{
                     return trimmed;
                 }}
                 // 如果是"code - name"格式，提取code部分
-                const match = trimmed.match(/^(\d{{6}})\s*-\s*/);
+                const match = trimmed.match(/^(\\d{{6}})\\s*-\\s*/);
                 if (match) {{
                     return match[1];
                 }}
@@ -4400,6 +4426,14 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             const lastGrowth = growthData.length > 0 ? growthData[growthData.length - 1] : 0;
             const lastNetValue = netValues.length > 0 ? netValues[netValues.length - 1] : 0;
 
+            if (!chartData.labels || chartData.labels.length === 0) {{
+                const wrapper = canvas.closest('.inline-fund-chart');
+                if (wrapper) {{
+                    wrapper.innerHTML = '<div style="height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:13px;">暂无可用估值波形数据</div>';
+                }}
+                return;
+            }}
+
             if (window.fundRowChartInstance) {{
                 window.fundRowChartInstance.destroy();
             }}
@@ -4522,11 +4556,8 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 if (oldRow) oldRow.remove();
 
                 // 找到目标基金所在行（第二列是基金代码）
-                const rows = Array.from(tableBody.querySelectorAll('tr'));
-                const targetRow = rows.find(r => {{
-                    const codeCell = r.cells[1];
-                    return codeCell && codeCell.textContent.trim() === fundCode;
-                }});
+                const nameCell = tableBody.querySelector(`.fund-name-cell[data-code="${{fundCode}}"]`);
+                const targetRow = nameCell ? nameCell.closest('tr') : null;
                 if (!targetRow) return;
 
                 const colCount = targetRow.cells.length;
