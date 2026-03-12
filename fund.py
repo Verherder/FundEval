@@ -104,6 +104,7 @@ class LanFund:
         self._csrf = ""
         self.report_dir = None  # 默认不输出报告文件（需通过 -o 参数指定）
         self.result = []
+        self._cache_dirty = False
         
         # 加载缓存数据，外部接口失败时不影响基础功能
         self.load_cache()
@@ -536,6 +537,25 @@ class LanFund:
                             "%H:%M"
                         )
                         forecastGrowth = str(round(float(fund_info["forecastGrowth"]) * 100, 2)) + "%"
+
+                        # 记录“当日估值涨幅”历史（仅当估值更新时间为15:00时入库），用于后续与对应净值日的实际涨幅比较
+                        try:
+                            quote_dt = datetime.datetime.fromtimestamp(fund_info["time"] / 1000)
+                            is_final_quote = (quote_dt.hour == 15 and quote_dt.minute == 0)
+
+                            if is_final_quote:
+                                today_key = quote_dt.strftime("%Y-%m-%d")
+                                estimate_val = round(float(fund_info["forecastGrowth"]) * 100, 2)
+                                fund_cache = self.CACHE_MAP.get(fund, {})
+                                current_history = fund_cache.get("estimate_history", {})
+                                new_history = {today_key: estimate_val}
+                                # 覆盖旧数据：仅保留当天一条最终快照
+                                if current_history != new_history:
+                                    fund_cache["estimate_history"] = new_history
+                                    self._cache_dirty = True
+                        except Exception:
+                            pass
+
                         if not is_return:
                             if "-" in forecastGrowth:
                                 forecastGrowth = "\033[1;32m" + forecastGrowth
@@ -670,6 +690,7 @@ class LanFund:
         }
 
     def search_code(self, is_return=False):
+        self._cache_dirty = False
         self.result = []
         threads = []
         for fund, fund_data in self.CACHE_MAP.items():
@@ -680,6 +701,10 @@ class LanFund:
             t.start()
         for t in threads:
             t.join()
+
+        if self._cache_dirty:
+            self.save_cache()
+            self._cache_dirty = False
 
         if is_return:
             self.result = sorted(
@@ -938,6 +963,17 @@ class LanFund:
 
     def fund_html(self):
         result = self.search_code(True)
+
+        def parse_growth_percent(value):
+            if value in (None, "", "N/A", "--", "---"):
+                return None
+            match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value))
+            return float(match.group()) if match else None
+
+        def format_diff_value(value):
+            text = f"{value:.2f}".rstrip("0").rstrip(".")
+            return "0" if text in ("", "-0", "+0") else text
+
         total = len(result)
         hold_count = sum(1 for r in result if self.CACHE_MAP.get(r[0], {}).get("is_hold", False))
         # 列：标记、基金代码、基金名称(共X个持有Y个)、估值、日涨幅、连涨/跌、近30天
@@ -972,9 +1008,39 @@ class LanFund:
                 f"{forecast_growth}"
                 f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{now_time}</span>"
             )
+
+            day_growth_val = parse_growth_percent(day_growth)
+            date_extra = ""
+
+            # 显示日期时统一短格式（YYYY-MM-DD -> MM-DD）
+            display_net_value_date = net_value_date
+            if isinstance(net_value_date, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", net_value_date):
+                display_net_value_date = net_value_date[5:]
+
+            # 仅当“净值日期对应的历史估值”存在时，才计算差值，避免拿今天估值去减旧净值日涨幅
+            fund_cache = self.CACHE_MAP.get(code, {})
+            estimate_history = fund_cache.get("estimate_history", {}) if isinstance(fund_cache, dict) else {}
+            history_estimate_val = None
+            if isinstance(net_value_date, str):
+                lookup_keys = [net_value_date]
+                if re.match(r"^\d{4}-\d{2}-\d{2}$", net_value_date):
+                    lookup_keys.append(net_value_date[5:])
+                elif re.match(r"^\d{2}-\d{2}$", net_value_date):
+                    current_year = datetime.datetime.now().year
+                    lookup_keys.append(f"{current_year}-{net_value_date}")
+
+                for key in lookup_keys:
+                    if key in estimate_history:
+                        history_estimate_val = estimate_history.get(key)
+                        break
+
+            if history_estimate_val is not None and day_growth_val is not None:
+                growth_diff = float(history_estimate_val) - day_growth_val
+                date_extra = f", {format_diff_value(growth_diff)}"
+
             daygrowth_cell = (
                 f"{day_growth}"
-                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{net_value_date}</span>"
+                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{display_net_value_date}{date_extra}</span>"
             )
             rows.append([star_html, code, name_cell, estimate_cell, daygrowth_cell, consecutive_info, monthly_info])
         return get_table_html(

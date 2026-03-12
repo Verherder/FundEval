@@ -83,6 +83,10 @@ class Database:
                            0,
                            sectors
                            TEXT,
+                           estimate_history
+                           TEXT
+                           DEFAULT
+                           '{}',
                            FOREIGN
                            KEY
                        (
@@ -109,6 +113,15 @@ class Database:
             except Exception as e:
                 if "duplicate column" not in str(e).lower():
                     logger.warning(f"Failed to add chart_default column: {e}")
+
+        # 检查并添加estimate_history字段
+        if 'estimate_history' not in columns:
+            try:
+                cursor.execute("ALTER TABLE user_funds ADD COLUMN estimate_history TEXT DEFAULT '{}'")
+                logger.debug("Added estimate_history column to user_funds table")
+            except Exception as e:
+                if "duplicate column" not in str(e).lower():
+                    logger.warning(f"Failed to add estimate_history column: {e}")
 
         conn.commit()
         conn.close()
@@ -215,6 +228,7 @@ class Database:
             for row in rows:
                 fund_code = row['fund_code']
                 sectors = json.loads(row['sectors']) if row['sectors'] else []
+                estimate_history = json.loads(row['estimate_history']) if row['estimate_history'] else {}
 
                 fund_map[fund_code] = {
                     'fund_key': row['fund_key'],
@@ -222,6 +236,7 @@ class Database:
                     'is_hold': bool(row['is_hold']),
                     'shares': float(row['shares']) if row['shares'] else 0,
                     'sectors': sectors,  # 始终包含 sectors 字段
+                    'estimate_history': estimate_history,
                 }
 
             return fund_map
@@ -247,11 +262,12 @@ class Database:
             # 插入新的基金数据
             for fund_code, fund_data in fund_map.items():
                 sectors_json = json.dumps(fund_data.get('sectors', []), ensure_ascii=False)
+                estimate_history_json = json.dumps(fund_data.get('estimate_history', {}), ensure_ascii=False)
 
                 cursor.execute('''
                                INSERT INTO user_funds
-                                   (user_id, fund_code, fund_key, fund_name, is_hold, shares, sectors)
-                               VALUES (?, ?, ?, ?, ?, ?, ?)
+                                   (user_id, fund_code, fund_key, fund_name, is_hold, shares, sectors, estimate_history)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                ''', (
                                    user_id,
                                    fund_code,
@@ -259,7 +275,8 @@ class Database:
                                    fund_data['fund_name'],
                                    1 if fund_data.get('is_hold', False) else 0,
                                    fund_data.get('shares', 0),
-                                   sectors_json
+                                   sectors_json,
+                                   estimate_history_json
                                ))
 
             conn.commit()
@@ -317,8 +334,8 @@ class Database:
 
             cursor.execute('''
                 INSERT OR REPLACE INTO user_funds
-                (user_id, fund_code, fund_key, fund_name, is_hold, shares, sectors)
-                VALUES (?, ?, ?, ?, 0, 0, '[]')
+                (user_id, fund_code, fund_key, fund_name, is_hold, shares, sectors, estimate_history)
+                VALUES (?, ?, ?, ?, 0, 0, '[]', '{}')
             ''', (user_id, fund_code, fund_key, fund_name))
 
             conn.commit()
