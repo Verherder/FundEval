@@ -14,8 +14,9 @@ document.addEventListener('DOMContentLoaded', function() {
         window._fundHoldStarListenerAdded = true;
         document.body.addEventListener('click', async function(e) {
             const star = e.target.closest('.fund-hold-star');
-            const nameCell = !star ? e.target.closest('.fund-name-cell') : null;
-            if (!star && !nameCell) return;
+            const codeCell = !star ? e.target.closest('.fund-code-cell') : null;
+            const nameCell = !star && !codeCell ? e.target.closest('.fund-name-cell') : null;
+            if (!star && !codeCell && !nameCell) return;
             e.preventDefault();
             e.stopPropagation();
 
@@ -47,6 +48,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 } finally {
                     star.dataset.loading = '0';
                 }
+                return;
+            }
+
+            // 基金编码点击：展开/收起当前行的业绩曲线
+            if (codeCell && window.toggleFundRowChart) {
+                const code = codeCell.dataset.code;
+                window.toggleFundRowChart(code, 'performance', 'ONE_YEAR');
                 return;
             }
 
@@ -1536,10 +1544,15 @@ document.addEventListener('DOMContentLoaded', function() {
             }
 
             // 如果之前有展开的趋势图，刷新后自动还原
-            if (window.currentFundChartCode && window.toggleFundRowChart) {
-                const code = window.currentFundChartCode;
-                window.currentFundChartCode = null;
-                window.toggleFundRowChart(code);
+            if (window.currentFundChartState && window.toggleFundRowChart) {
+                const chartState = { ...window.currentFundChartState };
+                window.currentFundChartState = null;
+                window.toggleFundRowChart(
+                    chartState.code,
+                    chartState.type,
+                    chartState.interval || 'ONE_YEAR',
+                    { forceOpen: true }
+                );
             }
 
             // 4. 重新计算持仓统计（会自动使用新的表格数据 + 最新份额）

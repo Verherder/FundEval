@@ -21,6 +21,14 @@ from src.database import Database
 from src.module_html import enhance_fund_tab_content
 from src.yaml_config import get_page_refresh_config
 
+PERFORMANCE_CHART_INTERVALS = {
+    "ONE_MONTH",
+    "THREE_MONTH",
+    "SIX_MONTH",
+    "ONE_YEAR",
+    "THREE_YEAR",
+}
+
 # 加载环境变量
 load_dotenv()
 
@@ -963,6 +971,42 @@ def api_fund_chart_data():
     importlib.reload(fund)
     my_fund = fund.LanFund(user_id=user_id, db=db)
     chart_data = my_fund.get_fund_chart_data(fund_code, fund_data)
+
+    return jsonify({
+        'chart_data': chart_data,
+        'fund_info': {
+            'code': fund_code,
+            'name': fund_data['fund_name']
+        }
+    })
+
+
+@app.route('/api/fund/performance-chart-data')
+@login_required
+def api_fund_performance_chart_data():
+    """获取基金业绩曲线数据。"""
+    fund_code = request.args.get('code')
+    date_interval = request.args.get('interval', 'ONE_YEAR').strip().upper()
+    if not fund_code:
+        return jsonify({'error': 'Missing fund code'}), 400
+
+    if date_interval not in PERFORMANCE_CHART_INTERVALS:
+        return jsonify({'error': 'Invalid interval'}), 400
+
+    user_id = get_current_user_id()
+    user_funds = db.get_user_funds(user_id)
+
+    if fund_code not in user_funds:
+        return jsonify({'error': 'Fund not in user list'}), 400
+
+    fund_data = {
+        'fund_key': user_funds[fund_code]['fund_key'],
+        'fund_name': user_funds[fund_code]['fund_name']
+    }
+
+    importlib.reload(fund)
+    my_fund = fund.LanFund(user_id=user_id, db=db)
+    chart_data = my_fund.get_fund_performance_chart_data(fund_code, fund_data, date_interval)
 
     return jsonify({
         'chart_data': chart_data,

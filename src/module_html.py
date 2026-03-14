@@ -173,7 +173,7 @@ def enhance_fund_tab_content(content, shares_map=None):
     def add_shares_to_row(match):
         row_content = match.group(0)
         # 从行内容中提取第一个6位数字（基金代码）- 假设第一列是基金代码
-        code_match = re.search(r'<td[^>]*>(\d{6})</td>', row_content)
+        code_match = re.search(r'data-code="(\d{6})"', row_content) or re.search(r'<td[^>]*>(\d{6})</td>', row_content)
         if code_match:
             fund_code = code_match.group(1)
 
@@ -4330,6 +4330,9 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 options: {{
                     responsive: true,
                     maintainAspectRatio: false,
+                    layout: {{
+                        padding: isPerformanceChart ? {{ left: 8, right: 20 }} : {{ left: 0, right: 0 }}
+                    }},
                     interaction: {{
                         mode: 'index',
                         intersect: false,
@@ -4407,12 +4410,24 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             }});
         }}
 
-        // ==================== 行内基金估值图：供 main.js 调用 ====================
-        window.currentFundChartCode = null;
+        // ==================== 行内基金图：供 main.js 调用 ====================
+        const FUND_PERFORMANCE_INTERVAL_OPTIONS = [
+            ["ONE_MONTH", "近1月"],
+            ["THREE_MONTH", "近3月"],
+            ["SIX_MONTH", "近6月"],
+            ["ONE_YEAR", "近1年"],
+            ["THREE_YEAR", "近3年"]
+        ];
+
+        window.currentFundChartState = null;
         window.fundRowChartInstance = null;
 
-        async function loadFundChartDataInline(fundCode) {{
-            const response = await fetch('/api/fund/chart-data?code=' + fundCode);
+        async function loadFundChartDataInline(fundCode, chartType = 'estimate', interval = 'ONE_YEAR') {{
+            const url = chartType === 'performance'
+                ? '/api/fund/performance-chart-data?code=' + encodeURIComponent(fundCode) + '&interval=' + encodeURIComponent(interval)
+                : '/api/fund/chart-data?code=' + encodeURIComponent(fundCode);
+
+            const response = await fetch(url);
             if (!response.ok) {{
                 throw new Error('Failed to fetch chart data');
             }}
@@ -4420,16 +4435,49 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             return data.chart_data;
         }}
 
-        function renderFundRowChart(canvas, chartData) {{
+        function buildFundChartRowContent(chartType, fundCode, interval) {{
+            if (chartType !== 'performance') {{
+                return `
+                    <div class="inline-fund-chart" style="height:260px; padding: 10px 20px;">
+                        <canvas></canvas>
+                    </div>
+                `;
+            }}
+
+            const buttonsHtml = FUND_PERFORMANCE_INTERVAL_OPTIONS.map(([value, label]) => `
+                <button
+                    type="button"
+                    class="fund-performance-range-btn${{value === interval ? ' active' : ''}}"
+                    data-code="${{fundCode}}"
+                    data-interval="${{value}}"
+                    style="padding:4px 10px;border-radius:999px;border:1px solid ${{value === interval ? 'var(--accent)' : 'var(--border)'}};background:${{value === interval ? 'rgba(59,130,246,0.16)' : 'transparent'}};color:${{value === interval ? 'var(--accent)' : 'var(--text-dim)'}};cursor:pointer;font-size:12px;">
+                    ${{label}}
+                </button>
+            `).join('');
+
+            return `
+                <div class="inline-fund-chart" style="padding: 10px 20px;">
+                    <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
+                        <div></div>
+                        <div style="font-size:13px;font-weight:600;color:var(--text-main);text-align:center;">📈 基金业绩曲线</div>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-self:end;">${{buttonsHtml}}</div>
+                    </div>
+                    <div style="height:260px;">
+                        <canvas></canvas>
+                    </div>
+                </div>
+            `;
+        }}
+
+        function renderFundRowChart(canvas, chartData, chartType = 'estimate') {{
             const growthData = chartData.growth || [];
             const netValues = chartData.net_values || [];
-            const lastGrowth = growthData.length > 0 ? growthData[growthData.length - 1] : 0;
-            const lastNetValue = netValues.length > 0 ? netValues[netValues.length - 1] : 0;
+            const isPerformanceChart = chartType === 'performance';
 
             if (!chartData.labels || chartData.labels.length === 0) {{
                 const wrapper = canvas.closest('.inline-fund-chart');
                 if (wrapper) {{
-                    wrapper.innerHTML = '<div style="height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:13px;">暂无可用估值波形数据</div>';
+                    wrapper.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:13px;">${{isPerformanceChart ? '暂无可用业绩曲线数据' : '暂无可用估值波形数据'}}</div>`;
                 }}
                 return;
             }}
@@ -4487,11 +4535,14 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                         tooltip: {{
                             callbacks: {{
                                 title: function(context) {{
-                                    return '时间: ' + context[0].label;
+                                    return (isPerformanceChart ? '日期: ' : '时间: ') + context[0].label;
                                 }},
                                 label: function(context) {{
                                     const index = context.dataIndex;
                                     const growth = growthData[index];
+                                    if (isPerformanceChart) {{
+                                        return '涨幅: ' + (growth >= 0 ? '+' : '') + growth.toFixed(2) + '%';
+                                    }}
                                     const netValue = netValues[index];
                                     return [
                                         '涨幅: ' + (growth >= 0 ? '+' : '') + growth.toFixed(2) + '%',
@@ -4503,19 +4554,39 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                     }},
                     scales: {{
                         x: {{
+                            offset: isPerformanceChart,
                             ticks: {{
                                 color: '#9ca3af',
                                 font: {{ size: 10 }},
-                                maxTicksLimit: 6
+                                align: isPerformanceChart ? 'inner' : 'center',
+                                autoSkip: !isPerformanceChart,
+                                maxTicksLimit: isPerformanceChart ? 8 : 6,
+                                maxRotation: 0,
+                                minRotation: 0,
+                                callback: function(value, index, ticks) {{
+                                    if (!isPerformanceChart) {{
+                                        return this.getLabelForValue(value);
+                                    }}
+                                    const label = this.getLabelForValue(value);
+                                    if (index === 0 || index === ticks.length - 1) {{
+                                        return label;
+                                    }}
+                                    const targetCount = 8;
+                                    const step = Math.max(1, Math.ceil((ticks.length - 1) / (targetCount - 1)));
+                                    return index % step === 0 ? label : '';
+                                }}
                             }},
                             grid: {{
                                 color: 'rgba(148, 163, 184, 0.2)'
                             }}
                         }},
                         y: {{
+                            border: {{
+                                display: !isPerformanceChart
+                            }},
                             title: {{
                                 display: true,
-                                text: '涨幅 (%)',
+                                text: isPerformanceChart ? '业绩涨幅 (%)' : '涨幅 (%)',
                                 color: '#9ca3af',
                                 font: {{ size: 11 }}
                             }},
@@ -4534,16 +4605,41 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             }});
         }}
 
-        window.toggleFundRowChart = async function(fundCode) {{
+        function bindPerformanceRangeButtons(chartRow, fundCode) {{
+            chartRow.querySelectorAll('.fund-performance-range-btn').forEach(button => {{
+                button.addEventListener('click', function(e) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const nextInterval = button.dataset.interval || 'ONE_YEAR';
+                    if (window.currentFundChartState &&
+                        window.currentFundChartState.code === fundCode &&
+                        window.currentFundChartState.type === 'performance' &&
+                        window.currentFundChartState.interval === nextInterval) {{
+                        return;
+                    }}
+                    window.toggleFundRowChart(fundCode, 'performance', nextInterval, {{ forceOpen: true }});
+                }});
+            }});
+        }}
+
+        window.toggleFundRowChart = async function(fundCode, chartType = 'estimate', interval = 'ONE_YEAR', options = {{}}) {{
             try {{
                 const tableBody = document.querySelector('.style-table tbody');
                 if (!tableBody) return;
 
-                // 如果当前已展开的是同一只基金，则收起
-                if (window.currentFundChartCode === fundCode) {{
+                const normalizedType = chartType === 'performance' ? 'performance' : 'estimate';
+            const normalizedInterval = normalizedType === 'performance' ? (interval || 'ONE_YEAR') : null;
+                const currentState = window.currentFundChartState;
+
+                // 如果当前已展开的是同一只基金、同一类型、同一区间，则收起
+                if (!options.forceOpen &&
+                    currentState &&
+                    currentState.code === fundCode &&
+                    currentState.type === normalizedType &&
+                    currentState.interval === normalizedInterval) {{
                     const existingRow = tableBody.querySelector('tr.fund-chart-row');
                     if (existingRow) existingRow.remove();
-                    window.currentFundChartCode = null;
+                    window.currentFundChartState = null;
                     if (window.fundRowChartInstance) {{
                         window.fundRowChartInstance.destroy();
                         window.fundRowChartInstance = null;
@@ -4555,9 +4651,10 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 const oldRow = tableBody.querySelector('tr.fund-chart-row');
                 if (oldRow) oldRow.remove();
 
-                // 找到目标基金所在行（第二列是基金代码）
+                const codeCell = tableBody.querySelector(`.fund-code-cell[data-code="${{fundCode}}"]`);
                 const nameCell = tableBody.querySelector(`.fund-name-cell[data-code="${{fundCode}}"]`);
-                const targetRow = nameCell ? nameCell.closest('tr') : null;
+                const targetAnchor = normalizedType === 'performance' ? codeCell : (nameCell || codeCell);
+                const targetRow = targetAnchor ? targetAnchor.closest('tr') : null;
                 if (!targetRow) return;
 
                 const colCount = targetRow.cells.length;
@@ -4565,19 +4662,23 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 chartRow.className = 'fund-chart-row';
                 const chartCell = document.createElement('td');
                 chartCell.colSpan = colCount;
-                chartCell.innerHTML = `
-                    <div class="inline-fund-chart" style="height:260px; padding: 10px 20px;">
-                        <canvas></canvas>
-                    </div>
-                `;
+                chartCell.innerHTML = buildFundChartRowContent(normalizedType, fundCode, normalizedInterval);
                 chartRow.appendChild(chartCell);
                 targetRow.parentNode.insertBefore(chartRow, targetRow.nextSibling);
 
-                const canvas = chartCell.querySelector('canvas');
-                const chartData = await loadFundChartDataInline(fundCode);
-                renderFundRowChart(canvas, chartData);
+                if (normalizedType === 'performance') {{
+                    bindPerformanceRangeButtons(chartRow, fundCode);
+                }}
 
-                window.currentFundChartCode = fundCode;
+                const canvas = chartCell.querySelector('canvas');
+                const chartData = await loadFundChartDataInline(fundCode, normalizedType, normalizedInterval || 'ONE_YEAR');
+                renderFundRowChart(canvas, chartData, normalizedType);
+
+                window.currentFundChartState = {{
+                    code: fundCode,
+                    type: normalizedType,
+                    interval: normalizedInterval
+                }};
             }} catch (e) {{
                 console.error('toggleFundRowChart error:', e);
             }}

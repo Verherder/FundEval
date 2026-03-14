@@ -26,6 +26,14 @@ load_dotenv()
 
 DATA_SOURCE_URLS = get_data_source_urls()
 
+PERFORMANCE_CHART_INTERVALS = {
+    "ONE_MONTH": "近1月",
+    "THREE_MONTH": "近3月",
+    "SIX_MONTH": "近6月",
+    "ONE_YEAR": "近1年",
+    "THREE_YEAR": "近3年",
+}
+
 sem = threading.Semaphore(5)
 
 urllib3.disable_warnings()
@@ -699,6 +707,130 @@ class LanFund:
             'net_values': [float(point['forecastNetValue']) for point in raw_data]
         }
 
+    @staticmethod
+    def _format_curve_point_label(point, index):
+        """格式化业绩曲线点的横轴标签。"""
+        raw_label = None
+        for key in ("reportDateTimestamp", "point", "date", "time", "tradeDate", "day", "valueDate", "netValueDate", "x"):
+            if point.get(key) not in (None, ""):
+                raw_label = point.get(key)
+                break
+
+        if raw_label is None:
+            return str(index + 1)
+
+        if isinstance(raw_label, (int, float)):
+            integer_val = int(raw_label)
+            integer_str = str(integer_val)
+
+            if re.fullmatch(r"(?:19|20)\d{6}", integer_str):
+                try:
+                    return datetime.datetime.strptime(integer_str, "%Y%m%d").strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+
+            if re.fullmatch(r"\d{5}", integer_str):
+                try:
+                    excel_base = datetime.datetime(1899, 12, 30)
+                    return (excel_base + datetime.timedelta(days=integer_val)).strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+
+            timestamp = integer_val / 1000 if integer_val > 10 ** 11 else integer_val
+            try:
+                return datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+            except Exception:
+                return str(integer_val)
+
+        raw_label = str(raw_label).strip()
+        if re.fullmatch(r"\d{13}", raw_label):
+            return datetime.datetime.fromtimestamp(int(raw_label) / 1000).strftime("%Y-%m-%d")
+        if re.fullmatch(r"\d{10}", raw_label):
+            return datetime.datetime.fromtimestamp(int(raw_label)).strftime("%Y-%m-%d")
+        if re.fullmatch(r"(?:19|20)\d{6}", raw_label):
+            try:
+                return datetime.datetime.strptime(raw_label, "%Y%m%d").strftime("%Y-%m-%d")
+            except Exception:
+                return raw_label
+        if re.fullmatch(r"\d{5}", raw_label):
+            try:
+                excel_base = datetime.datetime(1899, 12, 30)
+                return (excel_base + datetime.timedelta(days=int(raw_label))).strftime("%Y-%m-%d")
+            except Exception:
+                return raw_label
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_label):
+            return raw_label
+        return raw_label
+
+    def get_fund_performance_chart_data(self, fund_code, fund_data, date_interval="ONE_YEAR"):
+        """获取基金业绩曲线数据。"""
+        fund_key = fund_data["fund_key"]
+
+        headers = {
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Connection": "keep-alive",
+            "Content-Type": "application/json",
+            "Origin": DATA_SOURCE_URLS['fund123_origin'],
+            "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+            "X-API-Key": "foobar",
+            "accept": "json"
+        }
+
+        if date_interval not in PERFORMANCE_CHART_INTERVALS:
+            date_interval = "ONE_YEAR"
+
+        try:
+            response = timed_http_request(
+                self.session,
+                "POST",
+                DATA_SOURCE_URLS['fund123_curves_api'],
+                source="fund123",
+                headers=headers,
+                params={"_csrf": self._csrf},
+                json={
+                    "productId": fund_key,
+                    "dateInterval": date_interval
+                },
+                timeout=10,
+                verify=False,
+            )
+            response_json = response.json()
+            if not response_json.get("success"):
+                logger.error(f"获取基金业绩曲线失败【{fund_code}】: {response.text.strip()}")
+                return {
+                    'labels': [],
+                    'growth': [],
+                    'date_interval': date_interval,
+                    'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
+                }
+
+            points = [x for x in response_json.get("points", []) if x.get("type") == "fund"]
+            labels = []
+            growth = []
+            for index, point in enumerate(points):
+                try:
+                    rate = round(float(point.get("rate", 0)) * 100, 2)
+                except (TypeError, ValueError):
+                    continue
+                labels.append(self._format_curve_point_label(point, index))
+                growth.append(rate)
+
+            return {
+                'labels': labels,
+                'growth': growth,
+                'date_interval': date_interval,
+                'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
+            }
+        except Exception as e:
+            logger.error(f"获取基金业绩曲线数据失败【{fund_code}】: {e}")
+            return {
+                'labels': [],
+                'growth': [],
+                'date_interval': date_interval,
+                'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
+            }
+
     def search_code(self, is_return=False):
         self._cache_dirty = False
         self.result = []
@@ -992,6 +1124,10 @@ class LanFund:
         for row in result:
             code = row[0]
             is_hold = self.CACHE_MAP.get(code, {}).get("is_hold", False)
+            code_cell = (
+                f'<span class="fund-code-cell" data-code="{code}" '
+                f'style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">{code}</span>'
+            )
             star_char = "⭐" if is_hold else "☆"
             star_html = (
                 f'<span class="fund-hold-star" data-code="{code}" data-hold="{1 if is_hold else 0}" '
@@ -1052,7 +1188,7 @@ class LanFund:
                 f"{day_growth}"
                 f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{display_net_value_date}{date_extra}</span>"
             )
-            rows.append([star_html, code, name_cell, estimate_cell, daygrowth_cell, consecutive_info, monthly_info])
+            rows.append([star_html, code_cell, name_cell, estimate_cell, daygrowth_cell, consecutive_info, monthly_info])
         return get_table_html(
             titles,
             rows,
