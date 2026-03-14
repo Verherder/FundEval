@@ -2,6 +2,34 @@ import yaml
 from pathlib import Path
 from typing import Any, Optional, Dict
 
+
+REQUIRED_DATA_SOURCE_URL_KEYS = [
+    # fund123
+    'fund123_origin',
+    'fund123_fund_page',
+    'fund123_search_api',
+    'fund123_matiaria_tpl',
+    'fund123_curves_api',
+    'fund123_intraday_api',
+    # baidu
+    'gushitong_origin',
+    'gushitong_referer',
+    'baidu_index_warmup',
+    'baidu_getbanner_tpl',
+    'baidu_getquotation_api',
+    'baidu_expressnews_tpl',
+    'baidu_metrictrend_api',
+    # eastmoney
+    'eastmoney_fundguide_api',
+    'eastmoney_fundguide_referer',
+    'eastmoney_bk_api',
+    # jijinhao / cngold
+    'cngold_hist_referer',
+    'cngold_realtime_referer',
+    'jijinhao_history_api',
+    'jijinhao_realtime_api',
+]
+
 def load_yaml_config(config_path: Optional[str] = None) -> dict:
     """
     加载 YAML 配置文件，返回配置字典。
@@ -46,3 +74,21 @@ def get_page_refresh_config() -> Dict[str, int]:
         return {
             'auto_refresh_interval': 60000
         }
+
+
+def get_data_source_urls() -> Dict[str, str]:
+    """获取数据源URL配置（单一来源：config.yaml）。"""
+    config = load_yaml_config()
+    configured = config.get('data_sources', {}).get('urls', {})
+
+    if not isinstance(configured, dict):
+        raise ValueError("config.yaml 中 data_sources.urls 必须是字典")
+
+    missing_keys = [
+        key for key in REQUIRED_DATA_SOURCE_URL_KEYS
+        if not isinstance(configured.get(key), str) or not configured.get(key).strip()
+    ]
+    if missing_keys:
+        raise ValueError(f"config.yaml 缺少必要的数据源URL配置: {', '.join(missing_keys)}")
+
+    return {key: configured[key].strip() for key in REQUIRED_DATA_SOURCE_URL_KEYS}

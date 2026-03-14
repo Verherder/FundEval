@@ -19,9 +19,12 @@ from tabulate import tabulate
 from src.ai_analyzer import AIAnalyzer
 from src.http_timing import timed_http_request
 from src.module_html import get_table_html
+from src.yaml_config import get_data_source_urls
 
 # 加载环境变量
 load_dotenv()
+
+DATA_SOURCE_URLS = get_data_source_urls()
 
 sem = threading.Semaphore(5)
 
@@ -90,9 +93,9 @@ class LanFund:
             "accept": "application/vnd.finance-web.v1+json",
             "accept-language": "zh-CN,zh;q=0.9",
             "acs-token": "1769925606098_1770001866425_B6lkFxZg0PzQhmCXjMfTJUxYBn+en+J7W6a8XGyGMqfxPfIv2RgeZG8wimRzlhAxlZlErxq7wN5rVnCfPj6s/UNiA1a1hfyItpnMrru1lzDxUcicsi2ngKjmVCdUfqRZTcHPnfDWrt4phJcS7Ue+Sh6Ru/GVG+1McDUmf/d52zDv5Q6QM7CAJfHDqsCMP65SNjo63Xljm+aAIzDzKErfG+LOR706MJaZGY2o/hGcESyOy3FcWv+pYNFUjpV3M5sMFNEDa50fWh4J9PZpQDxDQLNhr9LSYunQUxe6wtNEGds85p9V6/yU6v+jA9q0h9/OyQJ/ZuD1lP0VPEACEc4qJvfItxhuK9MfKM+j6Spc/N6Qomh6pZYt6iLJjJp652xIqZurCmxem2Z3Vqu+mcZ9FN1l0qU6dx4hkaTZk3850FE/n6YW+HL74Mp8L+YR/Q2VMV3ARkSzPHgOS9iA6rBAaBiJf2Ni/BTHNSyFxJJjazI=",
-            "origin": "https://gushitong.baidu.com",
+            "origin": DATA_SOURCE_URLS['gushitong_origin'],
             "priority": "u=1, i",
-            "referer": "https://gushitong.baidu.com/",
+            "referer": DATA_SOURCE_URLS['gushitong_referer'],
             "sec-ch-ua": "\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"",
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": "\"Windows\"",
@@ -153,7 +156,7 @@ class LanFund:
             res = timed_http_request(
                 self.session,
                 "GET",
-                "https://www.fund123.cn/fund",
+                DATA_SOURCE_URLS['fund123_fund_page'],
                 source="fund123",
                 headers={
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -178,11 +181,11 @@ class LanFund:
             timed_http_request(
                 self.baidu_session,
                 "GET",
-                "https://gushitong.baidu.com/index/ab-000001",
+                DATA_SOURCE_URLS['baidu_index_warmup'],
                 source="baidu",
                 headers={
                     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
-                    "referer": "https://gushitong.baidu.com/"
+                    "referer": DATA_SOURCE_URLS['gushitong_referer']
                 },
                 timeout=10,
                 verify=False,
@@ -207,13 +210,13 @@ class LanFund:
                     "Accept-Language": "zh-CN,zh;q=0.9",
                     "Connection": "keep-alive",
                     "Content-Type": "application/json",
-                    "Origin": "https://www.fund123.cn",
-                    "Referer": "https://www.fund123.cn/fund",
+                    "Origin": DATA_SOURCE_URLS['fund123_origin'],
+                    "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
                     "X-API-Key": "foobar",
                     "accept": "json"
                 }
-                url = "https://www.fund123.cn/api/fund/searchFund"
+                url = DATA_SOURCE_URLS['fund123_search_api']
                 params = {
                     "_csrf": self._csrf
                 }
@@ -404,13 +407,13 @@ class LanFund:
                     "Accept-Language": "zh-CN,zh;q=0.9",
                     "Connection": "keep-alive",
                     "Content-Type": "application/json",
-                    "Origin": "https://www.fund123.cn",
-                    "Referer": "https://www.fund123.cn/fund",
+                    "Origin": DATA_SOURCE_URLS['fund123_origin'],
+                    "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
                     "X-API-Key": "foobar",
                     "accept": "json"
                 }
-                url = f"https://www.fund123.cn/matiaria?fundCode={fund}"
+                url = DATA_SOURCE_URLS['fund123_matiaria_tpl'].format(fund=fund)
                 response = timed_http_request(
                     self.session,
                     "GET",
@@ -426,7 +429,7 @@ class LanFund:
                 netValue = re.findall(r'"netValue":"(.*?)"', response.text)[0]
                 netValueDate = re.findall(r'"netValueDate":"(.*?)"', response.text)[0]
                 netValue = netValue + f"({netValueDate})"
-                url = "https://www.fund123.cn/api/fund/queryFundQuotationCurves"
+                url = DATA_SOURCE_URLS['fund123_curves_api']
                 params = {
                     "_csrf": self._csrf
                 }
@@ -502,7 +505,7 @@ class LanFund:
                         consecutive_count = str(consecutive_count)
                         consecutive_growth = str(consecutive_growth)
 
-                url = "https://www.fund123.cn/api/fund/queryFundEstimateIntraday"
+                url = DATA_SOURCE_URLS['fund123_intraday_api']
                 params = {
                     "_csrf": self._csrf
                 }
@@ -606,14 +609,14 @@ class LanFund:
             "Accept-Language": "zh-CN,zh;q=0.9",
             "Connection": "keep-alive",
             "Content-Type": "application/json",
-            "Origin": "https://www.fund123.cn",
-            "Referer": "https://www.fund123.cn/fund",
+            "Origin": DATA_SOURCE_URLS['fund123_origin'],
+            "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
             "X-API-Key": "foobar",
             "accept": "json"
         }
 
-        url = "https://www.fund123.cn/api/fund/queryFundEstimateIntraday"
+        url = DATA_SOURCE_URLS['fund123_intraday_api']
         params = {
             "_csrf": self._csrf
         }
@@ -627,38 +630,41 @@ class LanFund:
             "format": True,
             "source": "WEALTHBFFWEB"
         }
-        response = timed_http_request(
-            self.session,
-            "POST",
-            url,
-            source="fund123",
-            headers=headers,
-            params=params,
-            json=data,
-            timeout=10,
-            verify=False,
-        )
-        if response.json()["success"]:
-            if not response.json()["list"]:
-                return []
+        try:
+            response = timed_http_request(
+                self.session,
+                "POST",
+                url,
+                source="fund123",
+                headers=headers,
+                params=params,
+                json=data,
+                timeout=10,
+                verify=False,
+            )
+            if response.json()["success"]:
+                if not response.json()["list"]:
+                    return []
+                else:
+                    results = []
+                    for fund_info in response.json()["list"]:
+                        now_time = datetime.datetime.fromtimestamp(fund_info["time"] / 1000).strftime(
+                            "%H:%M"
+                        )
+                        forecastGrowth = str(round(float(fund_info["forecastGrowth"]) * 100, 2)) + "%"
+                        forecastNetValue = str(round(float(fund_info["forecastNetValue"]), 4))
+                        results.append({
+                            "fund_name": fund_name,
+                            "fund_code": fund,
+                            "now_time": now_time,
+                            "forecastGrowth": forecastGrowth,
+                            "forecastNetValue": forecastNetValue
+                        })
+                    return results
             else:
-                results = []
-                for fund_info in response.json()["list"]:
-                    now_time = datetime.datetime.fromtimestamp(fund_info["time"] / 1000).strftime(
-                        "%H:%M"
-                    )
-                    forecastGrowth = str(round(float(fund_info["forecastGrowth"]) * 100, 2)) + "%"
-                    forecastNetValue = str(round(float(fund_info["forecastNetValue"]), 4))
-                    results.append({
-                        "fund_name": fund_name,
-                        "fund_code": fund,
-                        "now_time": now_time,
-                        "forecastGrowth": forecastGrowth,
-                        "forecastNetValue": forecastNetValue
-                    })
-                return results
-        else:
-            logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
+                logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
+        except Exception as e:
+            logger.error(f"获取基金当日估值数据失败【{fund}】: {e}")
         return []
 
     def get_fund_chart_data(self, fund_code, fund_data):
@@ -675,7 +681,11 @@ class LanFund:
                 'net_values': [1.2345, 1.2360, ...] # 净值数值
             }
         """
-        raw_data = self.get_fund_today_data(fund_code, fund_data)
+        try:
+            raw_data = self.get_fund_today_data(fund_code, fund_data)
+        except Exception as e:
+            logger.error(f"获取基金估值趋势图数据失败【{fund_code}】: {e}")
+            raw_data = []
         if not raw_data:
             return {
                 'labels': [],
@@ -1269,7 +1279,7 @@ class LanFund:
         else:
             bk_code = id_map[bk_id]
 
-        url = "https://fund.eastmoney.com/data/FundGuideapi.aspx"
+        url = DATA_SOURCE_URLS['eastmoney_fundguide_api']
 
         params = {
             "dt": "4",
@@ -1287,7 +1297,7 @@ class LanFund:
 
         headers = {
             "Connection": "keep-alive",
-            "Referer": "https://fund.eastmoney.com/daogou/",
+            "Referer": DATA_SOURCE_URLS['eastmoney_fundguide_referer'],
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
@@ -1465,7 +1475,7 @@ class LanFund:
         try:
             markets = ["asia", "america"]
             for market in markets:
-                url = f"https://finance.pae.baidu.com/api/getbanner?market={market}&finClientType=pc"
+                url = DATA_SOURCE_URLS['baidu_getbanner_tpl'].format(market=market)
                 response = timed_http_request(self.baidu_session, "GET", url, source="baidu", timeout=10, verify=False)
                 if response.json()["ResultCode"] == "0":
                     market_list = response.json()["Result"]["list"]
@@ -1483,7 +1493,7 @@ class LanFund:
                         ])
 
             # 增加创业板指
-            url = "https://finance.pae.baidu.com/vapi/v1/getquotation"
+            url = DATA_SOURCE_URLS['baidu_getquotation_api']
             params = {
                 "srcid": "5353",
                 "all": "1",
@@ -1648,7 +1658,7 @@ class LanFund:
     def bk(is_return=False):
         bk_result = []
         try:
-            url = "https://push2.eastmoney.com/api/qt/clist/get"
+            url = DATA_SOURCE_URLS['eastmoney_bk_api']
             params = {
                 "cb": "",
                 "fid": "f62",
@@ -1731,7 +1741,7 @@ class LanFund:
         )
 
     def kx(self, is_return=False, count=10):
-        url = f"https://finance.pae.baidu.com/selfselect/expressnews?rn={count}&pn=0&tag=A股&finClientType=pc"
+        url = DATA_SOURCE_URLS['baidu_expressnews_tpl'].format(count=count)
         kx_list = []
         try:
             response = timed_http_request(self.baidu_session, "GET", url, source="baidu", timeout=10, verify=False)
@@ -1792,7 +1802,7 @@ class LanFund:
             headers = {
                 "accept": "*/*",
                 "accept-language": "zh-CN,zh;q=0.9",
-                "referer": "https://quote.cngold.org/gjs/swhj_zghj.html",
+                "referer": DATA_SOURCE_URLS['cngold_hist_referer'],
                 "sec-ch-ua": "\"Chromium\";v=\"128\", \"Not;A=Brand\";v=\"24\", \"Google Chrome\";v=\"128\"",
                 "sec-ch-ua-mobile": "?0",
                 "sec-ch-ua-platform": "\"Windows\"",
@@ -1801,7 +1811,7 @@ class LanFund:
                 "sec-fetch-site": "cross-site",
                 "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
             }
-            url = "https://api.jijinhao.com/quoteCenter/history.htm"
+            url = DATA_SOURCE_URLS['jijinhao_history_api']
             params = {
                 "code": "JO_52683",
                 "style": "3",
@@ -1822,7 +1832,7 @@ class LanFund:
             )
             data = json.loads(response.text.replace("var quote_json = ", ""))["data"]
 
-            url = "https://api.jijinhao.com/quoteCenter/history.htm"
+            url = DATA_SOURCE_URLS['jijinhao_history_api']
             params = {
                 "code": "JO_42660",
                 "style": "3",
@@ -1890,7 +1900,7 @@ class LanFund:
         headers = {
             "accept": "*/*",
             "accept-language": "zh-CN,zh;q=0.9",
-            "referer": "https://quote.cngold.org/gjs/gjhj.html",
+            "referer": DATA_SOURCE_URLS['cngold_realtime_referer'],
             "sec-ch-ua": "\"Not;A=Brand\";v=\"99\", \"Google Chrome\";v=\"139\", \"Chromium\";v=\"139\"",
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": "\"Windows\"",
@@ -1901,7 +1911,7 @@ class LanFund:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
         }
         try:
-            url = "https://api.jijinhao.com/quoteCenter/realTime.htm"
+            url = DATA_SOURCE_URLS['jijinhao_realtime_api']
             params = {
                 "codes": "JO_71,JO_92233,JO_92232,JO_75",
                 "_": str(int(time.time() * 1000))
@@ -1988,7 +1998,7 @@ class LanFund:
             )
 
     def A(self, is_return=False):
-        url = "https://finance.pae.baidu.com/vapi/v1/getquotation"
+        url = DATA_SOURCE_URLS['baidu_getquotation_api']
         params = {
             "srcid": "5353",
             "all": "1",
@@ -2054,7 +2064,7 @@ class LanFund:
         )
 
     def seven_A(self, is_return=False):
-        url = "https://finance.pae.baidu.com/sapi/v1/metrictrend"
+        url = DATA_SOURCE_URLS['baidu_metrictrend_api']
         params = {
             "financeType": "index",
             "market": "ab",

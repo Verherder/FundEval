@@ -1461,12 +1461,78 @@ document.addEventListener('DOMContentLoaded', function() {
 
             // 2. 替换基金表格内容（整表 thead+tbody，保证持仓份额列与表头一致）
             const newTableHTML = tableData.html;
+            if (!newTableHTML || !newTableHTML.trim()) {
+                throw new Error('获取到空的基金表格数据，已保留当前页面数据');
+            }
+
             const parser = new DOMParser();
             const newTableDoc = parser.parseFromString(newTableHTML, 'text/html');
-            const newTable = newTableDoc.querySelector('.style-table');
-            const currentTable = document.querySelector('.style-table');
-            if (newTable && currentTable) {
-                currentTable.innerHTML = newTable.innerHTML;
+            const newTables = Array.from(newTableDoc.querySelectorAll('.style-table'));
+            const currentTables = Array.from(document.querySelectorAll('.style-table'));
+            const newTable = newTables.find(table => table.querySelector('.fund-name-cell')) || newTables[0] || null;
+            const currentTable = currentTables.find(table => table.querySelector('.fund-name-cell')) || currentTables[0] || null;
+
+            if (!newTable || !currentTable) {
+                throw new Error('新基金表格结构无效，已保留当前页面数据');
+            }
+
+            const newRowCount = newTable.querySelectorAll('tbody tr').length;
+            const currentRowCount = currentTable.querySelectorAll('tbody tr').length;
+            const newFundItemCount = newTable.querySelectorAll('.fund-name-cell').length;
+
+            // 保护逻辑：若当前有数据而新表为空（常见于网络异常），则不替换，避免页面空白
+            if (currentRowCount > 0 && newRowCount === 0) {
+                throw new Error('未获取到有效新数据，已保留当前页面数据');
+            }
+
+            // 保护逻辑：基金表必须包含基金条目，否则判定为无效刷新（避免空白）
+            if (newFundItemCount === 0) {
+                throw new Error('新数据缺少基金条目，已保留当前页面数据');
+            }
+
+            // 3. 获取最新的份额数据
+            const fundDataResponse = await fetch('/api/fund/data');
+            if (!fundDataResponse.ok) {
+                throw new Error(`Failed to fetch fund data: ${fundDataResponse.status}`);
+            }
+
+            const fundData = await fundDataResponse.json();
+
+            // 构建最新份额快照
+            const latestSharesData = {};
+            for (const [code, data] of Object.entries(fundData)) {
+                latestSharesData[code] = parseFloat(data.shares) || 0;
+            }
+
+            const currentTableHTML = currentTable.innerHTML;
+            const newTableInnerHTML = newTable.innerHTML;
+            const hasTableChanges = newTableInnerHTML !== currentTableHTML;
+
+            const currentSharesData = window.fundSharesData || {};
+            const allShareKeys = new Set([...Object.keys(currentSharesData), ...Object.keys(latestSharesData)]);
+            const hasSharesChanges = Array.from(allShareKeys).some(code => {
+                const oldVal = parseFloat(currentSharesData[code] || 0);
+                const newVal = parseFloat(latestSharesData[code] || 0);
+                return oldVal !== newVal;
+            });
+
+            // 无新数据：不替换表格、不更新时间
+            if (!hasTableChanges && !hasSharesChanges) {
+                if (refreshBtn) {
+                    refreshBtn.innerHTML = 'ℹ️ 无新数据';
+                    setTimeout(() => {
+                        refreshBtn.innerHTML = '🔄 刷新';
+                        refreshBtn.disabled = false;
+                        refreshBtn.style.background = '';
+                    }, 1500);
+                }
+                return;
+            }
+
+            // 有变更才更新份额缓存和表格
+            window.fundSharesData = latestSharesData;
+            if (hasTableChanges) {
+                currentTable.innerHTML = newTableInnerHTML;
             }
 
             // 如果之前有展开的趋势图，刷新后自动还原
@@ -1474,22 +1540,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 const code = window.currentFundChartCode;
                 window.currentFundChartCode = null;
                 window.toggleFundRowChart(code);
-            }
-
-            // 3. 获取最新的份额数据
-            const fundDataResponse = await fetch('/api/fund/data');
-            if (fundDataResponse.ok) {
-                const fundData = await fundDataResponse.json();
-                
-                // 更新 window.fundSharesData 中的份额数据
-                if (!window.fundSharesData) {
-                    window.fundSharesData = {};
-                }
-                
-                for (const [code, data] of Object.entries(fundData)) {
-                    const shares = parseFloat(data.shares) || 0;
-                    window.fundSharesData[code] = shares;
-                }
             }
 
             // 4. 重新计算持仓统计（会自动使用新的表格数据 + 最新份额）
@@ -1520,6 +1570,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         } catch (e) {
             console.error('Failed to refresh portfolio data:', e);
+
             const refreshBtn = document.getElementById('refreshBtn-portfolio');
             if (refreshBtn) {
                 refreshBtn.innerHTML = '❌ 更新失败';
