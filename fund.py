@@ -421,6 +421,9 @@ class LanFund:
                     "X-API-Key": "foobar",
                     "accept": "json"
                 }
+                # 最新净值来自 fund123 的基金详情接口（matiaria_tpl）。
+                # 这里直接从响应文本中提取 netValue / netValueDate，供基金列表、持仓金额、
+                # 以及 fund_server._get_latest_fund_quote() 复用。
                 url = DATA_SOURCE_URLS['fund123_matiaria_tpl'].format(fund=fund)
                 response = timed_http_request(
                     self.session,
@@ -805,9 +808,36 @@ class LanFund:
                     'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
                 }
 
-            points = [x for x in response_json.get("points", []) if x.get("type") == "fund"]
+            all_points = response_json.get("points", []) or []
+            points = [x for x in all_points if x.get("type") == "fund"]
+            benchmark_points = [x for x in all_points if x.get("type") == "indexbase"]
             labels = []
             growth = []
+            net_values = []
+            benchmark_growth_map = {}
+
+            def extract_point_net_value(point):
+                candidate_keys = [
+                    "netValue", "unitNetValue", "unitValue", "value", "nav", "close", "y"
+                ]
+                for key in candidate_keys:
+                    value = point.get(key)
+                    if value in (None, ""):
+                        continue
+                    try:
+                        return round(float(value), 4)
+                    except (TypeError, ValueError):
+                        continue
+                return None
+
+            for index, point in enumerate(benchmark_points):
+                try:
+                    rate = round(float(point.get("rate", 0)) * 100, 2)
+                except (TypeError, ValueError):
+                    continue
+                benchmark_label = self._format_curve_point_label(point, index)
+                benchmark_growth_map[benchmark_label] = rate
+
             for index, point in enumerate(points):
                 try:
                     rate = round(float(point.get("rate", 0)) * 100, 2)
@@ -815,10 +845,27 @@ class LanFund:
                     continue
                 labels.append(self._format_curve_point_label(point, index))
                 growth.append(rate)
+                net_values.append(extract_point_net_value(point))
+
+            benchmark_growth = [benchmark_growth_map.get(label) for label in labels]
+
+            latest_net_value = None
+            latest_net_value_date = None
+            for index in range(len(net_values) - 1, -1, -1):
+                if net_values[index] is None:
+                    continue
+                latest_net_value = net_values[index]
+                latest_net_value_date = labels[index] if index < len(labels) else None
+                break
 
             return {
                 'labels': labels,
                 'growth': growth,
+                'net_values': net_values,
+                'benchmark_label': '沪深300',
+                'benchmark_growth': benchmark_growth,
+                'latest_net_value': latest_net_value,
+                'latest_net_value_date': latest_net_value_date,
                 'date_interval': date_interval,
                 'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
             }
@@ -827,6 +874,11 @@ class LanFund:
             return {
                 'labels': [],
                 'growth': [],
+                'net_values': [],
+                'benchmark_label': '沪深300',
+                'benchmark_growth': [],
+                'latest_net_value': None,
+                'latest_net_value_date': None,
                 'date_interval': date_interval,
                 'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
             }
@@ -1104,7 +1156,7 @@ class LanFund:
         logger.info("\n份额修改完成")
 
     def fund_html(self):
-        result = self.search_code(True)
+        result = self.search_code(True) or []
 
         def parse_growth_percent(value):
             if value in (None, "", "N/A", "--", "---"):
@@ -1116,10 +1168,157 @@ class LanFund:
             text = f"{value:.2f}".rstrip("0").rstrip(".")
             return "0" if text in ("", "-0", "+0") else text
 
+        def safe_float(value, default=0.0):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def format_pct_value(value):
+            if value is None:
+                return "--"
+            rounded_value = round(float(value), 2)
+            if abs(rounded_value) < 1e-10:
+                color = "var(--text-main)"
+                text = "0.00%"
+            elif rounded_value > 0:
+                color = "var(--up-color)"
+                text = f"{rounded_value:.2f}%"
+            else:
+                color = "var(--down-color)"
+                text = f"{rounded_value:.2f}%"
+            return f"<span style='color:{color} !important;font-weight:600;'>{text}</span>"
+
+        def xnpv(rate, cashflows):
+            if rate <= -0.999999:
+                return float("inf")
+            t0 = cashflows[0][0]
+            total_value = 0.0
+            for tx_date, amount in cashflows:
+                days = (tx_date - t0).total_seconds() / 86400
+                total_value += amount / ((1 + rate) ** (days / 365.0))
+            return total_value
+
+        def solve_xirr(cashflows):
+            if len(cashflows) < 2:
+                return None
+            has_positive = any(amount > 0 for _, amount in cashflows)
+            has_negative = any(amount < 0 for _, amount in cashflows)
+            if not (has_positive and has_negative):
+                return None
+
+            low, high = -0.9999, 10.0
+            try:
+                f_low = xnpv(low, cashflows)
+                f_high = xnpv(high, cashflows)
+            except Exception:
+                return None
+
+            expand_count = 0
+            while f_low * f_high > 0 and expand_count < 20:
+                high *= 2
+                try:
+                    f_high = xnpv(high, cashflows)
+                except Exception:
+                    return None
+                expand_count += 1
+
+            if f_low * f_high > 0:
+                return None
+
+            for _ in range(100):
+                mid = (low + high) / 2
+                f_mid = xnpv(mid, cashflows)
+                if abs(f_mid) < 1e-7:
+                    return mid
+                if f_low * f_mid <= 0:
+                    high = mid
+                    f_high = f_mid
+                else:
+                    low = mid
+                    f_low = f_mid
+            return (low + high) / 2
+
+        def compute_holding_metrics(fund_code, current_shares, current_net_value):
+            if not self.db or self.user_id is None or current_shares <= 0 or current_net_value <= 0:
+                return None, None
+
+            transactions = self.db.get_fund_transactions(self.user_id, fund_code)
+            if not transactions:
+                return None, None
+
+            running_shares = 0.0
+            cycle_start = 0
+            for index, tx in enumerate(transactions):
+                tx_shares = safe_float(tx.get('shares'), 0.0)
+                if tx.get('tx_type') == 'buy':
+                    running_shares += tx_shares
+                elif tx.get('tx_type') == 'sell':
+                    running_shares -= tx_shares
+
+                if running_shares <= 1e-8:
+                    running_shares = 0.0
+                    cycle_start = index + 1
+
+            cycle_transactions = transactions[cycle_start:]
+            if not cycle_transactions:
+                return None, None
+
+            remaining_lots = []
+            cashflows = []
+            for tx in cycle_transactions:
+                tx_type = tx.get('tx_type')
+                tx_shares = safe_float(tx.get('shares'), 0.0)
+                tx_amount = safe_float(tx.get('amount'), 0.0)
+                tx_net_value = safe_float(tx.get('net_value'), 0.0)
+                try:
+                    tx_date = datetime.datetime.fromisoformat(str(tx.get('tx_time')).replace(' ', 'T'))
+                except Exception:
+                    try:
+                        tx_date = datetime.datetime.strptime(str(tx.get('tx_time')), "%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        tx_date = datetime.datetime.now()
+
+                if tx_type == 'buy' and tx_shares > 0:
+                    lot_cost = tx_amount if tx_amount > 0 else tx_shares * tx_net_value
+                    remaining_lots.append({
+                        'shares': tx_shares,
+                        'cost': lot_cost,
+                    })
+                    cashflows.append((tx_date, -lot_cost))
+                elif tx_type == 'sell' and tx_shares > 0:
+                    shares_to_consume = tx_shares
+                    while shares_to_consume > 1e-8 and remaining_lots:
+                        lot = remaining_lots[0]
+                        consume = min(lot['shares'], shares_to_consume)
+                        cost_ratio = consume / lot['shares'] if lot['shares'] > 0 else 0
+                        lot['cost'] -= lot['cost'] * cost_ratio
+                        lot['shares'] -= consume
+                        shares_to_consume -= consume
+                        if lot['shares'] <= 1e-8:
+                            remaining_lots.pop(0)
+                    proceeds = tx_amount if tx_amount > 0 else tx_shares * tx_net_value
+                    cashflows.append((tx_date, proceeds))
+
+            remaining_shares = sum(lot['shares'] for lot in remaining_lots)
+            if remaining_shares <= 1e-8:
+                return None, None
+
+            holding_cost = sum(lot['cost'] for lot in remaining_lots)
+            if abs(remaining_shares - current_shares) > 1e-6 and remaining_shares > 0:
+                holding_cost *= current_shares / remaining_shares
+            current_value = current_shares * current_net_value
+            holding_return = ((current_value - holding_cost) / holding_cost * 100) if holding_cost > 0 else None
+
+            cashflows.append((datetime.datetime.now(), current_value))
+            annual_rate = solve_xirr(cashflows)
+            annual_return = annual_rate * 100 if annual_rate is not None else None
+            return holding_return, annual_return
+
         total = len(result)
         hold_count = sum(1 for r in result if self.CACHE_MAP.get(r[0], {}).get("is_hold", False))
-        # 列：标记、基金代码、基金名称(共X个持有Y个)、估值、日涨幅、连涨/跌、近30天
-        titles = ["标记", "基金代码", f"基金名称 (共{total}个持有{hold_count}个)", "估值", "日涨幅", "连涨/跌", "近30天"]
+        # 列：标记、基金代码、基金名称(共X个持有Y个)、估值、日涨幅、连涨/跌、近30天、持仓金额、持有/年化
+        titles = ["标记", "基金代码", f"基金名称 (共{total}个持有{hold_count}个)", "估值", "日涨幅", "连涨/跌", "近30天", "持仓金额", "持有/年化"]
         rows = []
         for row in result:
             code = row[0]
@@ -1145,6 +1344,20 @@ class LanFund:
                 f'style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">{name}</span>'
             )
             now_time = row[2]
+            net_value_text = row[3]
+            net_value_display = net_value_text.split('(')[0] if isinstance(net_value_text, str) else net_value_text
+            shares = safe_float(self.CACHE_MAP.get(code, {}).get('shares', 0), 0.0)
+            net_value_num = safe_float(net_value_display, 0.0)
+            position_amount = net_value_num * shares
+            position_amount_display = (
+                f"¥{position_amount:,.2f}"
+                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{shares:,.2f}份</span>"
+            )
+            holding_return, annual_return = compute_holding_metrics(code, shares, net_value_num)
+            performance_display = (
+                f"{format_pct_value(holding_return)}"
+                f"<br>{format_pct_value(annual_return)}"
+            )
             forecast_growth = row[4]
             day_growth = row[5]
             net_value_date = row[6]
@@ -1188,11 +1401,11 @@ class LanFund:
                 f"{day_growth}"
                 f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{display_net_value_date}{date_extra}</span>"
             )
-            rows.append([star_html, code_cell, name_cell, estimate_cell, daygrowth_cell, consecutive_info, monthly_info])
+            rows.append([star_html, code_cell, name_cell, estimate_cell, daygrowth_cell, consecutive_info, monthly_info, position_amount_display, performance_display])
         return get_table_html(
             titles,
             rows,
-            sortable_columns=[3, 4, 5, 6],
+            sortable_columns=[3, 4, 5, 6, 7, 8],
         )
 
     @staticmethod

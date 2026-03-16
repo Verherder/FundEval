@@ -903,7 +903,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const fundRows = document.querySelectorAll('.style-table tbody tr');
         fundRows.forEach(row => {
             const cells = row.querySelectorAll('td');
-            if (cells.length < 6) return;
+            if (cells.length < 9) return;
 
             // 获取基金代码（第一列）
             const codeCell = cells[0];
@@ -917,13 +917,17 @@ document.addEventListener('DOMContentLoaded', function() {
                 // 获取基金名称（第二列，索引1），使用 innerHTML 保留 HTML 标签（如板块标签样式）
                 const fundName = cells[1].innerHTML.trim();
 
-                // 解析净值 "1.234(2025-02-02)" (第四列，索引3)
-                const netValueText = cells[3].textContent.trim();
-                const netValueMatch = netValueText.match(/([0-9.]+)\(([0-9-]+)\)/);
-                if (!netValueMatch) return;
+                // 解析净值 "1.234" (第八列，索引7)
+                const netValueText = cells[7].textContent.trim();
+                const netValue = parseFloat(netValueText);
+                if (!isFinite(netValue)) return;
 
-                const netValue = parseFloat(netValueMatch[1]);
-                let netValueDate = netValueMatch[2];
+                // 净值日期从“日涨幅”单元格副文本中提取（格式示例：03-13 或 2026-03-13）
+                const dayGrowthFullText = cells[4].textContent.trim();
+                const fullDateMatch = dayGrowthFullText.match(/(\d{4}-\d{2}-\d{2})/);
+                const shortDateMatch = dayGrowthFullText.match(/(\d{2}-\d{2})/);
+                let netValueDate = fullDateMatch ? fullDateMatch[1] : (shortDateMatch ? shortDateMatch[1] : '');
+                if (!netValueDate) return;
 
                 // 处理净值日期格式：API可能返回"MM-DD"或"YYYY-MM-DD"
                 // 如果是"MM-DD"格式，添加当前年份
@@ -932,13 +936,13 @@ document.addEventListener('DOMContentLoaded', function() {
                     netValueDate = `${currentYear}-${netValueDate}`;
                 }
 
-                // 解析估值增长率 (第五列，索引4)
-                const estimatedGrowthText = cells[4].textContent.trim();
+                // 解析估值增长率 (第四列，索引3)
+                const estimatedGrowthText = cells[3].textContent.trim();
                 const estimatedGrowth = estimatedGrowthText !== 'N/A' ?
                     parseFloat(estimatedGrowthText.replace('%', '')) : 0;
 
-                // 解析日涨幅 (第六列，索引5)
-                const dayGrowthText = cells[5].textContent.trim();
+                // 解析日涨幅 (第五列，索引4)
+                const dayGrowthText = cells[4].textContent.trim();
                 const dayGrowth = dayGrowthText !== 'N/A' ?
                     parseFloat(dayGrowthText.replace('%', '')) : 0;
 
@@ -1183,8 +1187,6 @@ document.addEventListener('DOMContentLoaded', function() {
     window.openFundSelectionModal = openFundSelectionModal;
     window.closeFundSelectionModal = closeFundSelectionModal;
     window.confirmFundSelection = confirmFundSelection;
-    window.downloadFundMap = downloadFundMap;
-    window.uploadFundMap = uploadFundMap;
     window.addFunds = addFunds;
     window.markHold = markHold;
     window.unmarkHold = unmarkHold;
@@ -1193,6 +1195,317 @@ document.addEventListener('DOMContentLoaded', function() {
     window.closeSectorModal = closeSectorModal;
     window.confirmSector = confirmSector;
     window.removeSector = removeSector;
+
+    // ==================== Buy/Sell Actions ====================
+    let currentTradeFundCode = null;
+    let currentTradeAction = null;
+    let currentBackfillFundCode = null;
+    let currentBackfillFetchToken = 0;
+
+    window.openTradeModal = function(action, fundCode) {
+        currentTradeFundCode = fundCode;
+        currentTradeAction = action;
+
+        const modal = document.getElementById('tradeModal');
+        const title = document.getElementById('tradeModalTitle');
+        const codeDisplay = document.getElementById('tradeModalFundCode');
+        const inputLabel = document.getElementById('tradeModalInputLabel');
+        const input = document.getElementById('tradeModalInput');
+        const hint = document.getElementById('tradeModalHint');
+        const confirmBtn = document.getElementById('tradeModalConfirmBtn');
+
+        if (!modal || !title || !codeDisplay || !inputLabel || !input || !hint || !confirmBtn) return;
+
+        const currentShares = parseFloat((window.fundSharesData && window.fundSharesData[fundCode]) || 0);
+        codeDisplay.textContent = fundCode;
+        input.value = '';
+
+        if (action === 'buy') {
+            title.textContent = '买入基金';
+            inputLabel.textContent = '买入金额（元）';
+            input.placeholder = '请输入买入金额';
+            hint.textContent = '15:00前买入按当日净值确认；15:00后按下个交易日净值确认';
+            confirmBtn.textContent = '确认买入';
+        } else {
+            title.textContent = '卖出基金';
+            inputLabel.textContent = '卖出份额';
+            input.placeholder = '请输入卖出份额';
+            hint.textContent = `当前持仓：${currentShares.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}份`;
+            confirmBtn.textContent = '确认卖出';
+        }
+
+        modal.classList.add('active');
+        setTimeout(() => input.focus(), 100);
+    };
+
+    window.closeTradeModal = function() {
+        const modal = document.getElementById('tradeModal');
+        const input = document.getElementById('tradeModalInput');
+        const confirmBtn = document.getElementById('tradeModalConfirmBtn');
+        if (modal) {
+            modal.classList.remove('active');
+        }
+        if (input) {
+            input.value = '';
+        }
+        if (confirmBtn) {
+            confirmBtn.disabled = false;
+        }
+        currentTradeFundCode = null;
+        currentTradeAction = null;
+    };
+
+    window.confirmTrade = async function() {
+        if (!currentTradeFundCode || !currentTradeAction) return;
+
+        const input = document.getElementById('tradeModalInput');
+        const confirmBtn = document.getElementById('tradeModalConfirmBtn');
+        if (!input || !confirmBtn) return;
+
+        const value = parseFloat(input.value);
+        if (!isFinite(value) || value <= 0) {
+            alert(currentTradeAction === 'buy' ? '请输入大于0的买入金额' : '请输入大于0的卖出份额');
+            input.focus();
+            return;
+        }
+
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = currentTradeAction === 'buy' ? '买入中...' : '卖出中...';
+
+        try {
+            const isBuy = currentTradeAction === 'buy';
+            const response = await fetch(isBuy ? '/api/fund/buy' : '/api/fund/sell', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(isBuy
+                    ? { code: currentTradeFundCode, amount: value }
+                    : { code: currentTradeFundCode, shares: value })
+            });
+
+            const result = await response.json();
+            if (!result.success) {
+                alert(result.message || (isBuy ? '买入失败' : '卖出失败'));
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = isBuy ? '确认买入' : '确认卖出';
+                return;
+            }
+
+            const updatedShares = parseFloat(result.current_shares || 0);
+
+            const star = document.querySelector(`.fund-hold-star[data-code="${currentTradeFundCode}"]`);
+            if (star) {
+                const isHeld = updatedShares > 0;
+                star.textContent = isHeld ? '⭐' : '☆';
+                star.dataset.hold = isHeld ? '1' : '0';
+            }
+
+            window.closeTradeModal();
+
+            if (typeof fetchPortfolioData === 'function') {
+                await fetchPortfolioData();
+            } else if (typeof calculatePositionSummary === 'function') {
+                calculatePositionSummary();
+            }
+        } catch (e) {
+            alert((currentTradeAction === 'buy' ? '买入失败: ' : '卖出失败: ') + (e?.message || e));
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = currentTradeAction === 'buy' ? '确认买入' : '确认卖出';
+        }
+    };
+
+    window.buyFund = function(fundCode) {
+        window.openTradeModal('buy', fundCode);
+    };
+
+    window.sellFund = function(fundCode) {
+        window.openTradeModal('sell', fundCode);
+    };
+
+    window.openBackfillModal = function(fundCode) {
+        currentBackfillFundCode = fundCode;
+        currentBackfillFetchToken += 1;
+
+        const modal = document.getElementById('backfillModal');
+        const codeDisplay = document.getElementById('backfillModalFundCode');
+        const dateInput = document.getElementById('backfillTradeDate');
+        const netValueInput = document.getElementById('backfillNetValue');
+        const amountInput = document.getElementById('backfillAmount');
+        const confirmBtn = document.getElementById('backfillModalConfirmBtn');
+        const hint = document.getElementById('backfillNetValueHint');
+
+        if (!modal || !codeDisplay || !dateInput || !netValueInput || !amountInput || !confirmBtn) {
+            alert('补录弹窗未初始化，请刷新页面后重试');
+            return;
+        }
+
+        const today = new Date();
+        const yyyy = today.getFullYear();
+        const mm = String(today.getMonth() + 1).padStart(2, '0');
+        const dd = String(today.getDate()).padStart(2, '0');
+
+        codeDisplay.textContent = fundCode;
+        dateInput.value = `${yyyy}-${mm}-${dd}`;
+        netValueInput.value = '';
+        amountInput.value = '';
+        if (hint) {
+            hint.textContent = '正在尝试自动填充净值...';
+            hint.style.color = 'var(--text-dim)';
+        }
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = '确定补录';
+
+        modal.classList.add('active');
+        setTimeout(() => dateInput.focus(), 100);
+
+        window.tryAutoFillBackfillNetValue();
+    };
+
+    window.closeBackfillModal = function() {
+        const modal = document.getElementById('backfillModal');
+        const confirmBtn = document.getElementById('backfillModalConfirmBtn');
+        if (modal) {
+            modal.classList.remove('active');
+        }
+        if (confirmBtn) {
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = '确定补录';
+        }
+        currentBackfillFetchToken += 1;
+        currentBackfillFundCode = null;
+    };
+
+    window.tryAutoFillBackfillNetValue = async function() {
+        if (!currentBackfillFundCode) return;
+
+        const dateInput = document.getElementById('backfillTradeDate');
+        const netValueInput = document.getElementById('backfillNetValue');
+        const hint = document.getElementById('backfillNetValueHint');
+        if (!dateInput || !netValueInput || !hint) return;
+
+        const tradeDate = String(dateInput.value || '').trim();
+        if (!tradeDate) {
+            hint.textContent = '请选择日期后自动填充净值';
+            hint.style.color = 'var(--text-dim)';
+            return;
+        }
+
+        const fetchToken = ++currentBackfillFetchToken;
+        hint.textContent = '正在查询该日期净值...';
+        hint.style.color = 'var(--text-dim)';
+
+        try {
+            const response = await fetch(`/api/fund/net-value-by-date?code=${encodeURIComponent(currentBackfillFundCode)}&date=${encodeURIComponent(tradeDate)}`);
+            const result = await response.json();
+
+            if (fetchToken !== currentBackfillFetchToken) return;
+
+            if (!result.success) {
+                hint.textContent = result.message || '自动查询净值失败，请手动输入';
+                hint.style.color = 'var(--down-color)';
+                return;
+            }
+
+            if (result.found && isFinite(parseFloat(result.net_value))) {
+                netValueInput.value = parseFloat(result.net_value).toFixed(4);
+                hint.textContent = `已自动填充 ${result.trade_date} 净值：${parseFloat(result.net_value).toFixed(4)}`;
+                hint.style.color = 'var(--up-color)';
+                return;
+            }
+
+            hint.textContent = result.message || '趋势数据中无该日期净值，请手动输入';
+            hint.style.color = 'var(--text-dim)';
+        } catch (e) {
+            if (fetchToken !== currentBackfillFetchToken) return;
+            hint.textContent = '自动查询净值失败，请手动输入';
+            hint.style.color = 'var(--down-color)';
+        }
+    };
+
+    window.confirmBackfillBuy = async function() {
+        if (!currentBackfillFundCode) {
+            alert('未选择基金');
+            return;
+        }
+
+        const dateInput = document.getElementById('backfillTradeDate');
+        const netValueInput = document.getElementById('backfillNetValue');
+        const amountInput = document.getElementById('backfillAmount');
+        const confirmBtn = document.getElementById('backfillModalConfirmBtn');
+        if (!dateInput || !netValueInput || !amountInput || !confirmBtn) return;
+
+        const tradeDate = String(dateInput.value || '').trim();
+        const netValue = parseFloat(netValueInput.value);
+        const amount = parseFloat(amountInput.value);
+
+        if (!tradeDate) {
+            alert('请选择买入日期');
+            dateInput.focus();
+            return;
+        }
+
+        if (!isFinite(netValue) || netValue <= 0) {
+            alert('请输入大于0的当日净值');
+            netValueInput.focus();
+            return;
+        }
+
+        if (!isFinite(amount) || amount <= 0) {
+            alert('请输入大于0的买入金额');
+            amountInput.focus();
+            return;
+        }
+
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = '补录中...';
+
+        try {
+            const response = await fetch('/api/fund/buy-backfill', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    code: currentBackfillFundCode,
+                    trade_date: tradeDate,
+                    net_value: netValue,
+                    amount: amount,
+                })
+            });
+
+            const result = await response.json();
+            if (!result.success) {
+                alert(result.message || '补录失败');
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = '确定补录';
+                return;
+            }
+
+            const updatedShares = parseFloat(result.current_shares || 0);
+            if (!window.fundSharesData) {
+                window.fundSharesData = {};
+            }
+            window.fundSharesData[currentBackfillFundCode] = updatedShares;
+
+            const star = document.querySelector(`.fund-hold-star[data-code="${currentBackfillFundCode}"]`);
+            if (star) {
+                const isHeld = updatedShares > 0;
+                star.textContent = isHeld ? '⭐' : '☆';
+                star.dataset.hold = isHeld ? '1' : '0';
+            }
+
+            window.closeBackfillModal();
+
+            if (typeof fetchPortfolioData === 'function') {
+                await fetchPortfolioData();
+            } else if (typeof calculatePositionSummary === 'function') {
+                calculatePositionSummary();
+            }
+
+            alert(result.message || '补录成功');
+        } catch (e) {
+            alert('补录失败: ' + (e?.message || e));
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = '确定补录';
+        }
+    };
 
     // ==================== Shares Modal Functions ====================
 
@@ -1277,20 +1590,32 @@ document.addEventListener('DOMContentLoaded', function() {
             const result = await response.json();
 
             if (result.success) {
+                const latestShares = parseFloat(result.current_shares ?? shares) || 0;
+                const latestIsHold = result.current_is_hold !== undefined ? !!result.current_is_hold : (latestShares > 0);
+
                 // 更新全局存储
                 if (!window.fundSharesData) {
                     window.fundSharesData = {};
                 }
-                window.fundSharesData[currentSharesFundCode] = shares;
+                window.fundSharesData[currentSharesFundCode] = latestShares;
+
+                const star = document.querySelector(`.fund-hold-star[data-code="${currentSharesFundCode}"]`);
+                if (star) {
+                    star.textContent = latestIsHold ? '⭐' : '☆';
+                    star.dataset.hold = latestIsHold ? '1' : '0';
+                }
 
                 // 更新按钮状态
-                updateSharesButton(currentSharesFundCode, shares);
-
-                // 重新计算持仓统计
-                calculatePositionSummary();
+                updateSharesButton(currentSharesFundCode, latestShares);
 
                 // 关闭弹窗
                 window.closeSharesModal();
+
+                if (typeof fetchPortfolioData === 'function') {
+                    await fetchPortfolioData();
+                } else {
+                    calculatePositionSummary();
+                }
 
                 alert(result.message);
             } else {
@@ -1301,11 +1626,50 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     };
 
-    // 全局暴露份额相关函数
-    window.openSharesModal = openSharesModal;
-    window.closeSharesModal = closeSharesModal;
-    window.confirmShares = confirmShares;
-    window.getFundShares = getFundShares;
+    const tradeModal = document.getElementById('tradeModal');
+    if (tradeModal) {
+        tradeModal.addEventListener('click', function(e) {
+            if (e.target === tradeModal) {
+                closeTradeModal();
+            }
+        });
+    }
+
+    const backfillModal = document.getElementById('backfillModal');
+    if (backfillModal) {
+        backfillModal.addEventListener('click', function(e) {
+            if (e.target === backfillModal) {
+                closeBackfillModal();
+            }
+        });
+    }
+
+    const tradeInput = document.getElementById('tradeModalInput');
+    if (tradeInput) {
+        tradeInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                confirmTrade();
+            }
+        });
+    }
+
+    const backfillAmountInput = document.getElementById('backfillAmount');
+    if (backfillAmountInput) {
+        backfillAmountInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                confirmBackfillBuy();
+            }
+        });
+    }
+
+    const backfillTradeDateInput = document.getElementById('backfillTradeDate');
+    if (backfillTradeDateInput) {
+        backfillTradeDateInput.addEventListener('change', function() {
+            if (typeof window.tryAutoFillBackfillNetValue === 'function') {
+                window.tryAutoFillBackfillNetValue();
+            }
+        });
+    }
 
     // ==================== Auto-Refresh System ====================
     let refreshInterval;
@@ -1543,17 +1907,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 currentTable.innerHTML = newTableInnerHTML;
             }
 
-            // 如果之前有展开的趋势图，刷新后自动还原
-            if (window.currentFundChartState && window.toggleFundRowChart) {
-                const chartState = { ...window.currentFundChartState };
-                window.currentFundChartState = null;
-                window.toggleFundRowChart(
-                    chartState.code,
-                    chartState.type,
-                    chartState.interval || 'ONE_YEAR',
-                    { forceOpen: true }
-                );
+            // 刷新后默认折叠已展开的业绩/估值曲线
+            const expandedChartRow = document.querySelector('tr.fund-chart-row');
+            if (expandedChartRow) {
+                expandedChartRow.remove();
             }
+            if (window.fundRowChartInstance) {
+                window.fundRowChartInstance.destroy();
+                window.fundRowChartInstance = null;
+            }
+            window.currentFundChartState = null;
 
             // 4. 重新计算持仓统计（会自动使用新的表格数据 + 最新份额）
             if (typeof calculatePositionSummary === 'function') {

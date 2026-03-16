@@ -163,51 +163,101 @@ def enhance_fund_tab_content(content, shares_map=None):
         </div>
     """
 
-    # 在"近30天"列后添加"持仓份额"列
-    content = re.sub(r'(<th[^>]*>近30天</th>)',
-                   r'\1\n                    <th>持仓份额</th>',
+    trade_modal = """
+        <div class="sector-modal" id="tradeModal">
+            <div class="sector-modal-content" style="max-width: 420px;">
+                <div class="sector-modal-header" id="tradeModalTitle">基金交易</div>
+                <div style="padding: 20px;">
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">基金代码</label>
+                        <div id="tradeModalFundCode" style="padding: 10px; background: rgba(59, 130, 246, 0.1); border-radius: 6px; color: #3b82f6; font-weight: 600; font-family: monospace;"></div>
+                    </div>
+                    <div style="margin-bottom: 10px;">
+                        <label for="tradeModalInput" id="tradeModalInputLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">请输入数值</label>
+                        <input type="number" id="tradeModalInput" step="0.01" min="0" placeholder="请输入数值"
+                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                    </div>
+                    <div id="tradeModalHint" style="font-size: 12px; color: var(--text-dim);"></div>
+                </div>
+                <div class="sector-modal-footer">
+                    <button class="btn btn-secondary" onclick="closeTradeModal()">取消</button>
+                    <button class="btn btn-primary" id="tradeModalConfirmBtn" onclick="confirmTrade()">确定</button>
+                </div>
+            </div>
+        </div>
+    """
+
+    backfill_modal = """
+        <div class="sector-modal" id="backfillModal">
+            <div class="sector-modal-content" style="max-width: 460px;">
+                <div class="sector-modal-header">补录买入交易</div>
+                <div style="padding: 20px;">
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">基金代码</label>
+                        <div id="backfillModalFundCode" style="padding: 10px; background: rgba(59, 130, 246, 0.1); border-radius: 6px; color: #3b82f6; font-weight: 600; font-family: monospace;"></div>
+                    </div>
+                    <div style="margin-bottom: 12px;">
+                        <label for="backfillTradeDate" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">买入日期</label>
+                        <input type="date" id="backfillTradeDate"
+                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                    </div>
+                    <div style="margin-bottom: 12px;">
+                        <label for="backfillNetValue" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">当日净值</label>
+                        <input type="number" id="backfillNetValue" step="0.0001" min="0" placeholder="例如 1.5803"
+                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                        <div id="backfillNetValueHint" style="margin-top: 6px; font-size: 12px; color: var(--text-dim);">选择日期后将尝试自动填充净值（若趋势数据可用）</div>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <label for="backfillAmount" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">买入金额（元）</label>
+                        <input type="number" id="backfillAmount" step="0.01" min="0" placeholder="例如 100"
+                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                    </div>
+                </div>
+                <div class="sector-modal-footer">
+                    <button class="btn btn-secondary" onclick="closeBackfillModal()">取消</button>
+                    <button class="btn btn-primary" id="backfillModalConfirmBtn" onclick="confirmBackfillBuy()">确定补录</button>
+                </div>
+            </div>
+        </div>
+    """
+
+    # 在"持有/年化"列后拼接"操作"列（UI增强列，不属于fund.py数据列）
+    content = re.sub(r'(<th[^>]*>持有/年化</th>)',
+                   r'\1\n                    <th>操作</th>',
                    content, count=1)
 
-    # 在每个数据行添加份额输入框
-    # 先找到所有表格行，然后在包含基金代码的行末尾添加份额输入框
-    def add_shares_to_row(match):
+    # 在每个数据行拼接买入/卖出操作按钮
+    def add_operation_to_row(match):
         row_content = match.group(0)
-        # 从行内容中提取第一个6位数字（基金代码）- 假设第一列是基金代码
         code_match = re.search(r'data-code="(\d{6})"', row_content) or re.search(r'<td[^>]*>(\d{6})</td>', row_content)
-        if code_match:
-            fund_code = code_match.group(1)
+        if not code_match:
+            return row_content
 
-            # 根据份额数据确定按钮状态
-            shares = 0
-            if shares_map and fund_code in shares_map:
-                try:
-                    shares = float(shares_map[fund_code])
-                except (ValueError, TypeError):
-                    shares = 0
-
-            # 根据份额值设置按钮文本和颜色
-            if shares > 0:
-                button_text = '修改'
-                button_color = '#10b981'  # 绿色
-            else:
-                button_text = '设置'
-                button_color = '#3b82f6'  # 蓝色
-
-            # 在行末添加份额设置按钮（在</tr>之前）- 去掉最后的</tr>，添加按钮后再加回
-            row_with_shares = row_content[:-5] + f'''<td>
-                <button class="shares-button" id="sharesBtn_{fund_code}"
-                        onclick="openSharesModal('{fund_code}')"
-                        style="padding: 6px 12px; background: {button_color}; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; transition: all 0.2s;">
-                    {button_text}
+        fund_code = code_match.group(1)
+        row_with_ops = row_content[:-5] + f'''<td>
+            <div style="display:flex;gap:6px;justify-content:center;align-items:center;flex-wrap:nowrap;">
+                <button class="shares-button" id="buyBtn_{fund_code}"
+                        onclick="buyFund('{fund_code}')"
+                        style="padding: 6px 10px; background: #ef4444; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s;">
+                    买入
                 </button>
-            </td></tr>'''
-            return row_with_shares
-        return row_content
+                <button class="shares-button" id="sellBtn_{fund_code}"
+                        onclick="sellFund('{fund_code}')"
+                        style="padding: 6px 10px; background: #10b981; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s;">
+                    卖出
+                </button>
+                <button class="shares-button" id="backfillBtn_{fund_code}"
+                        onclick="window.openBackfillModal && window.openBackfillModal('{fund_code}')"
+                        style="padding: 6px 10px; background: #6366f1; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s;">
+                    补录
+                </button>
+            </div>
+        </td></tr>'''
+        return row_with_ops
 
-    # 匹配完整的表格行（非贪婪匹配行内容）
-    content = re.sub(r'<tr>.*?</tr>', add_shares_to_row, content, flags=re.DOTALL)
+    content = re.sub(r'<tr>.*?</tr>', add_operation_to_row, content, flags=re.DOTALL)
 
-    return file_operations + position_summary + operations_panel + add_fund_area + content
+    return file_operations + position_summary + operations_panel + add_fund_area + trade_modal + backfill_modal + content
 
 
 def get_top_navbar_html(username=None):
@@ -621,7 +671,7 @@ def get_full_page_html_sidebar(tabs_data, username=None):
     </div>
 
     {js_script}
-    <script src="/static/js/main.js"></script>
+    <script src="/static/js/main.js?v=20260316"></script>
     <script src="/static/js/sidebar-nav.js"></script>
 </body>
 </html>'''
@@ -4093,7 +4143,7 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
         </div>
     </div>
 
-    <script src="/static/js/main.js"></script>
+    <script src="/static/js/main.js?v=20260316"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {{
             // 自动颜色化
@@ -4458,10 +4508,11 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             return `
                 <div class="inline-fund-chart" style="padding: 10px 20px;">
                     <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
-                        <div></div>
+                        <div class="fund-performance-latest-nav" style="font-size:12px;color:var(--text-dim);line-height:1.5;"></div>
                         <div style="font-size:13px;font-weight:600;color:var(--text-main);text-align:center;">📈 基金业绩曲线</div>
                         <div style="display:flex;gap:8px;flex-wrap:wrap;justify-self:end;">${{buttonsHtml}}</div>
                     </div>
+                    <div class="fund-performance-legend" style="display:flex;justify-content:center;gap:16px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;"></div>
                     <div style="height:260px;">
                         <canvas></canvas>
                     </div>
@@ -4473,6 +4524,46 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             const growthData = chartData.growth || [];
             const netValues = chartData.net_values || [];
             const isPerformanceChart = chartType === 'performance';
+            const benchmarkGrowthData = chartData.benchmark_growth || [];
+            const benchmarkLabel = chartData.benchmark_label || '沪深300';
+            const latestNetValue = chartData.latest_net_value;
+            const latestNetValueDate = chartData.latest_net_value_date;
+            const tradeMarkers = chartData.trade_markers || [];
+            const fundCurveColor = '#3b82f6';
+            const benchmarkColor = '#9ca3af';
+            const buyMarkerColor = '#ef4444';
+            const sellMarkerColor = '#3b82f6';
+
+            if (isPerformanceChart) {{
+                const wrapper = canvas.closest('.inline-fund-chart');
+                const latestNavEl = wrapper ? wrapper.querySelector('.fund-performance-latest-nav') : null;
+                const legendEl = wrapper ? wrapper.querySelector('.fund-performance-legend') : null;
+                if (latestNavEl) {{
+                    if (latestNetValue !== null && latestNetValue !== undefined && latestNetValue !== '') {{
+                        const navValue = Number(latestNetValue);
+                        const navDate = latestNetValueDate || '--';
+                        latestNavEl.innerHTML = `最新净值：<span style="color:var(--text-main);font-weight:600;">${{Number.isFinite(navValue) ? navValue.toFixed(4) : latestNetValue}}</span><br><span style="font-size:11px;">净值日期：${{navDate}}</span>`;
+                    }} else {{
+                        latestNavEl.innerHTML = `<span style="font-size:11px;">最新净值：--<br>净值日期：--</span>`;
+                    }}
+                }}
+                if (legendEl) {{
+                    legendEl.innerHTML = `
+                        <span style="display:inline-flex;align-items:center;gap:6px;color:${{fundCurveColor}};">
+                            <span style="display:inline-block;width:18px;height:0;border-top:2px solid ${{fundCurveColor}};"></span>基金业绩
+                        </span>
+                        <span style="display:inline-flex;align-items:center;gap:6px;color:${{benchmarkColor}};">
+                            <span style="display:inline-block;width:18px;height:0;border-top:2px solid ${{benchmarkColor}};"></span>${{benchmarkLabel}}
+                        </span>
+                        <span style="display:inline-flex;align-items:center;gap:6px;color:${{buyMarkerColor}};">
+                            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${{buyMarkerColor}};"></span>买入
+                        </span>
+                        <span style="display:inline-flex;align-items:center;gap:6px;color:${{sellMarkerColor}};">
+                            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${{sellMarkerColor}};"></span>卖出
+                        </span>
+                    `;
+                }}
+            }}
 
             if (!chartData.labels || chartData.labels.length === 0) {{
                 const wrapper = canvas.closest('.inline-fund-chart');
@@ -4486,42 +4577,91 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 window.fundRowChartInstance.destroy();
             }}
 
+            const datasets = [{{
+                label: '基金业绩',
+                data: growthData,
+                order: 20,
+                borderColor: fundCurveColor,
+                segment: {{
+                    borderColor: fundCurveColor
+                }},
+                backgroundColor: function(context) {{
+                    const chart = context.chart;
+                    const {{ctx, chartArea}} = chart;
+                    if (!chartArea || isPerformanceChart) return null;
+                    const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+                    gradient.addColorStop(0, 'rgba(59, 130, 246, 0.20)');
+                    gradient.addColorStop(1, 'rgba(59, 130, 246, 0.00)');
+                    return gradient;
+                }},
+                fill: !isPerformanceChart,
+                tension: 0.4,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                borderWidth: 2,
+                spanGaps: true
+            }}];
+
+            if (isPerformanceChart && benchmarkGrowthData.some(value => value !== null && value !== undefined)) {{
+                datasets.push({{
+                    label: benchmarkLabel,
+                    data: benchmarkGrowthData,
+                    order: 21,
+                    borderColor: benchmarkColor,
+                    backgroundColor: 'transparent',
+                    fill: false,
+                    tension: 0.25,
+                    pointRadius: 0,
+                    pointHoverRadius: 3,
+                    borderWidth: 2,
+                    spanGaps: true
+                }});
+            }}
+
+            if (isPerformanceChart && tradeMarkers.length > 0) {{
+                const buyMarkers = tradeMarkers.filter(item => item.type === 'buy');
+                const sellMarkers = tradeMarkers.filter(item => item.type === 'sell');
+
+                if (buyMarkers.length > 0) {{
+                    datasets.push({{
+                        label: '买入',
+                        data: buyMarkers,
+                        type: 'line',
+                        order: 0,
+                        showLine: false,
+                        pointRadius: 3,
+                        pointHoverRadius: 4,
+                        pointBackgroundColor: buyMarkerColor,
+                        pointBorderColor: buyMarkerColor,
+                        pointBorderWidth: 0,
+                        borderColor: buyMarkerColor,
+                        parsing: false
+                    }});
+                }}
+
+                if (sellMarkers.length > 0) {{
+                    datasets.push({{
+                        label: '卖出',
+                        data: sellMarkers,
+                        type: 'line',
+                        order: 0,
+                        showLine: false,
+                        pointRadius: 3,
+                        pointHoverRadius: 4,
+                        pointBackgroundColor: sellMarkerColor,
+                        pointBorderColor: sellMarkerColor,
+                        pointBorderWidth: 0,
+                        borderColor: sellMarkerColor,
+                        parsing: false
+                    }});
+                }}
+            }}
+
             window.fundRowChartInstance = new Chart(canvas.getContext('2d'), {{
                 type: 'line',
                 data: {{
                     labels: chartData.labels || [],
-                    datasets: [{{
-                        label: '涨幅 (%)',
-                        data: growthData,
-                        borderColor: function(context) {{
-                            const index = context.dataIndex;
-                            if (index === undefined || index < 0) return '#9ca3af';
-                            const pct = growthData[index];
-                            return pct > 0 ? '#f44336' : (pct < 0 ? '#4caf50' : '#9ca3af');
-                        }},
-                        segment: {{
-                            borderColor: function(context) {{
-                                const pct = growthData[context.p1DataIndex];
-                                return pct > 0 ? '#f44336' : (pct < 0 ? '#4caf50' : '#9ca3af');
-                            }}
-                        }},
-                        backgroundColor: function(context) {{
-                            const chart = context.chart;
-                            const {{ctx, chartArea}} = chart;
-                            if (!chartArea) return null;
-                            const lastPct = growthData[growthData.length - 1] || 0;
-                            const color = lastPct >= 0 ? '244, 67, 54' : '76, 175, 80';
-                            const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-                            gradient.addColorStop(0, 'rgba(' + color + ', 0.2)');
-                            gradient.addColorStop(1, 'rgba(' + color + ', 0.0)');
-                            return gradient;
-                        }},
-                        fill: true,
-                        tension: 0.4,
-                        pointRadius: 0,
-                        pointHoverRadius: 4,
-                        borderWidth: 2
-                    }}]
+                    datasets: datasets
                 }},
                 options: {{
                     responsive: true,
@@ -4539,10 +4679,24 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                                 }},
                                 label: function(context) {{
                                     const index = context.dataIndex;
-                                    const growth = growthData[index];
+                                    const datasetLabel = context.dataset.label || '涨幅';
+                                    const dataValue = context.parsed.y;
+                                    const raw = context.raw || {{}};
                                     if (isPerformanceChart) {{
-                                        return '涨幅: ' + (growth >= 0 ? '+' : '') + growth.toFixed(2) + '%';
+                                        if ((datasetLabel === '买入' || datasetLabel === '卖出') && raw.tx_time) {{
+                                            return [
+                                                datasetLabel + '：' + raw.tx_time,
+                                                '金额：¥' + Number(raw.amount || 0).toFixed(2),
+                                                '份额：' + Number(raw.shares || 0).toFixed(2),
+                                                '净值：' + Number(raw.net_value || 0).toFixed(4)
+                                            ];
+                                        }}
+                                        if (dataValue === null || dataValue === undefined) {{
+                                            return datasetLabel + ': --';
+                                        }}
+                                        return datasetLabel + ': ' + (dataValue >= 0 ? '+' : '') + dataValue.toFixed(2) + '%';
                                     }}
+                                    const growth = growthData[index];
                                     const netValue = netValues[index];
                                     return [
                                         '涨幅: ' + (growth >= 0 ? '+' : '') + growth.toFixed(2) + '%',
@@ -5041,7 +5195,7 @@ def get_sectors_page_html(sectors_content, select_fund_content, fund_map, userna
         </div>
     </div>
 
-    <script src="/static/js/main.js"></script>
+    <script src="/static/js/main.js?v=20260316"></script>
     <script src="/static/js/sidebar-nav.js"></script>
     <script>
         function switchTab(tabName) {{

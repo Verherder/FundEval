@@ -103,6 +103,42 @@ class Database:
                            )
                        ''')
 
+        # 交易记录表（用于后续收益率与年化收益率计算）
+        cursor.execute('''
+                       CREATE TABLE IF NOT EXISTS fund_transactions
+                       (
+                           id INTEGER PRIMARY KEY AUTOINCREMENT,
+                           user_id INTEGER NOT NULL,
+                           fund_code TEXT NOT NULL,
+                           tx_type TEXT NOT NULL,
+                           amount REAL NOT NULL DEFAULT 0,
+                           shares REAL NOT NULL DEFAULT 0,
+                           net_value REAL,
+                           tx_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+                       )
+                       ''')
+
+        # 待确认买入记录（按生效净值日确认份额）
+        cursor.execute('''
+                       CREATE TABLE IF NOT EXISTS fund_pending_buys
+                       (
+                           id INTEGER PRIMARY KEY AUTOINCREMENT,
+                           user_id INTEGER NOT NULL,
+                           fund_code TEXT NOT NULL,
+                           amount REAL NOT NULL DEFAULT 0,
+                           effective_date TEXT NOT NULL,
+                           status TEXT NOT NULL DEFAULT 'pending',
+                           settled_tx_id INTEGER,
+                           settled_net_value REAL,
+                           settled_shares REAL,
+                           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           settled_at TIMESTAMP,
+                           FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                           FOREIGN KEY (settled_tx_id) REFERENCES fund_transactions (id)
+                       )
+                       ''')
+
         # 检查并添加chart_default字段
         cursor.execute("PRAGMA table_info(user_funds)")
         columns = [col[1] for col in cursor.fetchall()]
@@ -300,12 +336,15 @@ class Database:
             conn = self.get_connection()
             cursor = conn.cursor()
 
+            shares = float(shares)
+            is_hold = 1 if shares > 0 else 0
+
             cursor.execute('''
                            UPDATE user_funds
-                           SET shares = ?
+                           SET shares = ?, is_hold = ?
                            WHERE user_id = ?
                              AND fund_code = ?
-                           ''', (shares, user_id, fund_code))
+                           ''', (shares, is_hold, user_id, fund_code))
 
             conn.commit()
             affected_rows = cursor.rowcount
@@ -418,6 +457,156 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to update chart default: {e}")
             return False
+
+    def update_fund_shares_delta(self, user_id, fund_code, shares_delta):
+        """按增量更新基金份额，返回更新后的份额。"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT shares FROM user_funds
+                WHERE user_id = ? AND fund_code = ?
+            ''', (user_id, fund_code))
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return None
+
+            current_shares = float(row['shares'] or 0)
+            new_shares = current_shares + float(shares_delta)
+            if new_shares < 0:
+                conn.close()
+                return None
+
+            is_hold = 1 if new_shares > 0 else 0
+            cursor.execute('''
+                UPDATE user_funds
+                SET shares = ?, is_hold = ?
+                WHERE user_id = ? AND fund_code = ?
+            ''', (new_shares, is_hold, user_id, fund_code))
+
+            conn.commit()
+            conn.close()
+            return new_shares
+        except Exception as e:
+            logger.error(f"Failed to update shares delta: {e}")
+            return None
+
+    def add_fund_transaction(self, user_id, fund_code, tx_type, amount, shares, net_value=None, tx_time=None):
+        """写入基金交易记录。"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            if tx_time:
+                cursor.execute('''
+                    INSERT INTO fund_transactions
+                    (user_id, fund_code, tx_type, amount, shares, net_value, tx_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (user_id, fund_code, tx_type, amount, shares, net_value, tx_time))
+            else:
+                cursor.execute('''
+                    INSERT INTO fund_transactions
+                    (user_id, fund_code, tx_type, amount, shares, net_value)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (user_id, fund_code, tx_type, amount, shares, net_value))
+
+            tx_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return tx_id
+        except Exception as e:
+            logger.error(f"Failed to add transaction: {e}")
+            return None
+
+    def add_pending_buy(self, user_id, fund_code, amount, effective_date):
+        """创建待确认买入记录。"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO fund_pending_buys
+                (user_id, fund_code, amount, effective_date, status)
+                VALUES (?, ?, ?, ?, 'pending')
+            ''', (user_id, fund_code, amount, effective_date))
+            pending_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return pending_id
+        except Exception as e:
+            logger.error(f"Failed to add pending buy: {e}")
+            return None
+
+    def get_pending_buys(self, user_id, fund_code=None):
+        """获取待确认买入记录（按创建时间正序）。"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            if fund_code:
+                cursor.execute('''
+                    SELECT id, user_id, fund_code, amount, effective_date, status,
+                           settled_tx_id, settled_net_value, settled_shares, created_at, settled_at
+                    FROM fund_pending_buys
+                    WHERE user_id = ? AND fund_code = ? AND status = 'pending'
+                    ORDER BY datetime(created_at) ASC, id ASC
+                ''', (user_id, fund_code))
+            else:
+                cursor.execute('''
+                    SELECT id, user_id, fund_code, amount, effective_date, status,
+                           settled_tx_id, settled_net_value, settled_shares, created_at, settled_at
+                    FROM fund_pending_buys
+                    WHERE user_id = ? AND status = 'pending'
+                    ORDER BY datetime(created_at) ASC, id ASC
+                ''', (user_id,))
+
+            rows = cursor.fetchall()
+            conn.close()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Failed to get pending buys for user {user_id}: {e}")
+            return []
+
+    def mark_pending_buy_settled(self, pending_id, settled_tx_id, settled_net_value, settled_shares):
+        """将待确认买入标记为已结算。"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE fund_pending_buys
+                SET status = 'settled',
+                    settled_tx_id = ?,
+                    settled_net_value = ?,
+                    settled_shares = ?,
+                    settled_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'pending'
+            ''', (settled_tx_id, settled_net_value, settled_shares, pending_id))
+            conn.commit()
+            affected_rows = cursor.rowcount
+            conn.close()
+            return affected_rows > 0
+        except Exception as e:
+            logger.error(f"Failed to mark pending buy settled: {e}")
+            return False
+
+    def get_fund_transactions(self, user_id, fund_code):
+        """获取单只基金的交易记录（按时间正序）。"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, user_id, fund_code, tx_type, amount, shares, net_value, tx_time
+                FROM fund_transactions
+                WHERE user_id = ? AND fund_code = ?
+                ORDER BY datetime(tx_time) ASC, id ASC
+            ''', (user_id, fund_code))
+            rows = cursor.fetchall()
+            conn.close()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Failed to get transactions for user {user_id}, fund {fund_code}: {e}")
+            return []
 
     def get_chart_default_fund(self, user_id):
         """获取估值趋势图默认基金
