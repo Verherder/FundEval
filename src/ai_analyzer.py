@@ -19,6 +19,8 @@ from ddgs import DDGS
 from langchain.tools import tool
 from loguru import logger
 
+from src.http_timing import timed_http_request
+
 
 @tool
 def search_news(query: str) -> str:
@@ -121,7 +123,7 @@ def fetch_webpage(url: str) -> str:
         import urllib3
         urllib3.disable_warnings()
 
-        response = requests.get(url, headers=headers, timeout=10, verify=False)
+        response = timed_http_request(requests, "GET", url, source="web", headers=headers, timeout=10, verify=False)
         response.encoding = response.apparent_encoding
 
         soup = BeautifulSoup(response.text, 'lxml')
@@ -1105,7 +1107,15 @@ class AIAnalyzer:
                     headers = {
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                     }
-                    response = requests.get(url, headers=headers, timeout=10, verify=False)
+                    response = timed_http_request(
+                        requests,
+                        "GET",
+                        url,
+                        source="web",
+                        headers=headers,
+                        timeout=10,
+                        verify=False,
+                    )
                     response.encoding = response.apparent_encoding
 
                     soup = BeautifulSoup(response.text, 'lxml')

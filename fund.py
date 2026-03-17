@@ -8,6 +8,7 @@ import random
 import re
 import threading
 import time
+from decimal import Decimal, ROUND_HALF_UP
 
 import requests
 import urllib3
@@ -17,10 +18,22 @@ from loguru import logger
 from tabulate import tabulate
 
 from src.ai_analyzer import AIAnalyzer
+from src.http_timing import timed_http_request
 from src.module_html import get_table_html
+from src.yaml_config import get_data_source_urls
 
 # 加载环境变量
 load_dotenv()
+
+DATA_SOURCE_URLS = get_data_source_urls()
+
+PERFORMANCE_CHART_INTERVALS = {
+    "ONE_MONTH": "近1月",
+    "THREE_MONTH": "近3月",
+    "SIX_MONTH": "近6月",
+    "ONE_YEAR": "近1年",
+    "THREE_YEAR": "近3年",
+}
 
 sem = threading.Semaphore(5)
 
@@ -80,15 +93,18 @@ class LanFund:
         self.user_id = user_id  # 用户ID，如果为None则使用文件模式
         self.db = db  # 数据库实例，从外部传入
 
+        # 普通 HTTP 会话使用requests（fund123）
         self.session = requests.Session()
-        self.baidu_session = curl_requests.Session(impersonate="chrome")
+        # 百度行情等使用 curl_cffi，会抛 CurlError/Timeout，需要全局容错
+        # self.baidu_session = curl_requests.Session(impersonate="chrome")
+        self.baidu_session = requests.Session()
         self.baidu_session.headers = {
             "accept": "application/vnd.finance-web.v1+json",
             "accept-language": "zh-CN,zh;q=0.9",
             "acs-token": "1769925606098_1770001866425_B6lkFxZg0PzQhmCXjMfTJUxYBn+en+J7W6a8XGyGMqfxPfIv2RgeZG8wimRzlhAxlZlErxq7wN5rVnCfPj6s/UNiA1a1hfyItpnMrru1lzDxUcicsi2ngKjmVCdUfqRZTcHPnfDWrt4phJcS7Ue+Sh6Ru/GVG+1McDUmf/d52zDv5Q6QM7CAJfHDqsCMP65SNjo63Xljm+aAIzDzKErfG+LOR706MJaZGY2o/hGcESyOy3FcWv+pYNFUjpV3M5sMFNEDa50fWh4J9PZpQDxDQLNhr9LSYunQUxe6wtNEGds85p9V6/yU6v+jA9q0h9/OyQJ/ZuD1lP0VPEACEc4qJvfItxhuK9MfKM+j6Spc/N6Qomh6pZYt6iLJjJp652xIqZurCmxem2Z3Vqu+mcZ9FN1l0qU6dx4hkaTZk3850FE/n6YW+HL74Mp8L+YR/Q2VMV3ARkSzPHgOS9iA6rBAaBiJf2Ni/BTHNSyFxJJjazI=",
-            "origin": "https://gushitong.baidu.com",
+            "origin": DATA_SOURCE_URLS['gushitong_origin'],
             "priority": "u=1, i",
-            "referer": "https://gushitong.baidu.com/",
+            "referer": DATA_SOURCE_URLS['gushitong_referer'],
             "sec-ch-ua": "\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"",
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": "\"Windows\"",
@@ -99,11 +115,20 @@ class LanFund:
         }
         self._csrf = ""
         self.report_dir = None  # 默认不输出报告文件（需通过 -o 参数指定）
-        self.load_cache()
-        self.init()
         self.result = []
+        self._cache_dirty = False
+        
+        # 加载缓存数据，外部接口失败时不影响基础功能
+        self.load_cache()
+        try:
+            self.init()
+        except Exception as e:
+            logger.error(f"初始化失败(网络或接口问题，不影响登录等基础功能): {e}")
 
     def load_cache(self):
+        """
+        加载缓存数据，优先从数据库加载（如果有user_id），否则从文件加载。
+        """
         """加载缓存数据，优先从数据库加载（如果有user_id），否则从文件加载"""
         if self.user_id is not None and self.db is not None:
             # 从数据库加载
@@ -119,7 +144,9 @@ class LanFund:
         #     logger.debug(f"加载 {len(self.CACHE_MAP)} 个基金代码缓存成功")
 
     def save_cache(self):
-        """保存缓存数据，优先保存到数据库（如果有user_id），否则保存到文件"""
+        """
+        保存缓存数据，优先保存到数据库（如果有user_id），否则保存到json文件。
+        """
         if self.user_id is not None and self.db is not None:
             # 保存到数据库
             self.db.save_user_funds(self.user_id, self.CACHE_MAP)
@@ -129,25 +156,61 @@ class LanFund:
                 json.dump(self.CACHE_MAP, f, ensure_ascii=False, indent=4)
 
     def init(self):
-        res = self.session.get("https://www.fund123.cn/fund", headers={
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
-        }, timeout=10, verify=False)
-        self._csrf = re.findall('\"csrf\":\"(.*?)\"', res.text)[0]
+        """
+        初始化外部网站所需的 csrf / cookie 等。
+        任何网络超时、DNS 解析失败等异常都只记录日志，不向外抛出。
+        """
+        # fund123: 获取 csrf
+        try:
+            res = timed_http_request(
+                self.session,
+                "GET",
+                DATA_SOURCE_URLS['fund123_fund_page'],
+                source="fund123",
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+                },
+                timeout=10,
+                verify=False,
+            )
+            csrf_matches = re.findall('\"csrf\":\"(.*?)\"', res.text)
+            if csrf_matches:
+                self._csrf = csrf_matches[0]
+            else:
+                logger.warning("未能在 fund123 页面中解析到 csrf，部分功能可能不可用")
+        except Exception as e:
+            logger.error(f"获取 fund123 csrf 失败（网络或接口问题）: {e}")
 
-        self.baidu_session.get("https://gushitong.baidu.com/index/ab-000001", headers={
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
-            "referer": "https://gushitong.baidu.com/"
-        }, timeout=10, verify=False)
+        # 百度行情预热：可能因 DNS/网络失败，但不影响主流程
+        try:
+            timed_http_request(
+                self.baidu_session,
+                "GET",
+                DATA_SOURCE_URLS['baidu_index_warmup'],
+                source="baidu",
+                headers={
+                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+                    "referer": DATA_SOURCE_URLS['gushitong_referer']
+                },
+                timeout=10,
+                verify=False,
+            )
+        except Exception as e:
+            logger.error(f"预热百度行情接口失败（网络或接口问题）: {e}")
         # self.baidu_session.cookies.update({
         #     "BDUSS": "3hJYkhPNEM3Z2xOeH5TLVU4OEhhU1hPUFYxdVV3V0pkd1VEMEhCTEgxRENMWEJsSVFBQUFBJCQAAAAAAAAAAAEAAAAVl0lPamRrZGpiZGIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMKgSGXCoEhlM",
         #     "BDUSS_BFESS": "3hJYkhPNEM3Z2xOeH5TLVU4OEhhU1hPUFYxdVV3V0pkd1VEMEhCTEgxRENMWEJsSVFBQUFBJCQAAAAAAAAAAAEAAAAVl0lPamRrZGpiZGIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMKgSGXCoEhlM",
         # })
 
     def add_code(self, codes):
+        """
+        添加基金代码到缓存，并同步到数据库或文件。
+        codes: str, 多个基金代码以逗号分隔。
+        """
         codes = codes.split(",")
         codes = [code.strip() for code in codes if code.strip()]
         for code in codes:
@@ -156,20 +219,30 @@ class LanFund:
                     "Accept-Language": "zh-CN,zh;q=0.9",
                     "Connection": "keep-alive",
                     "Content-Type": "application/json",
-                    "Origin": "https://www.fund123.cn",
-                    "Referer": "https://www.fund123.cn/fund",
+                    "Origin": DATA_SOURCE_URLS['fund123_origin'],
+                    "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
                     "X-API-Key": "foobar",
                     "accept": "json"
                 }
-                url = "https://www.fund123.cn/api/fund/searchFund"
+                url = DATA_SOURCE_URLS['fund123_search_api']
                 params = {
                     "_csrf": self._csrf
                 }
                 data = {
                     "fundCode": code
                 }
-                response = self.session.post(url, headers=headers, params=params, json=data, timeout=10, verify=False)
+                response = timed_http_request(
+                    self.session,
+                    "POST",
+                    url,
+                    source="fund123",
+                    headers=headers,
+                    params=params,
+                    json=data,
+                    timeout=10,
+                    verify=False,
+                )
                 if response.json()["success"]:
                     fund_key = response.json()["fundInfo"]["key"]
                     fund_name = response.json()["fundInfo"]["fundName"]
@@ -187,6 +260,10 @@ class LanFund:
         self.save_cache()
 
     def delete_code(self, codes):
+        """
+        删除基金代码。
+        codes: str, 多个基金代码以逗号分隔。
+        """
         codes = codes.split(",")
         codes = [code.strip() for code in codes if code.strip()]
         for code in codes:
@@ -200,8 +277,11 @@ class LanFund:
                 logger.error(f"删除基金代码【{code}】失败: {e}")
         self.save_cache()
 
-    def mark_fund_sector(self):
-        """标记基金板块（独立功能）"""
+    def mark_fund_sector_cli(self):
+        """
+        标记基金板块（命令行交互）。
+        这是独立功能
+        """
         now_codes = list(self.CACHE_MAP.keys())
         logger.debug(f"当前缓存基金代码: {now_codes}")
         logger.info("请输入基金代码, 多个基金代码以英文逗号分隔:")
@@ -271,8 +351,8 @@ class LanFund:
         """标记基金板块（Web API使用）
 
         Args:
-            codes: list of str, 基金代码列表
-            sectors: list of str, 板块名称列表
+            codes: list[str], 基金代码列表
+            sectors: list[str], 板块名称列表
         """
         for code in codes:
             if code in self.CACHE_MAP:
@@ -286,7 +366,7 @@ class LanFund:
         """删除基金板块标记（Web API使用）
 
         Args:
-            codes: list of str, 基金代码列表
+            codes: list[str], 基金代码列表
         """
         for code in codes:
             if code in self.CACHE_MAP:
@@ -296,8 +376,10 @@ class LanFund:
                 logger.warning(f"基金代码 {code} 不存在")
         self.save_cache()
 
-    def unmark_fund_sector(self):
-        """删除基金板块标记（独立功能）"""
+    def unmark_fund_sector_cli(self):
+        """
+        删除基金板块标记（命令行交互）。
+        """
         # 找出所有有板块标记的基金
         marked_codes = [code for code, data in self.CACHE_MAP.items() if data.get("sectors", [])]
         if not marked_codes:
@@ -334,21 +416,32 @@ class LanFund:
                     "Accept-Language": "zh-CN,zh;q=0.9",
                     "Connection": "keep-alive",
                     "Content-Type": "application/json",
-                    "Origin": "https://www.fund123.cn",
-                    "Referer": "https://www.fund123.cn/fund",
+                    "Origin": DATA_SOURCE_URLS['fund123_origin'],
+                    "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
                     "X-API-Key": "foobar",
                     "accept": "json"
                 }
-                url = f"https://www.fund123.cn/matiaria?fundCode={fund}"
-                response = self.session.get(url, headers=headers, timeout=10, verify=False)
+                # 最新净值来自 fund123 的基金详情接口（matiaria_tpl）。
+                # 这里直接从响应文本中提取 netValue / netValueDate，供基金列表、持仓金额、
+                # 以及 fund_server._get_latest_fund_quote() 复用。
+                url = DATA_SOURCE_URLS['fund123_matiaria_tpl'].format(fund=fund)
+                response = timed_http_request(
+                    self.session,
+                    "GET",
+                    url,
+                    source="fund123",
+                    headers=headers,
+                    timeout=10,
+                    verify=False,
+                )
                 dayOfGrowth = re.findall(r'"dayOfGrowth":"(.*?)"', response.text)[0]
                 dayOfGrowth = str(round(float(dayOfGrowth), 2)) + "%"
 
                 netValue = re.findall(r'"netValue":"(.*?)"', response.text)[0]
                 netValueDate = re.findall(r'"netValueDate":"(.*?)"', response.text)[0]
                 netValue = netValue + f"({netValueDate})"
-                url = "https://www.fund123.cn/api/fund/queryFundQuotationCurves"
+                url = DATA_SOURCE_URLS['fund123_curves_api']
                 params = {
                     "_csrf": self._csrf
                 }
@@ -356,7 +449,17 @@ class LanFund:
                     "productId": fund_key,
                     "dateInterval": "ONE_MONTH"
                 }
-                response = self.session.post(url, headers=headers, params=params, json=data, timeout=10, verify=False)
+                response = timed_http_request(
+                    self.session,
+                    "POST",
+                    url,
+                    source="fund123",
+                    headers=headers,
+                    params=params,
+                    json=data,
+                    timeout=10,
+                    verify=False,
+                )
                 if not response.json()["success"]:
                     logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
                     return
@@ -414,7 +517,7 @@ class LanFund:
                         consecutive_count = str(consecutive_count)
                         consecutive_growth = str(consecutive_growth)
 
-                url = "https://www.fund123.cn/api/fund/queryFundEstimateIntraday"
+                url = DATA_SOURCE_URLS['fund123_intraday_api']
                 params = {
                     "_csrf": self._csrf
                 }
@@ -428,7 +531,17 @@ class LanFund:
                     "format": True,
                     "source": "WEALTHBFFWEB"
                 }
-                response = self.session.post(url, headers=headers, params=params, json=data, timeout=10, verify=False)
+                response = timed_http_request(
+                    self.session,
+                    "POST",
+                    url,
+                    source="fund123",
+                    headers=headers,
+                    params=params,
+                    json=data,
+                    timeout=10,
+                    verify=False,
+                )
                 if response.json()["success"]:
                     if not response.json()["list"]:
                         now_time = "N/A"
@@ -439,6 +552,25 @@ class LanFund:
                             "%H:%M"
                         )
                         forecastGrowth = str(round(float(fund_info["forecastGrowth"]) * 100, 2)) + "%"
+
+                        # 记录“当日估值涨幅”历史（仅当估值更新时间为15:00时入库），用于后续与对应净值日的实际涨幅比较
+                        try:
+                            quote_dt = datetime.datetime.fromtimestamp(fund_info["time"] / 1000)
+                            is_final_quote = (quote_dt.hour == 15 and quote_dt.minute == 0)
+
+                            if is_final_quote:
+                                today_key = quote_dt.strftime("%Y-%m-%d")
+                                estimate_val = round(float(fund_info["forecastGrowth"]) * 100, 2)
+                                fund_cache = self.CACHE_MAP.get(fund, {})
+                                current_history = fund_cache.get("estimate_history", {})
+                                new_history = {today_key: estimate_val}
+                                # 覆盖旧数据：仅保留当天一条最终快照
+                                if current_history != new_history:
+                                    fund_cache["estimate_history"] = new_history
+                                    self._cache_dirty = True
+                        except Exception:
+                            pass
+
                         if not is_return:
                             if "-" in forecastGrowth:
                                 forecastGrowth = "\033[1;32m" + forecastGrowth
@@ -465,9 +597,16 @@ class LanFund:
                     # 合并连涨天数和连涨幅
                     consecutive_info = f"{consecutive_count}天 {consecutive_growth}"
                     # 合并近30天涨跌和总涨幅
-                    monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
+                    if is_return:
+                        rate_color = "var(--down-color)" if "-" in montly_growth_rate else "var(--up-color)"
+                        monthly_info = (
+                            f"<span style='color: var(--up-color) !important; font-weight: 600;'>{montly_growth_day}/{montly_growth_day_count}</span> "
+                            f"<span style='color: {rate_color} !important; font-weight: 600;'>{montly_growth_rate}</span>"
+                        )
+                    else:
+                        monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
                     self.result.append([
-                        fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, consecutive_info, monthly_info
+                        fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, netValueDate, consecutive_info, monthly_info
                     ])
                 else:
                     logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
@@ -482,14 +621,14 @@ class LanFund:
             "Accept-Language": "zh-CN,zh;q=0.9",
             "Connection": "keep-alive",
             "Content-Type": "application/json",
-            "Origin": "https://www.fund123.cn",
-            "Referer": "https://www.fund123.cn/fund",
+            "Origin": DATA_SOURCE_URLS['fund123_origin'],
+            "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
             "X-API-Key": "foobar",
             "accept": "json"
         }
 
-        url = "https://www.fund123.cn/api/fund/queryFundEstimateIntraday"
+        url = DATA_SOURCE_URLS['fund123_intraday_api']
         params = {
             "_csrf": self._csrf
         }
@@ -503,28 +642,41 @@ class LanFund:
             "format": True,
             "source": "WEALTHBFFWEB"
         }
-        response = self.session.post(url, headers=headers, params=params, json=data, timeout=10, verify=False)
-        if response.json()["success"]:
-            if not response.json()["list"]:
-                return []
+        try:
+            response = timed_http_request(
+                self.session,
+                "POST",
+                url,
+                source="fund123",
+                headers=headers,
+                params=params,
+                json=data,
+                timeout=10,
+                verify=False,
+            )
+            if response.json()["success"]:
+                if not response.json()["list"]:
+                    return []
+                else:
+                    results = []
+                    for fund_info in response.json()["list"]:
+                        now_time = datetime.datetime.fromtimestamp(fund_info["time"] / 1000).strftime(
+                            "%H:%M"
+                        )
+                        forecastGrowth = str(round(float(fund_info["forecastGrowth"]) * 100, 2)) + "%"
+                        forecastNetValue = str(round(float(fund_info["forecastNetValue"]), 4))
+                        results.append({
+                            "fund_name": fund_name,
+                            "fund_code": fund,
+                            "now_time": now_time,
+                            "forecastGrowth": forecastGrowth,
+                            "forecastNetValue": forecastNetValue
+                        })
+                    return results
             else:
-                results = []
-                for fund_info in response.json()["list"]:
-                    now_time = datetime.datetime.fromtimestamp(fund_info["time"] / 1000).strftime(
-                        "%H:%M"
-                    )
-                    forecastGrowth = str(round(float(fund_info["forecastGrowth"]) * 100, 2)) + "%"
-                    forecastNetValue = str(round(float(fund_info["forecastNetValue"]), 4))
-                    results.append({
-                        "fund_name": fund_name,
-                        "fund_code": fund,
-                        "now_time": now_time,
-                        "forecastGrowth": forecastGrowth,
-                        "forecastNetValue": forecastNetValue
-                    })
-                return results
-        else:
-            logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
+                logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
+        except Exception as e:
+            logger.error(f"获取基金当日估值数据失败【{fund}】: {e}")
         return []
 
     def get_fund_chart_data(self, fund_code, fund_data):
@@ -541,7 +693,11 @@ class LanFund:
                 'net_values': [1.2345, 1.2360, ...] # 净值数值
             }
         """
-        raw_data = self.get_fund_today_data(fund_code, fund_data)
+        try:
+            raw_data = self.get_fund_today_data(fund_code, fund_data)
+        except Exception as e:
+            logger.error(f"获取基金估值趋势图数据失败【{fund_code}】: {e}")
+            raw_data = []
         if not raw_data:
             return {
                 'labels': [],
@@ -555,7 +711,181 @@ class LanFund:
             'net_values': [float(point['forecastNetValue']) for point in raw_data]
         }
 
+    @staticmethod
+    def _format_curve_point_label(point, index):
+        """格式化业绩曲线点的横轴标签。"""
+        raw_label = None
+        for key in ("reportDateTimestamp", "point", "date", "time", "tradeDate", "day", "valueDate", "netValueDate", "x"):
+            if point.get(key) not in (None, ""):
+                raw_label = point.get(key)
+                break
+
+        if raw_label is None:
+            return str(index + 1)
+
+        if isinstance(raw_label, (int, float)):
+            integer_val = int(raw_label)
+            integer_str = str(integer_val)
+
+            if re.fullmatch(r"(?:19|20)\d{6}", integer_str):
+                try:
+                    return datetime.datetime.strptime(integer_str, "%Y%m%d").strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+
+            if re.fullmatch(r"\d{5}", integer_str):
+                try:
+                    excel_base = datetime.datetime(1899, 12, 30)
+                    return (excel_base + datetime.timedelta(days=integer_val)).strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+
+            timestamp = integer_val / 1000 if integer_val > 10 ** 11 else integer_val
+            try:
+                return datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+            except Exception:
+                return str(integer_val)
+
+        raw_label = str(raw_label).strip()
+        if re.fullmatch(r"\d{13}", raw_label):
+            return datetime.datetime.fromtimestamp(int(raw_label) / 1000).strftime("%Y-%m-%d")
+        if re.fullmatch(r"\d{10}", raw_label):
+            return datetime.datetime.fromtimestamp(int(raw_label)).strftime("%Y-%m-%d")
+        if re.fullmatch(r"(?:19|20)\d{6}", raw_label):
+            try:
+                return datetime.datetime.strptime(raw_label, "%Y%m%d").strftime("%Y-%m-%d")
+            except Exception:
+                return raw_label
+        if re.fullmatch(r"\d{5}", raw_label):
+            try:
+                excel_base = datetime.datetime(1899, 12, 30)
+                return (excel_base + datetime.timedelta(days=int(raw_label))).strftime("%Y-%m-%d")
+            except Exception:
+                return raw_label
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_label):
+            return raw_label
+        return raw_label
+
+    def get_fund_performance_chart_data(self, fund_code, fund_data, date_interval="ONE_YEAR"):
+        """获取基金业绩曲线数据。"""
+        fund_key = fund_data["fund_key"]
+
+        headers = {
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Connection": "keep-alive",
+            "Content-Type": "application/json",
+            "Origin": DATA_SOURCE_URLS['fund123_origin'],
+            "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+            "X-API-Key": "foobar",
+            "accept": "json"
+        }
+
+        if date_interval not in PERFORMANCE_CHART_INTERVALS:
+            date_interval = "ONE_YEAR"
+
+        try:
+            response = timed_http_request(
+                self.session,
+                "POST",
+                DATA_SOURCE_URLS['fund123_curves_api'],
+                source="fund123",
+                headers=headers,
+                params={"_csrf": self._csrf},
+                json={
+                    "productId": fund_key,
+                    "dateInterval": date_interval
+                },
+                timeout=10,
+                verify=False,
+            )
+            response_json = response.json()
+            if not response_json.get("success"):
+                logger.error(f"获取基金业绩曲线失败【{fund_code}】: {response.text.strip()}")
+                return {
+                    'labels': [],
+                    'growth': [],
+                    'date_interval': date_interval,
+                    'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
+                }
+
+            all_points = response_json.get("points", []) or []
+            points = [x for x in all_points if x.get("type") == "fund"]
+            benchmark_points = [x for x in all_points if x.get("type") == "indexbase"]
+            labels = []
+            growth = []
+            net_values = []
+            benchmark_growth_map = {}
+
+            def extract_point_net_value(point):
+                candidate_keys = [
+                    "netValue", "unitNetValue", "unitValue", "value", "nav", "close", "y"
+                ]
+                for key in candidate_keys:
+                    value = point.get(key)
+                    if value in (None, ""):
+                        continue
+                    try:
+                        return round(float(value), 4)
+                    except (TypeError, ValueError):
+                        continue
+                return None
+
+            for index, point in enumerate(benchmark_points):
+                try:
+                    rate = round(float(point.get("rate", 0)) * 100, 2)
+                except (TypeError, ValueError):
+                    continue
+                benchmark_label = self._format_curve_point_label(point, index)
+                benchmark_growth_map[benchmark_label] = rate
+
+            for index, point in enumerate(points):
+                try:
+                    rate = round(float(point.get("rate", 0)) * 100, 2)
+                except (TypeError, ValueError):
+                    continue
+                labels.append(self._format_curve_point_label(point, index))
+                growth.append(rate)
+                net_values.append(extract_point_net_value(point))
+
+            benchmark_growth = [benchmark_growth_map.get(label) for label in labels]
+
+            latest_net_value = None
+            latest_net_value_date = None
+            for index in range(len(net_values) - 1, -1, -1):
+                if net_values[index] is None:
+                    continue
+                latest_net_value = net_values[index]
+                latest_net_value_date = labels[index] if index < len(labels) else None
+                break
+
+            return {
+                'labels': labels,
+                'growth': growth,
+                'net_values': net_values,
+                'benchmark_label': '沪深300',
+                'benchmark_growth': benchmark_growth,
+                'latest_net_value': latest_net_value,
+                'latest_net_value_date': latest_net_value_date,
+                'date_interval': date_interval,
+                'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
+            }
+        except Exception as e:
+            logger.error(f"获取基金业绩曲线数据失败【{fund_code}】: {e}")
+            return {
+                'labels': [],
+                'growth': [],
+                'net_values': [],
+                'benchmark_label': '沪深300',
+                'benchmark_growth': [],
+                'latest_net_value': None,
+                'latest_net_value_date': None,
+                'date_interval': date_interval,
+                'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
+            }
+
     def search_code(self, is_return=False):
+        self._cache_dirty = False
         self.result = []
         threads = []
         for fund, fund_data in self.CACHE_MAP.items():
@@ -566,6 +896,10 @@ class LanFund:
             t.start()
         for t in threads:
             t.join()
+
+        if self._cache_dirty:
+            self.save_cache()
+            self._cache_dirty = False
 
         if is_return:
             self.result = sorted(
@@ -641,7 +975,7 @@ class LanFund:
 
                     for line_msg in format_table_msg([
                         ["基金代码", "基金名称", "持仓份额", "持仓市值", "预估收益", "预估涨跌", "实际收益",
-                         "实际涨跌"],
+                        "实际涨跌"],
                         *table_data
                     ]).split("\n"):
                         logger.info(line_msg)
@@ -766,7 +1100,7 @@ class LanFund:
         }
 
     def modify_shares(self):
-        """CLI交互式修改基金持仓份额"""
+        """修改基金持仓份额（CLI交互式）"""
         now_codes = list(self.CACHE_MAP.keys())
         if not now_codes:
             logger.warning("暂无基金代码，请先添加基金")
@@ -823,13 +1157,275 @@ class LanFund:
         logger.info("\n份额修改完成")
 
     def fund_html(self):
-        result = self.search_code(True)
+        result = self.search_code(True) or []
+
+        def parse_growth_percent(value):
+            if value in (None, "", "N/A", "--", "---"):
+                return None
+            match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value))
+            return float(match.group()) if match else None
+
+        def format_diff_value(value):
+            text = f"{value:.2f}".rstrip("0").rstrip(".")
+            return "0" if text in ("", "-0", "+0") else text
+
+        def safe_float(value, default=0.0):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def format_pct_value(value):
+            if value is None:
+                return "--"
+            rounded_value = round(float(value), 2)
+            if abs(rounded_value) < 1e-10:
+                color = "var(--text-main)"
+                text = "0.00%"
+            elif rounded_value > 0:
+                color = "var(--up-color)"
+                text = f"{rounded_value:.2f}%"
+            else:
+                color = "var(--down-color)"
+                text = f"{rounded_value:.2f}%"
+            return f"<span style='color:{color} !important;font-weight:600;'>{text}</span>"
+
+        def format_money_value(value):
+            if value is None:
+                return "--"
+            rounded_value = round(float(value), 2)
+            if abs(rounded_value) < 1e-10:
+                color = "var(--text-main)"
+            elif rounded_value > 0:
+                color = "var(--up-color)"
+            else:
+                color = "var(--down-color)"
+            return f"<span style='color:{color} !important;font-weight:600;'>¥{rounded_value:,.2f}</span>"
+
+        def xnpv(rate, cashflows):
+            if rate <= -0.999999:
+                return float("inf")
+            t0 = cashflows[0][0]
+            total_value = 0.0
+            for tx_date, amount in cashflows:
+                days = (tx_date - t0).total_seconds() / 86400
+                total_value += amount / ((1 + rate) ** (days / 365.0))
+            return total_value
+
+        def solve_xirr(cashflows):
+            if len(cashflows) < 2:
+                return None
+            has_positive = any(amount > 0 for _, amount in cashflows)
+            has_negative = any(amount < 0 for _, amount in cashflows)
+            if not (has_positive and has_negative):
+                return None
+
+            low, high = -0.9999, 10.0
+            try:
+                f_low = xnpv(low, cashflows)
+                f_high = xnpv(high, cashflows)
+            except Exception:
+                return None
+
+            expand_count = 0
+            while f_low * f_high > 0 and expand_count < 20:
+                high *= 2
+                try:
+                    f_high = xnpv(high, cashflows)
+                except Exception:
+                    return None
+                expand_count += 1
+
+            if f_low * f_high > 0:
+                return None
+
+            for _ in range(100):
+                mid = (low + high) / 2
+                f_mid = xnpv(mid, cashflows)
+                if abs(f_mid) < 1e-7:
+                    return mid
+                if f_low * f_mid <= 0:
+                    high = mid
+                    f_high = f_mid
+                else:
+                    low = mid
+                    f_low = f_mid
+            return (low + high) / 2
+
+        def compute_holding_metrics(fund_code, current_shares, current_net_value):
+            share_eps = 1e-4
+            if not self.db or self.user_id is None or current_shares <= 0 or current_net_value <= 0:
+                return None, None, None, current_shares
+
+            transactions = self.db.get_fund_transactions(self.user_id, fund_code)
+            if not transactions:
+                return None, None, None, current_shares
+
+            running_shares = 0.0
+            cycle_start = 0
+            for index, tx in enumerate(transactions):
+                tx_shares = safe_float(tx.get('shares'), 0.0)
+                tx_type = str(tx.get('tx_type', '')).lower()
+                if tx_type == 'buy':
+                    running_shares += tx_shares
+                elif tx_type == 'sell':
+                    running_shares -= tx_shares
+
+                if abs(running_shares) <= share_eps:
+                    running_shares = 0.0
+                    cycle_start = index + 1
+
+            cycle_transactions = transactions[cycle_start:]
+            if not cycle_transactions:
+                return None, None, None, current_shares
+
+            tx_remaining_shares = 0.0
+            tx_remaining_cost = 0.0
+            cashflows = []
+
+            for tx in cycle_transactions:
+                tx_type = str(tx.get('tx_type', '')).lower()
+                tx_shares = safe_float(tx.get('shares'), 0.0)
+                tx_amount = safe_float(tx.get('amount'), 0.0)
+                tx_net_value = safe_float(tx.get('net_value'), 0.0)
+                try:
+                    tx_date = datetime.datetime.fromisoformat(str(tx.get('tx_time')).replace(' ', 'T'))
+                except Exception:
+                    try:
+                        tx_date = datetime.datetime.strptime(str(tx.get('tx_time')), "%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        tx_date = datetime.datetime.now()
+
+                if tx_type == 'buy' and tx_shares > 0:
+                    buy_cost = tx_amount if tx_amount > 0 else tx_shares * tx_net_value
+                    tx_remaining_shares += tx_shares
+                    tx_remaining_cost += buy_cost
+                    cashflows.append((tx_date, -buy_cost))
+                elif tx_type == 'sell' and tx_shares > 0 and tx_remaining_shares > share_eps:
+                    avg_cost_before = (tx_remaining_cost / tx_remaining_shares) if tx_remaining_shares > share_eps else 0.0
+                    sell_shares = min(tx_shares, tx_remaining_shares)
+                    tx_remaining_cost -= sell_shares * avg_cost_before
+                    tx_remaining_shares -= sell_shares
+                    if tx_remaining_shares <= share_eps:
+                        tx_remaining_shares = 0.0
+                        tx_remaining_cost = 0.0
+                    proceeds = tx_amount if tx_amount > 0 else tx_shares * tx_net_value
+                    cashflows.append((tx_date, proceeds))
+
+            if tx_remaining_shares <= share_eps:
+                return None, None, None, current_shares
+
+            tx_remaining_shares = float(Decimal(str(tx_remaining_shares)).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP))
+            effective_shares = current_shares
+            if abs(tx_remaining_shares - current_shares) > share_eps:
+                effective_shares = tx_remaining_shares
+
+            avg_unit_cost = (tx_remaining_cost / tx_remaining_shares) if tx_remaining_shares > share_eps else 0.0
+            holding_cost = effective_shares * avg_unit_cost
+            current_value = effective_shares * current_net_value
+            holding_gain = current_value - holding_cost
+            holding_return = ((current_value - holding_cost) / holding_cost * 100) if holding_cost > 0 else None
+
+            cashflows.append((datetime.datetime.now(), current_value))
+            annual_rate = solve_xirr(cashflows)
+            annual_return = annual_rate * 100 if annual_rate is not None else None
+            return holding_return, annual_return, holding_gain, effective_shares
+
+        total = len(result)
+        hold_count = sum(1 for r in result if self.CACHE_MAP.get(r[0], {}).get("is_hold", False))
+        # 列：标记、基金代码、基金名称(共X个持有Y个)、估值、日涨幅、连涨/跌、近30天、持仓/收益、持有/年化
+        titles = ["标记", "基金代码", f"基金名称 (共{total}个持有{hold_count}个)", "估值", "日涨幅", "连涨/跌", "近30天", "持仓/收益", "持有/年化"]
+        rows = []
+        for row in result:
+            code = row[0]
+            is_hold = self.CACHE_MAP.get(code, {}).get("is_hold", False)
+            code_cell = (
+                f'<span class="fund-code-cell" data-code="{code}" '
+                f'style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">{code}</span>'
+            )
+            star_char = "⭐" if is_hold else "☆"
+            star_html = (
+                f'<span class="fund-hold-star" data-code="{code}" data-hold="{1 if is_hold else 0}" '
+                f'title="点击切换持有" style="cursor:pointer;user-select:none;">{star_char}</span>'
+            )
+            name = row[1]
+            if name.startswith("⭐ "):
+                name = name[2:]
+            # 将板块标注（🏷️ ...）放到基金名称下一行
+            if "🏷️" in name and "<span" in name:
+                name = name.replace(" <span", "<br><span", 1)
+            # 让基金名称可点击以展开/收起行内趋势图
+            name_cell = (
+                f'<span class="fund-name-cell" data-code="{code}" '
+                f'style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">{name}</span>'
+            )
+            now_time = row[2]
+            net_value_text = row[3]
+            net_value_display = net_value_text.split('(')[0] if isinstance(net_value_text, str) else net_value_text
+            shares = safe_float(self.CACHE_MAP.get(code, {}).get('shares', 0), 0.0)
+            net_value_num = safe_float(net_value_display, 0.0)
+            holding_return, annual_return, holding_gain, effective_shares = compute_holding_metrics(code, shares, net_value_num)
+            calc_shares = effective_shares if effective_shares is not None else shares
+            position_amount = net_value_num * calc_shares
+            position_amount_display = (
+                f"<span class='fund-position-amount-cell' data-code='{code}' "
+                f"style='cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看交易记录'>"
+                f"¥{position_amount:,.2f}</span>"
+                f"<br><span class='fund-position-gain-cell' data-code='{code}' "
+                f"style='font-size:11px;color:var(--text-dim);font-weight:400;cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看累计收益曲线'>{format_money_value(holding_gain)}</span>"
+            )
+            performance_display = (
+                f"{format_pct_value(holding_return)}"
+                f"<br>{format_pct_value(annual_return)}"
+            )
+            forecast_growth = row[4]
+            day_growth = row[5]
+            net_value_date = row[6]
+            consecutive_info = row[7]
+            monthly_info = row[8]
+            estimate_cell = (
+                f"{forecast_growth}"
+                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{now_time}</span>"
+            )
+
+            day_growth_val = parse_growth_percent(day_growth)
+            date_extra = ""
+
+            # 显示日期时统一短格式（YYYY-MM-DD -> MM-DD）
+            display_net_value_date = net_value_date
+            if isinstance(net_value_date, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", net_value_date):
+                display_net_value_date = net_value_date[5:]
+
+            # 仅当“净值日期对应的历史估值”存在时，才计算差值，避免拿今天估值去减旧净值日涨幅
+            fund_cache = self.CACHE_MAP.get(code, {})
+            estimate_history = fund_cache.get("estimate_history", {}) if isinstance(fund_cache, dict) else {}
+            history_estimate_val = None
+            if isinstance(net_value_date, str):
+                lookup_keys = [net_value_date]
+                if re.match(r"^\d{4}-\d{2}-\d{2}$", net_value_date):
+                    lookup_keys.append(net_value_date[5:])
+                elif re.match(r"^\d{2}-\d{2}$", net_value_date):
+                    current_year = datetime.datetime.now().year
+                    lookup_keys.append(f"{current_year}-{net_value_date}")
+
+                for key in lookup_keys:
+                    if key in estimate_history:
+                        history_estimate_val = estimate_history.get(key)
+                        break
+
+            if history_estimate_val is not None and day_growth_val is not None:
+                growth_diff = float(history_estimate_val) - day_growth_val
+                date_extra = f", {format_diff_value(growth_diff)}"
+
+            daygrowth_cell = (
+                f"{day_growth}"
+                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{display_net_value_date}{date_extra}</span>"
+            )
+            rows.append([star_html, code_cell, name_cell, estimate_cell, daygrowth_cell, consecutive_info, monthly_info, position_amount_display, performance_display])
         return get_table_html(
-            [
-                "基金代码", "基金名称", "当前时间", "净值", "估值", "日涨幅", "连涨/跌", "近30天"
-            ],
-            result,
-            sortable_columns=[4, 5, 6, 7]
+            titles,
+            rows,
+            sortable_columns=[3, 4, 5, 6, 7, 8],
         )
 
     @staticmethod
@@ -1052,7 +1648,7 @@ class LanFund:
         else:
             bk_code = id_map[bk_id]
 
-        url = "https://fund.eastmoney.com/data/FundGuideapi.aspx"
+        url = DATA_SOURCE_URLS['eastmoney_fundguide_api']
 
         params = {
             "dt": "4",
@@ -1070,7 +1666,7 @@ class LanFund:
 
         headers = {
             "Connection": "keep-alive",
-            "Referer": "https://fund.eastmoney.com/daogou/",
+            "Referer": DATA_SOURCE_URLS['eastmoney_fundguide_referer'],
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
@@ -1082,7 +1678,15 @@ class LanFund:
             "sec-ch-ua-platform": "\"Windows\""
         }
 
-        response = requests.get(url, headers=headers, params=params, timeout=30)
+        response = timed_http_request(
+            requests,
+            "GET",
+            url,
+            source="eastmoney",
+            headers=headers,
+            params=params,
+            timeout=30,
+        )
         text = json.loads(response.text.replace("var rankData =", "").strip())
         datas = text["datas"]
         fund_results = []
@@ -1123,114 +1727,125 @@ class LanFund:
         ]).split("\n"):
             logger.info(line_msg)
 
+
     def run(self, is_add=False, is_delete=False, is_hold=False, is_not_hold=False, report_dir=None,
             deep_mode=False, fast_mode=False, with_ai=False, select_mode=False, mark_sector=False, unmark_sector=False,
             modify_shares=False):
+        """
+        高层入口：根据参数执行数据更新、添加、删除、持有标记、AI分析等。
+        记录整体耗时日志（仅输出到终端）。
+        """
+        import time
+        start = time.perf_counter()
 
-        if select_mode:
-            self.select_fund()
-            return
-
-        # 处理修改份额功能
-        if modify_shares:
-            self.modify_shares()
-            return
-
-        # 处理标记板块功能
-        if mark_sector:
-            self.mark_fund_sector()
-            return
-
-        # 处理删除标记板块功能
-        if unmark_sector:
-            self.unmark_fund_sector()
-            return
-
-        # 存储报告目录到实例属性（None 表示不保存报告文件）
-        self.report_dir = report_dir
-
-        if not self.CACHE_MAP:
-            logger.warning("暂无缓存代码信息, 请先添加基金代码")
-            is_add = True
-            is_delete = False
-            is_hold = False
-            is_not_hold = False
-        if is_not_hold:
-            hold_codes = [code for code, data in self.CACHE_MAP.items() if data.get("is_hold", False)]
-            if not hold_codes:
-                logger.warning("暂无持有标注基金代码")
+        try:
+            if select_mode:
+                self.select_fund()
                 return
-            logger.debug(f"当前持有标注基金代码: {hold_codes}")
-            logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
-            codes = input()
-            codes = codes.split(",")
-            codes = [code.strip() for code in codes if code.strip()]
-            for code in codes:
-                try:
-                    if code in self.CACHE_MAP:
-                        self.CACHE_MAP[code]["is_hold"] = False
-                        logger.info(f"删除持有标注【{code}】成功")
-                    else:
-                        logger.warning(f"删除持有标注【{code}】失败: 不存在该基金代码")
-                except Exception as e:
-                    logger.error(f"删除持有标注【{code}】失败: {e}")
-            self.save_cache()
-            return
-        if is_hold:
-            now_codes = list(self.CACHE_MAP.keys())
-            logger.debug(f"当前缓存基金代码: {now_codes}")
-            logger.info("请输入基金代码, 多个基金代码以英文逗号分隔:")
-            codes = input()
-            codes = codes.split(",")
-            codes = [code.strip() for code in codes if code.strip()]
 
-            for code in codes:
-                try:
-                    if code not in self.CACHE_MAP:
-                        logger.warning(f"添加持有标注【{code}】失败: 不存在该基金代码, 请先添加该基金代码")
-                        continue
-
-                    self.CACHE_MAP[code]["is_hold"] = True
-                    logger.info(f"添加持有标注【{code}】成功")
-
-                except Exception as e:
-                    logger.error(f"添加持有标注【{code}】失败: {e}")
-            self.save_cache()
-            return
-
-        if is_delete:
-            now_codes = list(self.CACHE_MAP.keys())
-            logger.debug(f"当前缓存基金代码: {now_codes}")
-            logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
-            codes = input()
-            self.delete_code(codes)
-            logger.success("删除基金代码成功")
-            if not is_add:
+            # 处理修改份额功能
+            if modify_shares:
+                self.modify_shares()
                 return
-        if is_add:
-            logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
-            codes = input()
-            self.add_code(codes)
-            logger.success("添加基金代码成功")
-        else:
-            self.kx()
-            self.bk()
-            self.real_time_gold()
-            self.gold()
-            self.seven_A()
-            self.A()
-            self.get_market_info()
-            self.search_code()
-            if with_ai:
-                self.ai_analysis(deep_mode=deep_mode, fast_mode=fast_mode)
+
+            # 处理标记板块功能
+            if mark_sector:
+                self.mark_fund_sector_cli()
+                return
+
+            # 处理删除标记板块功能
+            if unmark_sector:
+                self.unmark_fund_sector_cli()
+                return
+
+            # 存储报告目录到实例属性（None 表示不保存报告文件）
+            self.report_dir = report_dir
+
+            if not self.CACHE_MAP:
+                logger.warning("暂无缓存代码信息, 请先添加基金代码")
+                is_add = True
+                is_delete = False
+                is_hold = False
+                is_not_hold = False
+            if is_not_hold:
+                hold_codes = [code for code, data in self.CACHE_MAP.items() if data.get("is_hold", False)]
+                if not hold_codes:
+                    logger.warning("暂无持有标注基金代码")
+                    return
+                logger.debug(f"当前持有标注基金代码: {hold_codes}")
+                logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
+                codes = input()
+                codes = codes.split(",")
+                codes = [code.strip() for code in codes if code.strip()]
+                for code in codes:
+                    try:
+                        if code in self.CACHE_MAP:
+                            self.CACHE_MAP[code]["is_hold"] = False
+                            logger.info(f"删除持有标注【{code}】成功")
+                        else:
+                            logger.warning(f"删除持有标注【{code}】失败: 不存在该基金代码")
+                    except Exception as e:
+                        logger.error(f"删除持有标注【{code}】失败: {e}")
+                self.save_cache()
+                return
+            if is_hold:
+                now_codes = list(self.CACHE_MAP.keys())
+                logger.debug(f"当前缓存基金代码: {now_codes}")
+                logger.info("请输入基金代码, 多个基金代码以英文逗号分隔:")
+                codes = input()
+                codes = codes.split(",")
+                codes = [code.strip() for code in codes if code.strip()]
+
+                for code in codes:
+                    try:
+                        if code not in self.CACHE_MAP:
+                            logger.warning(f"添加持有标注【{code}】失败: 不存在该基金代码, 请先添加该基金代码")
+                            continue
+
+                        self.CACHE_MAP[code]["is_hold"] = True
+                        logger.info(f"添加持有标注【{code}】成功")
+
+                    except Exception as e:
+                        logger.error(f"添加持有标注【{code}】失败: {e}")
+                self.save_cache()
+                return
+
+            if is_delete:
+                now_codes = list(self.CACHE_MAP.keys())
+                logger.debug(f"当前缓存基金代码: {now_codes}")
+                logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
+                codes = input()
+                self.delete_code(codes)
+                logger.success("删除基金代码成功")
+                if not is_add:
+                    return
+            if is_add:
+                logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
+                codes = input()
+                self.add_code(codes)
+                logger.success("添加基金代码成功")
+            else:
+                self.kx()
+                self.bk()
+                self.real_time_gold()
+                self.gold()
+                self.seven_A()
+                self.A()
+                self.get_market_info()
+                self.search_code()
+                if with_ai:
+                    self.ai_analysis(deep_mode=deep_mode, fast_mode=fast_mode)
+        finally:
+            elapsed = (time.perf_counter() - start) * 1000
+            print(f"[FUNC] LanFund.run total_elapsed_ms={elapsed:.1f}")
 
     def get_market_info(self, is_return=False):
         result = []
         try:
             markets = ["asia", "america"]
             for market in markets:
-                url = f"https://finance.pae.baidu.com/api/getbanner?market={market}&finClientType=pc"
-                response = self.baidu_session.get(url, timeout=10, verify=False)
+                url = DATA_SOURCE_URLS['baidu_getbanner_tpl'].format(market=market)
+                response = timed_http_request(self.baidu_session, "GET", url, source="baidu", timeout=10, verify=False)
                 if response.json()["ResultCode"] == "0":
                     market_list = response.json()["Result"]["list"]
                     for market_info in market_list:
@@ -1247,7 +1862,7 @@ class LanFund:
                         ])
 
             # 增加创业板指
-            url = "https://finance.pae.baidu.com/vapi/v1/getquotation"
+            url = DATA_SOURCE_URLS['baidu_getquotation_api']
             params = {
                 "srcid": "5353",
                 "all": "1",
@@ -1260,7 +1875,15 @@ class LanFund:
                 "name": "创业板指",
                 "finClientType": "pc"
             }
-            response = self.baidu_session.get(url, params=params, timeout=10, verify=False)
+            response = timed_http_request(
+                self.baidu_session,
+                "GET",
+                url,
+                source="baidu",
+                params=params,
+                timeout=10,
+                verify=False,
+            )
             if str(response.json()["ResultCode"]) == "0":
                 cur = response.json()["Result"]["cur"]
                 ratio = cur["ratio"]
@@ -1404,7 +2027,7 @@ class LanFund:
     def bk(is_return=False):
         bk_result = []
         try:
-            url = "https://push2.eastmoney.com/api/qt/clist/get"
+            url = DATA_SOURCE_URLS['eastmoney_bk_api']
             params = {
                 "cb": "",
                 "fid": "f62",
@@ -1418,7 +2041,15 @@ class LanFund:
                 "fs": "m:90 t:2",
                 "fields": "f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f204,f205,f124,f1,f13"
             }
-            response = requests.get(url, params=params, timeout=10, verify=False)
+            response = timed_http_request(
+                requests,
+                "GET",
+                url,
+                source="eastmoney",
+                params=params,
+                timeout=10,
+                verify=False,
+            )
             if str(response.json()["data"]):
                 data = response.json()["data"]
                 for bk in data["diff"]:
@@ -1479,10 +2110,10 @@ class LanFund:
         )
 
     def kx(self, is_return=False, count=10):
-        url = f"https://finance.pae.baidu.com/selfselect/expressnews?rn={count}&pn=0&tag=A股&finClientType=pc"
+        url = DATA_SOURCE_URLS['baidu_expressnews_tpl'].format(count=count)
         kx_list = []
         try:
-            response = self.baidu_session.get(url, timeout=10, verify=False)
+            response = timed_http_request(self.baidu_session, "GET", url, source="baidu", timeout=10, verify=False)
             if response.json()["ResultCode"] == "0":
                 kx_list = response.json()["Result"]["content"]["list"]
         except:
@@ -1540,7 +2171,7 @@ class LanFund:
             headers = {
                 "accept": "*/*",
                 "accept-language": "zh-CN,zh;q=0.9",
-                "referer": "https://quote.cngold.org/gjs/swhj_zghj.html",
+                "referer": DATA_SOURCE_URLS['cngold_hist_referer'],
                 "sec-ch-ua": "\"Chromium\";v=\"128\", \"Not;A=Brand\";v=\"24\", \"Google Chrome\";v=\"128\"",
                 "sec-ch-ua-mobile": "?0",
                 "sec-ch-ua-platform": "\"Windows\"",
@@ -1549,7 +2180,7 @@ class LanFund:
                 "sec-fetch-site": "cross-site",
                 "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
             }
-            url = "https://api.jijinhao.com/quoteCenter/history.htm"
+            url = DATA_SOURCE_URLS['jijinhao_history_api']
             params = {
                 "code": "JO_52683",
                 "style": "3",
@@ -1558,10 +2189,19 @@ class LanFund:
                 "currentPage": "1",
                 "_": int(time.time() * 1000)
             }
-            response = requests.get(url, headers=headers, params=params, timeout=10, verify=False)
+            response = timed_http_request(
+                requests,
+                "GET",
+                url,
+                source="jijinhao",
+                headers=headers,
+                params=params,
+                timeout=10,
+                verify=False,
+            )
             data = json.loads(response.text.replace("var quote_json = ", ""))["data"]
 
-            url = "https://api.jijinhao.com/quoteCenter/history.htm"
+            url = DATA_SOURCE_URLS['jijinhao_history_api']
             params = {
                 "code": "JO_42660",
                 "style": "3",
@@ -1570,7 +2210,16 @@ class LanFund:
                 "currentPage": "1",
                 "_": int(time.time() * 1000)
             }
-            response = requests.get(url, headers=headers, params=params, timeout=10, verify=False)
+            response = timed_http_request(
+                requests,
+                "GET",
+                url,
+                source="jijinhao",
+                headers=headers,
+                params=params,
+                timeout=10,
+                verify=False,
+            )
             data2 = json.loads(response.text.replace("var quote_json = ", ""))["data"]
 
             gold_list = []
@@ -1620,7 +2269,7 @@ class LanFund:
         headers = {
             "accept": "*/*",
             "accept-language": "zh-CN,zh;q=0.9",
-            "referer": "https://quote.cngold.org/gjs/gjhj.html",
+            "referer": DATA_SOURCE_URLS['cngold_realtime_referer'],
             "sec-ch-ua": "\"Not;A=Brand\";v=\"99\", \"Google Chrome\";v=\"139\", \"Chromium\";v=\"139\"",
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": "\"Windows\"",
@@ -1631,12 +2280,21 @@ class LanFund:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
         }
         try:
-            url = "https://api.jijinhao.com/quoteCenter/realTime.htm"
+            url = DATA_SOURCE_URLS['jijinhao_realtime_api']
             params = {
                 "codes": "JO_71,JO_92233,JO_92232,JO_75",
                 "_": str(int(time.time() * 1000))
             }
-            response = requests.get(url, headers=headers, params=params, timeout=10, verify=False)
+            response = timed_http_request(
+                requests,
+                "GET",
+                url,
+                source="jijinhao",
+                headers=headers,
+                params=params,
+                timeout=10,
+                verify=False,
+            )
             data = json.loads(response.text.replace("var quote_json = ", ""))
             result = [[], [], []]
             columns = ["名称", "最新价", "涨跌额", "涨跌幅", "开盘价", "最高价", "最低价", "昨收价", "更新时间", "单位"]
@@ -1709,7 +2367,7 @@ class LanFund:
             )
 
     def A(self, is_return=False):
-        url = "https://finance.pae.baidu.com/vapi/v1/getquotation"
+        url = DATA_SOURCE_URLS['baidu_getquotation_api']
         params = {
             "srcid": "5353",
             "all": "1",
@@ -1722,7 +2380,15 @@ class LanFund:
             "name": "上证指数",
             "finClientType": "pc"
         }
-        response = self.baidu_session.get(url, params=params, timeout=10, verify=False)
+        response = timed_http_request(
+            self.baidu_session,
+            "GET",
+            url,
+            source="baidu",
+            params=params,
+            timeout=10,
+            verify=False,
+        )
         try:
             if str(response.json()["ResultCode"]) == "0":
                 marketData = response.json()["Result"]["newMarketData"]["marketData"][0]["p"]
@@ -1767,7 +2433,7 @@ class LanFund:
         )
 
     def seven_A(self, is_return=False):
-        url = "https://finance.pae.baidu.com/sapi/v1/metrictrend"
+        url = DATA_SOURCE_URLS['baidu_metrictrend_api']
         params = {
             "financeType": "index",
             "market": "ab",
@@ -1777,7 +2443,15 @@ class LanFund:
             "finClientType": "pc"
         }
         try:
-            response = self.baidu_session.get(url, params=params, timeout=10, verify=False)
+            response = timed_http_request(
+                self.baidu_session,
+                "GET",
+                url,
+                source="baidu",
+                params=params,
+                timeout=10,
+                verify=False,
+            )
             if str(response.json()["ResultCode"]) == "0":
                 trend = response.json()["Result"]["trend"]
                 result = []

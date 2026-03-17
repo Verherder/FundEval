@@ -143,72 +143,158 @@ def enhance_fund_tab_content(content, shares_map=None):
         </div>
     """
 
-    # 添加操作按钮面板
-    operations_panel = """
-        <div class="fund-operations">
-            <div class="operation-group">
-                <button class="btn btn-success" onclick="openFundSelectionModal('hold')">⭐ 标记持有</button>
-                <button class="btn btn-secondary" onclick="openFundSelectionModal('unhold')">☆ 取消持有</button>
+    # 操作区域：把板块/删除操作放到“添加”按钮后，并用 | 分隔
+    operations_panel = ""  # 兼容旧逻辑：不再单独渲染按钮面板
+
+    add_fund_area = """
+        <div class="add-fund-input" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <input type="text" id="fundCodesInput"
+                   placeholder="输入基金代码（逗号分隔，如：016858,007872）"
+                   style="flex: 1 1 260px; min-width: 200px;">
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <button class="btn btn-primary" onclick="addFunds()">添加</button>
+                <span style="opacity:0.6; user-select:none;">|</span>
                 <button class="btn btn-info" onclick="openFundSelectionModal('sector')">🏷️ 标注板块</button>
+                <span style="opacity:0.6; user-select:none;">|</span>
                 <button class="btn btn-warning" onclick="openFundSelectionModal('unsector')">🏷️ 删除板块</button>
+                <span style="opacity:0.6; user-select:none;">|</span>
                 <button class="btn btn-danger" onclick="openFundSelectionModal('delete')">🗑️ 删除基金</button>
             </div>
         </div>
     """
 
-    # 简化的添加基金输入框
-    add_fund_area = """
-        <div class="add-fund-input">
-            <input type="text" id="fundCodesInput" placeholder="输入基金代码（逗号分隔，如：016858,007872）">
-            <button class="btn btn-primary" onclick="addFunds()">添加</button>
+    trade_modal = """
+        <div class="sector-modal" id="tradeModal">
+            <div class="sector-modal-content" style="max-width: 420px;">
+                <div class="sector-modal-header" id="tradeModalTitle">基金交易</div>
+                <div style="padding: 20px;">
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">基金代码</label>
+                        <div id="tradeModalFundCode" style="padding: 10px; background: rgba(59, 130, 246, 0.1); border-radius: 6px; color: #3b82f6; font-weight: 600; font-family: monospace;"></div>
+                    </div>
+                    <div style="margin-bottom: 10px;">
+                        <label for="tradeModalInput" id="tradeModalInputLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">请输入数值</label>
+                        <input type="number" id="tradeModalInput" step="0.01" min="0" placeholder="请输入数值"
+                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                    </div>
+                    <div id="tradeModalHint" style="font-size: 12px; color: var(--text-dim);"></div>
+                </div>
+                <div class="sector-modal-footer">
+                    <button class="btn btn-secondary" onclick="closeTradeModal()">取消</button>
+                    <button class="btn btn-primary" id="tradeModalConfirmBtn" onclick="confirmTrade()">确定</button>
+                </div>
+            </div>
         </div>
     """
 
-    # 在"近30天"列后添加"持仓份额"列
-    content = re.sub(r'(<th[^>]*>近30天</th>)',
-                   r'\1\n                    <th>持仓份额</th>',
+    backfill_modal = """
+        <div class="sector-modal" id="backfillModal">
+            <div class="sector-modal-content" style="max-width: 460px;">
+                <div class="sector-modal-header" id="backfillModalTitle">补录买入交易</div>
+                <div style="padding: 20px;">
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">基金代码</label>
+                        <div id="backfillModalFundCode" style="padding: 10px; background: rgba(59, 130, 246, 0.1); border-radius: 6px; color: #3b82f6; font-weight: 600; font-family: monospace;"></div>
+                    </div>
+                    <div style="margin-bottom: 12px;">
+                        <label for="backfillTradeDate" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">买入日期</label>
+                        <input type="date" id="backfillTradeDate"
+                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                    </div>
+                    <div style="margin-bottom: 12px;">
+                        <label for="backfillNetValue" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">当日净值</label>
+                        <input type="number" id="backfillNetValue" step="0.0001" min="0" placeholder="例如 1.5803"
+                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                        <div id="backfillNetValueHint" style="margin-top: 6px; font-size: 12px; color: var(--text-dim);">选择日期后将尝试自动填充净值（若趋势数据可用）</div>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <label for="backfillAmount" id="backfillAmountLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">金额（元）</label>
+                        <input type="number" id="backfillAmount" step="0.01" min="0" placeholder="例如 100"
+                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                        <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(500)">500</button>
+                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(1000)">1000</button>
+                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(2000)">2000</button>
+                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(4000)">4000</button>
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <label for="backfillFee" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">手续费（元）</label>
+                        <input type="number" id="backfillFee" step="0.01" min="0" placeholder="默认 0"
+                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                    </div>
+                </div>
+                <div class="sector-modal-footer">
+                    <button class="btn btn-secondary" onclick="closeBackfillModal()">取消</button>
+                    <button class="btn btn-primary" id="backfillModalBuyBtn" onclick="confirmBackfillTrade('buy')">补录买入</button>
+                    <button class="btn btn-primary" id="backfillModalSellBtn" onclick="confirmBackfillTrade('sell')" style="background:#10b981;">补录卖出</button>
+                </div>
+            </div>
+        </div>
+    """
+
+    transaction_modal = """
+        <div class="sector-modal" id="transactionModal">
+            <div class="sector-modal-content" style="max-width: 980px;">
+                <div class="sector-modal-header">交易记录</div>
+                <div style="padding: 20px;">
+                    <div style="margin-bottom: 12px; color: var(--text-main); font-weight: 600;">
+                        基金：<span id="transactionModalFundCode" style="font-family: monospace; color: #3b82f6;"></span>
+                        <span id="transactionModalFundName" style="margin-left: 8px; color: var(--text-main);"></span>
+                    </div>
+                    <div id="transactionModalHint" style="margin-bottom: 10px; font-size: 12px; color: var(--text-dim);"></div>
+                    <div style="max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 6px;">
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background: rgba(59, 130, 246, 0.08);">
+                                    <th style="padding: 10px; text-align: left; font-size: 13px;">日期</th>
+                                    <th style="padding: 10px; text-align: left; font-size: 13px;">类型</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 13px;">金额(元)</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 13px;">份额</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 13px;">净值</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 13px;">手续费</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 13px;">持仓成本价</th>
+                                    <th style="padding: 10px; text-align: center; font-size: 13px;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="transactionModalTbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="sector-modal-footer">
+                    <button class="btn btn-secondary" onclick="closeTransactionModal()">关闭</button>
+                </div>
+            </div>
+        </div>
+    """
+
+    # 在"持有/年化"列后拼接"操作"列（UI增强列，不属于fund.py数据列）
+    content = re.sub(r'(<th[^>]*>持有/年化</th>)',
+                   r'\1\n                    <th>操作</th>',
                    content, count=1)
 
-    # 在每个数据行添加份额输入框
-    # 先找到所有表格行，然后在包含基金代码的行末尾添加份额输入框
-    def add_shares_to_row(match):
+    # 在每个数据行拼接买入/卖出操作按钮
+    def add_operation_to_row(match):
         row_content = match.group(0)
-        # 从行内容中提取第一个6位数字（基金代码）- 假设第一列是基金代码
-        code_match = re.search(r'<td[^>]*>(\d{6})</td>', row_content)
-        if code_match:
-            fund_code = code_match.group(1)
+        code_match = re.search(r'data-code="(\d{6})"', row_content) or re.search(r'<td[^>]*>(\d{6})</td>', row_content)
+        if not code_match:
+            return row_content
 
-            # 根据份额数据确定按钮状态
-            shares = 0
-            if shares_map and fund_code in shares_map:
-                try:
-                    shares = float(shares_map[fund_code])
-                except (ValueError, TypeError):
-                    shares = 0
-
-            # 根据份额值设置按钮文本和颜色
-            if shares > 0:
-                button_text = '修改'
-                button_color = '#10b981'  # 绿色
-            else:
-                button_text = '设置'
-                button_color = '#3b82f6'  # 蓝色
-
-            # 在行末添加份额设置按钮（在</tr>之前）- 去掉最后的</tr>，添加按钮后再加回
-            row_with_shares = row_content[:-5] + f'''<td>
-                <button class="shares-button" id="sharesBtn_{fund_code}"
-                        onclick="openSharesModal('{fund_code}')"
-                        style="padding: 6px 12px; background: {button_color}; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; transition: all 0.2s;">
-                    {button_text}
+        fund_code = code_match.group(1)
+        row_with_ops = row_content[:-5] + f'''<td>
+            <div style="display:flex;gap:6px;justify-content:center;align-items:center;flex-wrap:nowrap;">
+                <button class="shares-button" id="backfillBtn_{fund_code}"
+                        onclick="window.openBackfillModal && window.openBackfillModal('{fund_code}')"
+                        style="padding: 6px 10px; background: #6366f1; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s;">
+                    补录
                 </button>
-            </td></tr>'''
-            return row_with_shares
-        return row_content
+            </div>
+        </td></tr>'''
+        return row_with_ops
 
-    # 匹配完整的表格行（非贪婪匹配行内容）
-    content = re.sub(r'<tr>.*?</tr>', add_shares_to_row, content, flags=re.DOTALL)
+    content = re.sub(r'<tr>.*?</tr>', add_operation_to_row, content, flags=re.DOTALL)
 
-    return file_operations + position_summary + operations_panel + add_fund_area + content
+    return file_operations + position_summary + operations_panel + add_fund_area + trade_modal + backfill_modal + transaction_modal + content
 
 
 def get_top_navbar_html(username=None):
@@ -250,9 +336,9 @@ def get_legacy_sidebar_html(active_page):
     """
     # 定义菜单项
     menu_items = [
-        ('market', '📰', '市场行情'),
-        ('market-indices', '📊', '市场指数'),
-        ('precious-metals', '🪙', '贵金属行情'),
+        # ('market', '📰', '市场行情'),
+        # ('market-indices', '📊', '市场指数'),
+        # ('precious-metals', '🪙', '贵金属行情'),
         ('portfolio', '💼', '持仓基金'),
         ('sectors', '🏢', '行业板块'),
     ]
@@ -321,7 +407,7 @@ def get_lyrics_script():
 
 def get_table_html(title, data, sortable_columns=None):
     """
-    生成单个表格的HTML代码。
+    生成单个表格的HTML代码，将数据组织成表格。
     :param title: list, 表头标题列表。
     :param data: list of lists, 表格数据。
     :param sortable_columns: list, 可排序的列的索引 (从0开始)。例如 [1, 2, 3]
@@ -622,7 +708,7 @@ def get_full_page_html_sidebar(tabs_data, username=None):
     </div>
 
     {js_script}
-    <script src="/static/js/main.js"></script>
+    <script src="/static/js/main.js?v=20260316"></script>
     <script src="/static/js/sidebar-nav.js"></script>
 </body>
 </html>'''
@@ -1134,14 +1220,14 @@ def get_css_style():
     return r"""
     <style>
         :root {
-            /* Professional Trading Terminal Theme */
-            --terminal-bg: #0b0e14;
-            --card-bg: #151921;
-            --border: #2d343f;
+            /* Light Theme (白底黑字) */
+            --terminal-bg: #ffffff;
+            --card-bg: #ffffff;
+            --border: #e5e7eb;
             --accent: #3b82f6;
-            --text-main: #f1f5f9;
-            --text-dim: #94a3b8;
-            --text-muted: #64748b;
+            --text-main: #111827;
+            --text-dim: #6b7280;
+            --text-muted: #9ca3af;
             --up: #ef4444;    /* 专业红 */
             --down: #10b981;  /* 专业绿 */
             --font-mono: 'JetBrains Mono', 'Courier New', Consolas, monospace;
@@ -2968,6 +3054,36 @@ def get_javascript_code():
         );
     }
 
+    // 表格中“标记”列五角星点击：切换持有/取消持有（事件委托，仅绑定一次）
+    if (!window._fundHoldStarListenerAdded) {
+        window._fundHoldStarListenerAdded = true;
+        document.body.addEventListener('click', async function(e) {
+            const star = e.target.closest('.fund-hold-star');
+            if (!star) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const code = star.dataset.code;
+            const currentlyHeld = star.dataset.hold === '1';
+            const newHold = !currentlyHeld;
+            try {
+                const response = await fetch('/api/fund/hold', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ codes: code, hold: newHold })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    star.textContent = newHold ? '⭐' : '☆';
+                    star.dataset.hold = newHold ? '1' : '0';
+                } else {
+                    alert(result.message);
+                }
+            } catch (err) {
+                alert('操作失败: ' + (err.message || err));
+            }
+        });
+    }
+
     // 板块选择相关
     let selectedSectors = [];
 
@@ -3597,1870 +3713,6 @@ def get_javascript_code():
 
 # ==================== 新页面布局函数 ====================
 
-def get_market_page_html(market_data, username=None):
-    """生成市场行情页面 - 使用卡片/图表布局"""
-    css_style = get_css_style()
-
-    # 生成市场数据卡片
-    market_cards = ''
-    for key, data in market_data.items():
-        card_id = "card-{}".format(key)
-        icon = get_market_icon(key)
-        market_cards += '''
-        <div class="market-card" id="{card_id}">
-            <div class="market-card-header">
-                <h3 class="market-card-title">
-                    <span class="card-icon">{icon}</span>
-                    {title}
-                </h3>
-                <button class="card-toggle" onclick="toggleCard('{card_id}')">
-                    <span>▼</span>
-                </button>
-            </div>
-            <div class="market-card-content">
-                {content}
-            </div>
-        </div>
-        '''.format(card_id=card_id, icon=icon, title=data['title'], content=data['content'])
-
-    username_display = '<a href="https://github.com/lanZzV/fund" target="_blank" class="nav-star">点个赞</a>'
-    username_display += '<a href="https://github.com/lanZzV/fund/issues" target="_blank" class="nav-feedback">反馈</a>'
-    if username:
-        username_display += '<span class="nav-user">🍎 {username}</span>'.format(username=username)
-        username_display += '<a href="/logout" class="nav-logout">退出登录</a>'
-
-    html = '''<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>市场行情 - LanFund</title>
-    <link rel="icon" href="/static/1.ico">
-    {css_style}
-    <link rel="stylesheet" href="/static/css/style.css">
-    <style>
-        body {{
-            background-color: var(--terminal-bg);
-            color: var(--text-main);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }}
-
-        /* 顶部导航栏 */
-        .top-navbar {{
-            background-color: var(--card-bg);
-            color: var(--text-main);
-            padding: 0.8rem 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid var(--border);
-        }}
-
-        .top-navbar-brand {{
-            display: flex;
-            align-items: center;
-            flex: 0 0 auto;
-        }}
-
-        .top-navbar-quote {{
-            flex: 1;
-            text-align: center;
-            font-size: 1rem;
-            font-weight: 500;
-            color: var(--text-main);
-            font-style: italic;
-            padding: 0 2rem;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            letter-spacing: 0.05em;
-            transition: opacity 0.5s ease-in-out;
-        }}
-
-        .top-navbar-menu {{
-            display: flex;
-            gap: 1rem;
-            align-items: center;
-        }}
-
-        .nav-user {{
-            color: #3b82f6;
-            font-weight: 500;
-        }}
-
-        .nav-logout {{
-            color: #f85149;
-            text-decoration: none;
-            font-weight: 500;
-        }}
-
-        .nav-star {{
-            color: #e3b341;
-            text-decoration: none;
-            font-weight: 500;
-        }}
-
-        .nav-star:hover {{
-            color: #f2c94c;
-        }}
-
-        .nav-feedback {{
-            color: #8b949e;
-            text-decoration: none;
-            font-weight: 500;
-        }}
-
-        .nav-feedback:hover {{
-            color: #58a6ff;
-        }}
-
-        /* 主容器 */
-        .main-container {{
-            display: flex;
-            flex: 1;
-        }}
-
-        /* 内容区域 */
-        .content-area {{
-            flex: 1;
-            padding: 30px;
-            overflow-y: auto;
-        }}
-
-        .page-header {{
-            margin-bottom: 30px;
-            text-align: center;
-        }}
-
-        .page-header h1 {{
-            font-size: 2rem;
-            font-weight: 700;
-            margin: 0;
-            border: none;
-            text-decoration: none;
-            background: linear-gradient(135deg, var(--accent), var(--down));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }}
-
-        .page-header p {{
-            color: var(--text-dim);
-            margin-top: 10px;
-            border: none;
-            text-decoration: none;
-        }}
-
-        /* 市场行情网格布局 */
-        .market-grid {{
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 20px;
-            max-width: 1600px;
-            margin: 0 auto;
-        }}
-
-        @media (max-width: 1200px) {{
-            .market-grid {{
-                grid-template-columns: 1fr;
-            }}
-        }}
-
-        /* 市场卡片 */
-        .market-card {{
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            overflow: hidden;
-            transition: all 0.3s ease;
-        }}
-
-        .market-card:hover {{
-            border-color: var(--accent);
-            box-shadow: 0 4px 20px rgba(59, 130, 246, 0.15);
-        }}
-
-        .market-card-header {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 16px 20px;
-            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
-            border-bottom: 1px solid var(--border);
-            cursor: pointer;
-            user-select: none;
-        }}
-
-        .market-card-title {{
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin: 0;
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: var(--text-main);
-        }}
-
-        .card-icon {{
-            font-size: 1.3rem;
-        }}
-
-        .card-toggle {{
-            background: none;
-            border: none;
-            color: var(--text-dim);
-            cursor: pointer;
-            padding: 4px 8px;
-            transition: transform 0.3s ease;
-        }}
-
-        .card-toggle.collapsed {{
-            transform: rotate(-90deg);
-        }}
-
-        .market-card-content {{
-            padding: 20px;
-            max-height: 600px;
-            overflow-y: auto;
-            transition: all 0.3s ease;
-            opacity: 1;
-        }}
-
-        /* 折叠状态：内容隐藏 */
-        .market-card.collapsed .market-card-content {{
-            display: none;
-        }}
-
-        /* 折叠状态：卡片收缩 */
-        .market-card.collapsed {{
-            max-height: 60px;
-        }}
-
-        /* 滚动条样式 */
-        .market-card-content::-webkit-scrollbar {{
-            width: 8px;
-        }}
-
-        .market-card-content::-webkit-scrollbar-track {{
-            background: var(--terminal-bg);
-        }}
-
-        .market-card-content::-webkit-scrollbar-thumb {{
-            background: var(--border);
-            border-radius: 4px;
-        }}
-
-        .market-card-content::-webkit-scrollbar-thumb:hover {{
-            background: var(--accent);
-        }}
-
-        @media (max-width: 768px) {{
-            .main-container {{
-                flex-direction: column;
-            }}
-
-            .sidebar {{
-                width: 100%;
-                border-right: none;
-                border-bottom: 1px solid var(--border);
-                padding: 10px 0;
-            }}
-
-            .sidebar-item {{
-                padding: 10px 15px;
-                font-size: 0.9rem;
-            }}
-
-            .content-area {{
-                padding: 15px;
-            }}
-
-            /* 顶部导航栏两行布局 */
-            .top-navbar {{
-                flex-direction: row;
-                flex-wrap: wrap;
-                height: auto;
-                padding: 0.5rem 1rem;
-                align-items: center;
-                border-bottom: none;
-            }}
-
-            .top-navbar > .top-navbar-brand {{
-                order: 1;
-                flex: 0 0 auto;
-                padding-bottom: 0.5rem;
-                border-bottom: 1px solid var(--border);
-            }}
-
-            .top-navbar-menu {{
-                order: 1;
-                flex: 0 0 auto;
-                margin-left: auto;
-                padding-bottom: 0.5rem;
-                border-bottom: 1px solid var(--border);
-            }}
-
-            .top-navbar-quote {{
-                order: 2;
-                width: 100%;
-                flex-basis: 100%;
-                text-align: center;
-                padding: 0.5rem 0;
-                font-size: 0.8rem;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                border-top: 1px solid var(--border);
-                margin-top: 0.5rem;
-            }}
-        }}
-    </style>
-</head>
-<body>
-    <!-- 顶部导航栏 -->
-    <nav class="top-navbar">
-        <div class="top-navbar-brand">
-            <img src="/static/1.ico" alt="Logo" class="navbar-logo">
-        </div>
-        <div class="top-navbar-quote" id="lyricsDisplay">
-            偶然与巧合, 舞动了蝶翼, 谁的心头风起 ————《如果我们不曾相遇》
-        </div>
-        <div class="top-navbar-menu">
-            {username_display}
-        </div>
-    </nav>
-
-    <!-- 主容器 -->
-    <div class="main-container">
-        <!-- 汉堡菜单按钮 (移动端) -->
-        <button class="hamburger-menu" id="hamburgerMenu">
-            <span></span>
-            <span></span>
-            <span></span>
-        </button>
-
-        <!-- 左侧导航栏 -->
-        <div class="sidebar collapsed" id="sidebar">
-            <div class="sidebar-toggle" id="sidebarToggle">▶</div>
-            <a href="/market" class="sidebar-item active">
-                <span class="sidebar-icon">📰</span>
-                <span>7*24快讯</span>
-            </a>
-            <a href="/market-indices" class="sidebar-item">
-                <span class="sidebar-icon">📊</span>
-                <span>市场指数</span>
-            </a>
-            <a href="/precious-metals" class="sidebar-item">
-                <span class="sidebar-icon">🪙</span>
-                <span>贵金属行情</span>
-            </a>
-            <a href="/portfolio" class="sidebar-item">
-                <span class="sidebar-icon">💼</span>
-                <span>持仓基金</span>
-            </a>
-            <a href="/sectors" class="sidebar-item">
-                <span class="sidebar-icon">🏢</span>
-                <span>行业板块</span>
-            </a>
-        </div>
-
-        <!-- 内容区域 -->
-        <div class="content-area">
-            <!-- 页面标题 -->
-            <div class="page-header">
-                <h1>📊 市场行情</h1>
-                <p>实时追踪全球市场动态</p>
-            </div>
-
-            <!-- 市场数据网格 -->
-            <div class="market-grid">
-                {market_cards}
-            </div>
-        </div>
-    </div>
-
-    <script>
-        function toggleCard(cardId) {{
-            const card = document.getElementById(cardId);
-            const toggle = card.querySelector('.card-toggle');
-            card.classList.toggle('collapsed');
-            toggle.classList.toggle('collapsed');
-        }}
-
-        // 自动颜色化
-        function autoColorize() {{
-            const cells = document.querySelectorAll('.style-table td');
-            cells.forEach(cell => {{
-                const text = cell.textContent.trim();
-                const cleanText = text.replace(/[%,亿万手]/g, '');
-                const val = parseFloat(cleanText);
-
-                if (!isNaN(val)) {{
-                    if (text.includes('%') || text.includes('涨跌')) {{
-                        if (text.includes('-')) {{
-                            cell.classList.add('negative');
-                        }} else if (val > 0) {{
-                            cell.classList.add('positive');
-                        }}
-                    }} else if (text.startsWith('-')) {{
-                        cell.classList.add('negative');
-                    }} else if (text.startsWith('+')) {{
-                        cell.classList.add('positive');
-                    }}
-                }}
-            }});
-        }}
-
-        document.addEventListener('DOMContentLoaded', function() {{
-            autoColorize();
-        }});
-    </script>
-    <script src="/static/js/main.js"></script>
-    <script>
-        // 歌词轮播
-        (function() {{
-            const lyrics = [
-                "偶然与巧合, 舞动了蝶翼, 谁的心头风起 ————《如果我们不曾相遇》",
-                "如海上的浪花, 如深海的鱼, 浪与鱼相依 ————《鱼仔》",
-                "阳光下的泡沫, 是彩色的, 一触就破 ————《泡沫》",
-                "如果我变成回忆, 退出了这场生命 ————《如果我变成回忆》"
-            ];
-            let currentIndex = 0;
-            const lyricsElement = document.getElementById('lyricsDisplay');
-
-            function rotateLyrics() {{
-                if (!lyricsElement) return;
-                lyricsElement.style.opacity = '0';
-                setTimeout(() => {{
-                    currentIndex = (currentIndex + 1) % lyrics.length;
-                    lyricsElement.textContent = lyrics[currentIndex];
-                    lyricsElement.style.opacity = '1';
-                }}, 500);
-            }}
-
-            setInterval(rotateLyrics, 10000);
-        }})();
-    </script>
-</body>
-</html>'''.format(css_style=css_style, username_display=username_display, market_cards=market_cards)
-    return html
-
-
-def get_news_page_html(news_content, username=None):
-    """生成7*24快讯页面 - 简洁布局"""
-    css_style = get_css_style()
-
-    username_display = '<a href="https://github.com/lanZzV/fund" target="_blank" class="nav-star">点个赞</a>'
-    username_display += '<a href="https://github.com/lanZzV/fund/issues" target="_blank" class="nav-feedback">反馈</a>'
-    if username:
-        username_display += '<span class="nav-user">🍎 {username}</span>'.format(username=username)
-        username_display += '<a href="/logout" class="nav-logout">退出登录</a>'
-
-    html = '''<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>7*24快讯 - LanFund</title>
-    <link rel="icon" href="/static/1.ico">
-    {css_style}
-    <link rel="stylesheet" href="/static/css/style.css">
-    <style>
-        body {{
-            background-color: var(--terminal-bg);
-            color: var(--text-main);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }}
-
-        /* 顶部导航栏 */
-        .top-navbar {{
-            background-color: var(--card-bg);
-            color: var(--text-main);
-            padding: 0.8rem 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid var(--border);
-        }}
-
-        .top-navbar-brand {{
-            display: flex;
-            align-items: center;
-            flex: 0 0 auto;
-        }}
-
-        .navbar-logo {{
-            width: 32px;
-            height: 32px;
-        }}
-
-        .top-navbar-quote {{
-            flex: 1;
-            text-align: center;
-            font-size: 1rem;
-            font-weight: 500;
-            color: var(--text-main);
-            font-style: italic;
-            padding: 0 2rem;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            letter-spacing: 0.05em;
-            transition: opacity 0.5s ease-in-out;
-        }}
-
-        .top-navbar-menu {{
-            display: flex;
-            gap: 1rem;
-            align-items: center;
-        }}
-
-        .nav-logout {{
-            color: #f85149;
-            text-decoration: none;
-            font-weight: 500;
-        }}
-
-        .nav-star {{
-            color: #e3b341;
-            text-decoration: none;
-            font-weight: 500;
-        }}
-
-        .nav-star:hover {{
-            color: #f2c94c;
-        }}
-
-        .nav-feedback {{
-            color: #8b949e;
-            text-decoration: none;
-            font-weight: 500;
-        }}
-
-        .nav-feedback:hover {{
-            color: #58a6ff;
-        }}
-
-        .nav-user {{
-            color: #3b82f6;
-            font-weight: 500;
-        }}
-
-        /* 主容器 */
-        .main-container {{
-            display: flex;
-            flex: 1;
-        }}
-
-        /* 内容区域 */
-        .content-area {{
-            flex: 1;
-            padding: 20px;
-            overflow-y: auto;
-        }}
-
-        /* 隐藏滚动条但保留功能 */
-        ::-webkit-scrollbar {{
-            width: 6px;
-            height: 6px;
-        }}
-
-        ::-webkit-scrollbar-track {{
-            background: transparent;
-        }}
-
-        ::-webkit-scrollbar-thumb {{
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 3px;
-        }}
-
-        ::-webkit-scrollbar-thumb:hover {{
-            background: rgba(255, 255, 255, 0.2);
-        }}
-
-        /* Firefox */
-        * {{
-            scrollbar-width: thin;
-            scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
-        }}
-
-        .page-header {{
-            margin-bottom: 20px;
-        }}
-
-        .page-header h1 {{
-            font-size: 1.8rem;
-            margin: 0;
-            color: var(--text-main);
-        }}
-
-        .page-header p {{
-            margin: 5px 0 0;
-            color: var(--text-dim);
-        }}
-
-        /* 快讯内容 */
-        .news-content {{
-            background-color: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 20px;
-            max-height: calc(100vh - 200px);
-            overflow-y: auto;
-        }}
-
-        /* 响应式设计 */
-        @media (max-width: 768px) {{
-            /* 汉堡菜单显示 */
-            .hamburger-menu {{
-                display: flex !important;
-            }}
-
-            .content-area {{
-                padding: 15px;
-            }}
-
-            /* 顶部导航栏两行布局 */
-            .top-navbar {{
-                flex-direction: row;
-                flex-wrap: wrap;
-                height: auto;
-                padding: 0.5rem 1rem;
-                align-items: center;
-                border-bottom: none;
-            }}
-
-            .top-navbar > .top-navbar-brand {{
-                order: 1;
-                flex: 0 0 auto;
-                padding-bottom: 0.5rem;
-                border-bottom: 1px solid var(--border);
-            }}
-
-            .top-navbar-menu {{
-                order: 1;
-                flex: 0 0 auto;
-                margin-left: auto;
-                padding-bottom: 0.5rem;
-                border-bottom: 1px solid var(--border);
-            }}
-
-            .top-navbar-quote {{
-                order: 2;
-                width: 100%;
-                flex-basis: 100%;
-                text-align: center;
-                padding: 0.5rem 0;
-                font-size: 0.8rem;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                border-top: 1px solid var(--border);
-                margin-top: 0.5rem;
-            }}
-        }}
-    </style>
-</head>
-<body>
-    <!-- 顶部导航栏 -->
-    <nav class="top-navbar">
-        <div class="top-navbar-brand">
-            <img src="/static/1.ico" alt="Logo" class="navbar-logo">
-        </div>
-        <div class="top-navbar-quote" id="lyricsDisplay">
-            偶然与巧合, 舞动了蝶翼, 谁的心头风起 ————《如果我们不曾相遇》
-        </div>
-        <div class="top-navbar-menu">
-            {username_display}
-        </div>
-    </nav>
-
-    <!-- 主容器 -->
-    <div class="main-container">
-        <!-- 汉堡菜单按钮 (移动端) -->
-        <button class="hamburger-menu" id="hamburgerMenu">
-            <span></span>
-            <span></span>
-            <span></span>
-        </button>
-
-        <!-- 左侧导航栏 -->
-        <div class="sidebar collapsed" id="sidebar">
-            <div class="sidebar-toggle" id="sidebarToggle">▶</div>
-            <a href="/market" class="sidebar-item active">
-                <span class="sidebar-icon">📰</span>
-                <span>7*24快讯</span>
-            </a>
-            <a href="/market-indices" class="sidebar-item">
-                <span class="sidebar-icon">📊</span>
-                <span>市场指数</span>
-            </a>
-            <a href="/precious-metals" class="sidebar-item">
-                <span class="sidebar-icon">🪙</span>
-                <span>贵金属行情</span>
-            </a>
-            <a href="/portfolio" class="sidebar-item">
-                <span class="sidebar-icon">💼</span>
-                <span>持仓基金</span>
-            </a>
-            <a href="/sectors" class="sidebar-item">
-                <span class="sidebar-icon">🏢</span>
-                <span>行业板块</span>
-            </a>
-        </div>
-
-        <!-- 内容区域 -->
-        <div class="content-area">
-            <!-- 页面标题 -->
-            <div class="page-header">
-                <h1 style="display: flex; align-items: center;">
-                    📰 7*24快讯
-                    <button id="refreshBtn" onclick="refreshCurrentPage()" class="refresh-button" style="margin-left: 15px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 5px;">🔄 刷新</button>
-                </h1>
-                <p>实时追踪全球市场动态</p>
-            </div>
-
-            <!-- 快讯内容 -->
-            <div class="news-content">
-                {news_content}
-            </div>
-        </div>
-    </div>
-
-    <script src="/static/js/main.js"></script>
-    <script src="/static/js/sidebar-nav.js"></script>
-    <script>
-        // 自动颜色化
-        function autoColorize() {{
-            const elements = document.querySelectorAll('[data-change]');
-            elements.forEach(function(el) {{
-                const change = parseFloat(el.getAttribute('data-change'));
-                if (change > 0) {{
-                    el.style.color = '#f44336';
-                }} else if (change < 0) {{
-                    el.style.color = '#4caf50';
-                }}
-            }});
-        }}
-
-        document.addEventListener('DOMContentLoaded', function() {{
-            // 歌词轮播
-            const lyrics = [
-                '总要有一首我的歌, 大声唱过, 再看天地辽阔 ————《一颗苹果》',
-                '苍狗又白云, 身旁有了你, 匆匆轮回又有何惧 ————《如果我们不曾相遇》',
-                '活着其实很好, 再吃一颗苹果 ————《一颗苹果》',
-                '偶然与巧合, 舞动了蝶翼, 谁的心头风起 ————《如果我们不曾相遇》'
-            ];
-            let currentLyricIndex = 0;
-            const lyricsElement = document.getElementById('lyricsDisplay');
-
-            // 随机选择初始歌词
-            currentLyricIndex = Math.floor(Math.random() * lyrics.length);
-            if (lyricsElement) {{
-                lyricsElement.textContent = lyrics[currentLyricIndex];
-
-                // 每10秒切换一次歌词
-                setInterval(function() {{
-                    // 淡出
-                    lyricsElement.style.opacity = '0';
-
-                    setTimeout(function() {{
-                        // 切换歌词
-                        currentLyricIndex = (currentLyricIndex + 1) % lyrics.length;
-                        lyricsElement.textContent = lyrics[currentLyricIndex];
-
-                        // 淡入
-                        lyricsElement.style.opacity = '1';
-                    }}, 500);
-                }}, 10000);
-            }}
-
-            autoColorize();
-        }});
-    </script>
-</body>
-</html>'''.format(css_style=css_style, username_display=username_display, news_content=news_content)
-    return html
-
-
-def get_precious_metals_page_html(metals_data, username=None):
-    """生成贵金属行情页面"""
-    css_style = get_css_style()
-
-    username_display = '<a href="https://github.com/lanZzV/fund" target="_blank" class="nav-star">点个赞</a>'
-    username_display += '<a href="https://github.com/lanZzV/fund/issues" target="_blank" class="nav-feedback">反馈</a>'
-    if username:
-        username_display += '<span class="nav-user">🍎 {username}</span>'.format(username=username)
-        username_display += '<a href="/logout" class="nav-logout">退出登录</a>'
-
-    html = '''<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>贵金属行情 - LanFund</title>
-    <link rel="icon" href="/static/1.ico">
-    {css_style}
-    <link rel="stylesheet" href="/static/css/style.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <style>
-        body {{
-            background-color: var(--terminal-bg);
-            color: var(--text-main);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }}
-
-        /* 顶部导航栏 */
-        .top-navbar {{
-            background-color: var(--card-bg);
-            color: var(--text-main);
-            padding: 0.8rem 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid var(--border);
-        }}
-
-        .top-navbar-brand {{
-            display: flex;
-            align-items: center;
-            flex: 0 0 auto;
-        }}
-
-        .navbar-logo {{
-            width: 32px;
-            height: 32px;
-        }}
-
-        .top-navbar-quote {{
-            flex: 1;
-            text-align: center;
-            font-size: 1rem;
-            font-weight: 500;
-            color: var(--text-main);
-            font-style: italic;
-            padding: 0 2rem;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            letter-spacing: 0.05em;
-            transition: opacity 0.5s ease-in-out;
-        }}
-
-        .top-navbar-menu {{
-            display: flex;
-            gap: 1rem;
-            align-items: center;
-        }}
-
-        .nav-logout {{
-            color: #f85149;
-            text-decoration: none;
-            font-weight: 500;
-        }}
-
-        .nav-star {{
-            color: #e3b341;
-            text-decoration: none;
-            font-weight: 500;
-        }}
-
-        .nav-star:hover {{
-            color: #f2c94c;
-        }}
-
-        .nav-feedback {{
-            color: #8b949e;
-            text-decoration: none;
-            font-weight: 500;
-        }}
-
-        .nav-feedback:hover {{
-            color: #58a6ff;
-        }}
-
-        .nav-user {{
-            color: #3b82f6;
-            font-weight: 500;
-        }}
-
-        /* 主容器 */
-        .main-container {{
-            display: flex;
-            flex: 1;
-        }}
-
-        /* 内容区域 */
-        .content-area {{
-            flex: 1;
-            padding: 20px;
-            overflow-y: auto;
-        }}
-
-        /* 隐藏滚动条但保留功能 */
-        ::-webkit-scrollbar {{
-            width: 6px;
-            height: 6px;
-        }}
-
-        ::-webkit-scrollbar-track {{
-            background: transparent;
-        }}
-
-        ::-webkit-scrollbar-thumb {{
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 3px;
-        }}
-
-        ::-webkit-scrollbar-thumb:hover {{
-            background: rgba(255, 255, 255, 0.2);
-        }}
-
-        /* Firefox */
-        * {{
-            scrollbar-width: thin;
-            scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
-        }}
-
-        .page-header {{
-            margin-bottom: 20px;
-        }}
-
-        .page-header h1 {{
-            font-size: 1.8rem;
-            margin: 0;
-            color: var(--text-main);
-        }}
-
-        .page-header p {{
-            margin: 5px 0 0;
-            color: var(--text-dim);
-        }}
-
-        /* 贵金属网格布局 - 上下两栏 */
-        .metals-grid {{
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 20px;
-            max-width: 100%;
-        }}
-
-        .metal-card {{
-            background-color: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            overflow: hidden;
-            width: 100%;
-        }}
-
-        .metal-card-realtime {{
-            min-height: 200px;
-        }}
-
-        .metal-card-history {{
-            min-height: 400px;
-        }}
-
-        .metal-card {{
-            background-color: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            overflow: hidden;
-        }}
-
-        .metal-card-header {{
-            padding: 15px 20px;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }}
-
-        .metal-card-title {{
-            font-size: 1.1rem;
-            font-weight: 500;
-            color: var(--text-main);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }}
-
-        .metal-card-content {{
-            padding: 20px;
-            max-height: 500px;
-            overflow-y: auto;
-        }}
-
-        .chart-container {{
-            position: relative;
-            height: 400px;
-            width: 100%;
-        }}
-
-        /* 确保表格容器支持横向滚动 */
-        .metal-card-realtime .table-container {{
-            overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
-        }}
-
-        .metal-card-realtime .style-table {{
-            min-width: max-content;
-            white-space: nowrap;
-        }}
-
-        /* 响应式设计 */
-        @media (max-width: 768px) {{
-            .metals-grid {{
-                grid-template-columns: 1fr;
-            }}
-
-            .content-area {{
-                padding: 15px;
-            }}
-
-            /* 顶部导航栏两行布局 */
-            .top-navbar {{
-                flex-direction: row;
-                flex-wrap: wrap;
-                height: auto;
-                padding: 0.5rem 1rem;
-                align-items: center;
-                border-bottom: none;
-            }}
-
-            .top-navbar > .top-navbar-brand {{
-                order: 1;
-                flex: 0 0 auto;
-                padding-bottom: 0.5rem;
-                border-bottom: 1px solid var(--border);
-            }}
-
-            .top-navbar-menu {{
-                order: 1;
-                flex: 0 0 auto;
-                margin-left: auto;
-                padding-bottom: 0.5rem;
-                border-bottom: 1px solid var(--border);
-            }}
-
-            .top-navbar-quote {{
-                order: 2;
-                width: 100%;
-                flex-basis: 100%;
-                text-align: center;
-                padding: 0.5rem 0;
-                font-size: 0.8rem;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                border-top: 1px solid var(--border);
-                margin-top: 0.5rem;
-            }}
-
-            /* 汉堡菜单显示 */
-            .hamburger-menu {{
-                display: flex !important;
-            }}
-
-            .metal-card-history {{
-                min-height: 300px;
-            }}
-
-            .chart-container {{
-                height: 280px;
-            }}
-        }}
-    </style>
-</head>
-<body>
-    <!-- 顶部导航栏 -->
-    <nav class="top-navbar">
-        <div class="top-navbar-brand">
-            <img src="/static/1.ico" alt="Logo" class="navbar-logo">
-        </div>
-        <div class="top-navbar-quote" id="lyricsDisplay">
-            偶然与巧合, 舞动了蝶翼, 谁的心头风起 ————《如果我们不曾相遇》
-        </div>
-        <div class="top-navbar-menu">
-            {username_display}
-        </div>
-    </nav>
-
-    <!-- 主容器 -->
-    <div class="main-container">
-        <!-- 汉堡菜单按钮 (移动端) -->
-        <button class="hamburger-menu" id="hamburgerMenu">
-            <span></span>
-            <span></span>
-            <span></span>
-        </button>
-
-        <!-- 左侧导航栏 -->
-        <div class="sidebar collapsed" id="sidebar">
-            <div class="sidebar-toggle" id="sidebarToggle">▶</div>
-            <a href="/market" class="sidebar-item">
-                <span class="sidebar-icon">📰</span>
-                <span>7*24快讯</span>
-            </a>
-            <a href="/market-indices" class="sidebar-item">
-                <span class="sidebar-icon">📊</span>
-                <span>市场指数</span>
-            </a>
-            <a href="/precious-metals" class="sidebar-item active">
-                <span class="sidebar-icon">🪙</span>
-                <span>贵金属行情</span>
-            </a>
-            <a href="/portfolio" class="sidebar-item">
-                <span class="sidebar-icon">💼</span>
-                <span>持仓基金</span>
-            </a>
-            <a href="/sectors" class="sidebar-item">
-                <span class="sidebar-icon">🏢</span>
-                <span>行业板块</span>
-            </a>
-        </div>
-
-        <!-- 内容区域 -->
-        <div class="content-area">
-            <!-- 页面标题 -->
-            <div class="page-header">
-                <h1 style="display: flex; align-items: center;">
-                    🪙 贵金属行情
-                    <button id="refreshBtn" onclick="refreshCurrentPage()" class="refresh-button" style="margin-left: 15px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 5px;">🔄 刷新</button>
-                </h1>
-                <p>实时追踪贵金属价格走势</p>
-            </div>
-
-            <!-- 贵金属网格 - 上下两栏布局 -->
-            <div class="metals-grid">
-                <!-- 实时贵金属 -->
-                <div class="metal-card metal-card-realtime">
-                    <div class="metal-card-header">
-                        <h3 class="metal-card-title">
-                            <span>⚡</span>
-                            <span>实时贵金属</span>
-                        </h3>
-                    </div>
-                    <div class="metal-card-content">
-                        {real_time_content}
-                    </div>
-                </div>
-
-                <!-- 历史金价 -->
-                <div class="metal-card metal-card-history">
-                    <div class="metal-card-header">
-                        <h3 class="metal-card-title">
-                            <span>📈</span>
-                            <span>历史金价</span>
-                        </h3>
-                    </div>
-                    <div class="metal-card-content">
-                        <!-- Hidden div to store history data for parsing -->
-                        <div id="goldHistoryData" style="display:none;">
-                            {history_content}
-                        </div>
-                        <div class="chart-container">
-                            <canvas id="goldPriceChart"></canvas>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script src="/static/js/main.js"></script>
-    <script src="/static/js/sidebar-nav.js"></script>
-    <script>
-        // 自动颜色化
-        function autoColorize() {{
-            const elements = document.querySelectorAll('[data-change]');
-            elements.forEach(function(el) {{
-                const change = parseFloat(el.getAttribute('data-change'));
-                if (change > 0) {{
-                    el.style.color = '#f44336';
-                }} else if (change < 0) {{
-                    el.style.color = '#4caf50';
-                }}
-            }});
-        }}
-
-        // 解析历史金价数据并创建图表
-        function createGoldChart() {{
-            // 从隐藏的div中获取历史金价表格
-            const historyContainer = document.getElementById('goldHistoryData');
-            if (!historyContainer) return;
-
-            const table = historyContainer.querySelector('table');
-            if (!table) return;
-
-            const rows = table.querySelectorAll('tbody tr');
-            const labels = [];
-            const prices = [];
-
-            rows.forEach(row => {{
-                const cells = row.querySelectorAll('td');
-                if (cells.length >= 2) {{
-                    labels.push(cells[0].textContent.trim());
-                    prices.push(parseFloat(cells[1].textContent.trim()));
-                }}
-            }});
-
-            // 创建图表
-            const ctx = document.getElementById('goldPriceChart').getContext('2d');
-
-            // 注册插件以在数据点上显示数值
-            const dataLabelPlugin = {{
-                id: 'dataLabelPlugin',
-                afterDatasetsDraw(chart, args, options) {{
-                    const {{ ctx }} = chart;
-                    chart.data.datasets.forEach((dataset, datasetIndex) => {{
-                        const meta = chart.getDatasetMeta(datasetIndex);
-                        meta.data.forEach((datapoint, index) => {{
-                            const value = dataset.data[index];
-                            const x = datapoint.x;
-                            const y = datapoint.y;
-
-                            ctx.save();
-                            ctx.fillStyle = '#f59e0b';
-                            ctx.font = 'bold 11px sans-serif';
-                            ctx.textAlign = 'center';
-                            ctx.textBaseline = 'bottom';
-                            ctx.fillText(value.toFixed(2), x, y - 5);
-                            ctx.restore();
-                        }});
-                    }});
-                }}
-            }};
-
-            new Chart(ctx, {{
-                type: 'line',
-                data: {{
-                    labels: labels.reverse(),
-                    datasets: [{{
-                        label: '金价 (元/克)',
-                        data: prices.reverse(),
-                        borderColor: '#f59e0b',
-                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                        fill: true,
-                        tension: 0.4,
-                        pointRadius: 4,
-                        pointBackgroundColor: '#f59e0b',
-                        pointBorderColor: '#fff',
-                        pointBorderWidth: 2,
-                        pointHoverRadius: 6
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {{
-                        legend: {{
-                            labels: {{
-                                color: '#9ca3af'
-                            }}
-                        }}
-                    }},
-                    scales: {{
-                        x: {{
-                            ticks: {{
-                                color: '#9ca3af'
-                            }},
-                            grid: {{
-                                color: 'rgba(255, 255, 255, 0.1)'
-                            }}
-                        }},
-                        y: {{
-                            ticks: {{
-                                color: '#9ca3af'
-                            }},
-                            grid: {{
-                                color: 'rgba(255, 255, 255, 0.1)'
-                            }}
-                        }}
-                    }}
-                }},
-                plugins: [dataLabelPlugin]
-            }});
-        }}
-
-        document.addEventListener('DOMContentLoaded', function() {{
-            // 歌词轮播
-            const lyrics = [
-                '总要有一首我的歌, 大声唱过, 再看天地辽阔 ————《一颗苹果》',
-                '苍狗又白云, 身旁有了你, 匆匆轮回又有何惧 ————《如果我们不曾相遇》',
-                '活着其实很好, 再吃一颗苹果 ————《一颗苹果》',
-                '偶然与巧合, 舞动了蝶翼, 谁的心头风起 ————《如果我们不曾相遇》'
-            ];
-            let currentLyricIndex = 0;
-            const lyricsElement = document.getElementById('lyricsDisplay');
-
-            // 随机选择初始歌词
-            currentLyricIndex = Math.floor(Math.random() * lyrics.length);
-            if (lyricsElement) {{
-                lyricsElement.textContent = lyrics[currentLyricIndex];
-
-                // 每10秒切换一次歌词
-                setInterval(function() {{
-                    // 淡出
-                    lyricsElement.style.opacity = '0';
-
-                    setTimeout(function() {{
-                        // 切换歌词
-                        currentLyricIndex = (currentLyricIndex + 1) % lyrics.length;
-                        lyricsElement.textContent = lyrics[currentLyricIndex];
-
-                        // 淡入
-                        lyricsElement.style.opacity = '1';
-                    }}, 500);
-                }}, 10000);
-            }}
-
-            autoColorize();
-            createGoldChart();
-        }});
-    </script>
-</body>
-</html>'''.format(
-        css_style=css_style,
-        username_display=username_display,
-        real_time_content=metals_data.get('real_time', ''),
-        history_content=metals_data.get('history', '')
-    )
-    return html
-
-
-def get_market_indices_page_html(market_charts=None, chart_data=None, timing_data=None, username=None):
-    """生成市场指数页面 - 上证分时、全球指数和成交量趋势"""
-    css_style = get_css_style()
-    import json
-
-    username_display = '<a href="https://github.com/lanZzV/fund" target="_blank" class="nav-star">点个赞</a>'
-    username_display += '<a href="https://github.com/lanZzV/fund/issues" target="_blank" class="nav-feedback">反馈</a>'
-    if username:
-        username_display += '<span class="nav-user">🍎 {username}</span>'.format(username=username)
-        username_display += '<a href="/logout" class="nav-logout">退出登录</a>'
-
-    # 准备图表数据JSON (optional, for future chart enhancements)
-    indices_data_json = json.dumps(chart_data.get('indices', {'labels': [], 'prices': [], 'changes': []}) if chart_data else {'labels': [], 'prices': [], 'changes': []})
-    volume_data_json = json.dumps(chart_data.get('volume', {'labels': [], 'total': [], 'sh': [], 'sz': [], 'bj': []}) if chart_data else {'labels': [], 'total': [], 'sh': [], 'sz': [], 'bj': []})
-
-    # 准备上证分时数据JSON
-    timing_data_json = json.dumps(timing_data if timing_data else {'labels': [], 'prices': [], 'change_pcts': [], 'change_amounts': [], 'volumes': [], 'amounts': []})
-
-    # 生成市场指数HTML - 两行布局
-    market_content = '''
-        <!-- 市场指数区域 -->
-        <div class="market-indices-section" style="padding: 30px;">
-            <div class="page-header" style="margin-bottom: 25px;">
-                <h1 style="font-size: 1.5rem; font-weight: 600; margin: 0; color: var(--text-main); display: flex; align-items: center;">
-                    📊 市场指数
-                    <button id="refreshBtn" onclick="refreshCurrentPage()" class="refresh-button" style="margin-left: 15px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 5px;">🔄 刷新</button>
-                </h1>
-            </div>
-
-            <!-- 第一行：上证分时（全宽） -->
-            <div class="timing-chart-row" style="margin-bottom: 20px;">
-                <div class="chart-card" style="background-color: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;">
-                    <div class="chart-card-header" style="padding: 12px 15px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
-                        <h3 id="timingChartTitle" style="margin: 0; font-size: 1rem; color: var(--text-main);">📉 上证分时</h3>
-                    </div>
-                    <div class="chart-card-content" style="padding: 15px; height: 350px;">
-                        <canvas id="timingChart"></canvas>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 第二行：全球指数和成交量趋势 -->
-            <div class="market-charts-grid">
-                <!-- 全球指数 - 表格 -->
-                <div class="chart-card" style="background-color: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;">
-                    <div class="chart-card-header" style="padding: 12px 15px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
-                        <h3 style="margin: 0; font-size: 1rem; color: var(--text-main);">🌍 全球指数</h3>
-                    </div>
-                    <div class="chart-card-content" style="padding: 15px; max-height: 400px; overflow-y: auto;">
-                        {indices_content}
-                    </div>
-                </div>
-                <!-- 成交量趋势 - 表格 -->
-                <div class="chart-card" style="background-color: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;">
-                    <div class="chart-card-header" style="padding: 12px 15px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
-                        <h3 style="margin: 0; font-size: 1rem; color: var(--text-main);">📊 成交量趋势</h3>
-                    </div>
-                    <div class="chart-card-content" style="padding: 15px; max-height: 400px; overflow-y: auto;">
-                        {volume_content}
-                    </div>
-                </div>
-            </div>
-        </div>
-    '''.format(
-        indices_content=market_charts.get('indices', ''),
-        volume_content=market_charts.get('volume', '')
-    )
-
-    html = '''<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>市场指数 - LanFund</title>
-    <link rel="icon" href="/static/1.ico">
-    {css_style}
-    <link rel="stylesheet" href="/static/css/style.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <style>
-        body {{
-            background-color: var(--terminal-bg);
-            color: var(--text-main);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }}
-
-        /* 顶部导航栏 */
-        .top-navbar {{
-            background-color: var(--card-bg);
-            color: var(--text-main);
-            padding: 0.8rem 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid var(--border);
-        }}
-
-        .top-navbar-brand {{
-            display: flex;
-            align-items: center;
-            flex: 0 0 auto;
-        }}
-
-        .top-navbar-quote {{
-            flex: 1;
-            text-align: center;
-            font-size: 1rem;
-            font-weight: 500;
-            color: var(--text-main);
-            font-style: italic;
-            padding: 0 2rem;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            letter-spacing: 0.05em;
-            transition: opacity 0.5s ease-in-out;
-        }}
-
-        .top-navbar-menu {{
-            display: flex;
-            gap: 1rem;
-            align-items: center;
-        }}
-
-        .nav-user {{
-            color: #3b82f6;
-            font-weight: 500;
-        }}
-
-        .nav-logout {{
-            color: #f85149;
-            text-decoration: none;
-            font-weight: 500;
-        }}
-
-        .nav-star {{
-            color: #e3b341;
-            text-decoration: none;
-            font-weight: 500;
-        }}
-
-        .nav-star:hover {{
-            color: #f2c94c;
-        }}
-
-        .nav-feedback {{
-            color: #8b949e;
-            text-decoration: none;
-            font-weight: 500;
-        }}
-
-        .nav-feedback:hover {{
-            color: #58a6ff;
-        }}
-
-        /* 主容器 */
-        .main-container {{
-            display: flex;
-            flex: 1;
-        }}
-
-        /* 内容区域 */
-        .content-area {{
-            flex: 1;
-            overflow-y: auto;
-        }}
-
-        /* 隐藏滚动条但保留功能 */
-        ::-webkit-scrollbar {{
-            width: 6px;
-            height: 6px;
-        }}
-
-        ::-webkit-scrollbar-track {{
-            background: transparent;
-        }}
-
-        ::-webkit-scrollbar-thumb {{
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 3px;
-        }}
-
-        ::-webkit-scrollbar-thumb:hover {{
-            background: rgba(255, 255, 255, 0.2);
-        }}
-
-        /* Firefox */
-        * {{
-            scrollbar-width: thin;
-            scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
-        }}
-
-        .chart-card-content::-webkit-scrollbar {{
-            width: 4px;
-        }}
-
-        .chart-card-content::-webkit-scrollbar-thumb {{
-            background: rgba(255, 255, 255, 0.05);
-        }}
-
-        @media (max-width: 768px) {{
-            /* 顶部导航栏两行布局 */
-            .top-navbar {{
-                flex-direction: row;
-                flex-wrap: wrap;
-                height: auto;
-                padding: 0.5rem 1rem;
-                align-items: center;
-                border-bottom: none;
-            }}
-
-            .top-navbar > .top-navbar-brand {{
-                order: 1;
-                flex: 0 0 auto;
-                padding-bottom: 0.5rem;
-                border-bottom: 1px solid var(--border);
-            }}
-
-            .top-navbar-menu {{
-                order: 1;
-                flex: 0 0 auto;
-                margin-left: auto;
-                padding-bottom: 0.5rem;
-                border-bottom: 1px solid var(--border);
-            }}
-
-            .top-navbar-quote {{
-                order: 2;
-                width: 100%;
-                flex-basis: 100%;
-                text-align: center;
-                padding: 0.5rem 0;
-                font-size: 0.8rem;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                border-top: 1px solid var(--border);
-                margin-top: 0.5rem;
-            }}
-
-            .timing-chart-row .chart-card-content {{
-                height: 250px;
-            }}
-        }}
-    </style>
-</head>
-<body>
-    <!-- 顶部导航栏 -->
-    <div class="top-navbar">
-        <div class="top-navbar-brand">
-            <img src="/static/1.ico" alt="Logo" class="navbar-logo">
-        </div>
-        <div class="top-navbar-quote" id="lyricsDisplay">
-            偶然与巧合, 舞动了蝶翼, 谁的心头风起 ————《如果我们不曾相遇》
-        </div>
-        <div class="top-navbar-menu">
-            {username_display}
-        </div>
-    </div>
-
-    <!-- 主容器 -->
-    <div class="main-container">
-        <!-- 汉堡菜单按钮 (移动端) -->
-        <button class="hamburger-menu" id="hamburgerMenu">
-            <span></span>
-            <span></span>
-            <span></span>
-        </button>
-
-        <!-- 左侧导航栏 -->
-        <div class="sidebar collapsed" id="sidebar">
-            <div class="sidebar-toggle" id="sidebarToggle">▶</div>
-            <a href="/market" class="sidebar-item">
-                <span class="sidebar-icon">📰</span>
-                <span>市场行情</span>
-            </a>
-            <a href="/market-indices" class="sidebar-item active">
-                <span class="sidebar-icon">📊</span>
-                <span>市场指数</span>
-            </a>
-            <a href="/precious-metals" class="sidebar-item">
-                <span class="sidebar-icon">🪙</span>
-                <span>贵金属行情</span>
-            </a>
-            <a href="/portfolio" class="sidebar-item">
-                <span class="sidebar-icon">💼</span>
-                <span>持仓基金</span>
-            </a>
-            <a href="/sectors" class="sidebar-item">
-                <span class="sidebar-icon">🏢</span>
-                <span>行业板块</span>
-            </a>
-        </div>
-
-        <!-- 内容区域 -->
-        <div class="content-area">
-            {market_content}
-        </div>
-    </div>
-
-    <script src="/static/js/main.js"></script>
-    <script src="/static/js/sidebar-nav.js"></script>
-    <script>
-        // 上证分时数据
-        const timingData = {timing_data_json};
-
-        document.addEventListener('DOMContentLoaded', function() {{
-            // 歌词轮播
-            const lyrics = [
-                '总要有一首我的歌, 大声唱过, 再看天地辽阔 ————《一颗苹果》',
-                '苍狗又白云, 身旁有了你, 匆匆轮回又有何惧 ————《如果我们不曾相遇》',
-                '活着其实很好, 再吃一颗苹果 ————《一颗苹果》',
-                '偶然与巧合, 舞动了蝶翼, 谁的心头风起 ————《如果我们不曾相遇》'
-            ];
-            let currentLyricIndex = 0;
-            const lyricsElement = document.getElementById('lyricsDisplay');
-
-            // 随机选择初始歌词
-            currentLyricIndex = Math.floor(Math.random() * lyrics.length);
-            if (lyricsElement) {{
-                lyricsElement.textContent = lyrics[currentLyricIndex];
-
-                // 每10秒切换一次歌词
-                setInterval(function() {{
-                    // 淡出
-                    lyricsElement.style.opacity = '0';
-
-                    setTimeout(function() {{
-                        // 切换歌词
-                        currentLyricIndex = (currentLyricIndex + 1) % lyrics.length;
-                        lyricsElement.textContent = lyrics[currentLyricIndex];
-
-                        // 淡入
-                        lyricsElement.style.opacity = '1';
-                    }}, 500);
-                }}, 10000);
-            }}
-
-            // 自动颜色化
-            const cells = document.querySelectorAll('.style-table td');
-            cells.forEach(cell => {{
-                const text = cell.textContent.trim();
-                const cleanText = text.replace(/[%,亿万手]/g, '');
-                const val = parseFloat(cleanText);
-
-                if (!isNaN(val)) {{
-                    if (text.includes('%') || text.includes('涨跌')) {{
-                        if (text.includes('-')) {{
-                            cell.classList.add('negative');
-                        }} else if (val > 0) {{
-                            cell.classList.add('positive');
-                        }}
-                    }} else if (text.startsWith('-')) {{
-                        cell.classList.add('negative');
-                    }} else if (text.startsWith('+')) {{
-                        cell.classList.add('positive');
-                    }}
-                }}
-            }});
-
-            // 初始化上证分时图表
-            initTimingChart();
-        }});
-
-        // 上证分时图表 - 使用API返回的实际涨跌幅
-        function initTimingChart() {{
-            const ctx = document.getElementById('timingChart');
-            if (!ctx || timingData.labels.length === 0) return;
-
-            // 使用API返回的实际数据（已经处理好的）
-            const changePercentages = timingData.change_pcts || [];
-            const changeAmounts = timingData.change_amounts || [];  // 原始涨跌额数据
-            const basePrice = timingData.prices[0];
-            const lastPrice = timingData.prices[timingData.prices.length - 1];
-
-            // 使用最后一个实际涨跌幅值
-            const lastPct = changePercentages.length > 0 ? changePercentages[changePercentages.length - 1] : 0;
-            const titleColor = lastPct >= 0 ? '#f44336' : '#4caf50';
-
-            // 更新标题颜色 - 现在主要显示实际涨跌幅
-            const titleElement = document.getElementById('timingChartTitle');
-            if (titleElement) {{
-                titleElement.style.color = titleColor;
-                titleElement.innerHTML = '📉 上证分时 <span style="font-size:0.9em;">' +
-                    (lastPct >= 0 ? '+' : '') + lastPct.toFixed(2) + '% (' + lastPrice.toFixed(2) + ')</span>';
-            }}
-
-            // 保存图表实例到全局变量，方便后续更新
-            window.timingChartInstance = new Chart(ctx, {{
-                type: 'line',
-                data: {{
-                    labels: timingData.labels,
-                    datasets: [{{
-                        label: '涨跌幅 (%)',
-                        data: changePercentages,
-                        borderColor: function(context) {{
-                            // 动态返回颜色：>0% 红色，<0% 绿色，=0% 灰色
-                            const index = context.dataIndex;
-                            if (index === undefined || index < 0) return '#9ca3af';
-                            const pct = changePercentages[index];
-                            return pct > 0 ? '#f44336' : (pct < 0 ? '#4caf50' : '#9ca3af');
-                        }},
-                        segment: {{
-                            borderColor: function(context) {{
-                                // 根据线段的结束点判断颜色
-                                const pct = changePercentages[context.p1DataIndex];
-                                return pct > 0 ? '#f44336' : (pct < 0 ? '#4caf50' : '#9ca3af');
-                            }}
-                        }},
-                        backgroundColor: function(context) {{
-                            const chart = context.chart;
-                            const {{ctx, chartArea}} = chart;
-                            if (!chartArea) return null;
-                            // 根据当前最新涨跌幅判断整体涨跌来设置背景色
-                            const lastPct = changePercentages[changePercentages.length - 1];
-                            const color = lastPct >= 0 ? '244, 67, 54' : '76, 175, 80';
-                            const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-                            gradient.addColorStop(0, 'rgba(' + color + ', 0.2)');
-                            gradient.addColorStop(1, 'rgba(' + color + ', 0.0)');
-                            return gradient;
-                        }},
-                        fill: true,
-                        tension: 0.4,
-                        pointRadius: 0,
-                        pointHoverRadius: 4,
-                        borderWidth: 2
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: {{
-                        mode: 'index',
-                        intersect: false,
-                    }},
-                    plugins: {{
-                        legend: {{
-                            display: true,
-                            position: 'top',
-                            labels: {{
-                                font: {{ size: 11 }},
-                                boxWidth: 12,
-                                generateLabels: function(chart) {{
-                                    const lastPct = changePercentages[changePercentages.length - 1];
-                                    const color = lastPct >= 0 ? '#ff4d4f' : '#52c41a';
-                                    return [{{
-                                        text: '涨跌幅: ' + (lastPct >= 0 ? '+' : '') + lastPct.toFixed(2) + '% (' + lastPrice.toFixed(2) + ')',
-                                        fillStyle: color,
-                                        strokeStyle: color,
-                                        fontColor: color,
-                                        lineWidth: 2,
-                                        hidden: false,
-                                        index: 0
-                                    }}];
-                                }}
-                            }}
-                        }},
-                        tooltip: {{
-                            callbacks: {{
-                                title: function(context) {{
-                                    return '时间: ' + context[0].label;
-                                }},
-                                label: function(context) {{
-                                    const index = context.dataIndex;
-                                    const pct = changePercentages[index];
-                                    const price = timingData.prices[index];
-                                    const changeAmt = changeAmounts[index];  // 使用原始涨跌额数据
-                                    const volume = timingData.volumes ? timingData.volumes[index] : 0;
-                                    const amount = timingData.amounts ? timingData.amounts[index] : 0;
-                                    return [
-                                        '涨跌幅: ' + (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%',
-                                        '上证指数: ' + price.toFixed(2),
-                                        '涨跌额: ' + (changeAmt >= 0 ? '+' : '') + changeAmt.toFixed(2),
-                                        '成交量: ' + volume.toFixed(0) + '万手',
-                                        '成交额: ' + amount.toFixed(2) + '亿'
-                                    ];
-                                }}
-                            }}
-                        }},
-                        datalabels: {{
-                            display: false
-                        }}
-                    }},
-                    scales: {{
-                        x: {{
-                            ticks: {{
-                                color: '#9ca3af',
-                                font: {{ size: 10 }},
-                                maxTicksLimit: 6
-                            }},
-                            grid: {{
-                                color: 'rgba(255, 255, 255, 0.1)'
-                            }}
-                        }},
-                        y: {{
-                            title: {{
-                                display: true,
-                                text: '涨跌幅 (%)',
-                                color: '#9ca3af',
-                                font: {{ size: 11 }}
-                            }},
-                            ticks: {{
-                                color: '#9ca3af',
-                                callback: function(value) {{
-                                    return (value >= 0 ? '+' : '') + value.toFixed(2) + '%';
-                                }}
-                            }},
-                            grid: {{
-                                color: 'rgba(255, 255, 255, 0.1)'
-                            }}
-                        }}
-                    }}
-                }}
-            }});
-        }}
-    </script>
-</body>
-</html>'''.format(
-        css_style=css_style,
-        username_display=username_display,
-        market_content=market_content,
-        timing_data_json=timing_data_json
-    )
-    return html
-
-
 def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_chart_info=None, username=None):
     """生成持仓基金页面"""
     css_style = get_css_style()
@@ -5798,18 +4050,6 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
         <!-- 左侧导航栏 -->
         <div class="sidebar collapsed" id="sidebar">
             <div class="sidebar-toggle" id="sidebarToggle">▶</div>
-            <a href="/market" class="sidebar-item">
-                <span class="sidebar-icon">📰</span>
-                <span>7*24快讯</span>
-            </a>
-            <a href="/market-indices" class="sidebar-item">
-                <span class="sidebar-icon">📊</span>
-                <span>市场指数</span>
-            </a>
-            <a href="/precious-metals" class="sidebar-item">
-                <span class="sidebar-icon">🪙</span>
-                <span>贵金属行情</span>
-            </a>
             <a href="/portfolio" class="sidebar-item active">
                 <span class="sidebar-icon">💼</span>
                 <span>持仓基金</span>
@@ -5823,10 +4063,13 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
         <!-- 内容区域 -->
         <div class="content-area">
             <!-- 页面标题 -->
-            <div class="portfolio-header">
-                <h1>
+            <div class="page-header">
+                <h1 style="display: flex; align-items: center;">
                     💼 持仓基金
-                    <button id="refreshBtn" onclick="refreshCurrentPage()" class="refresh-button">🔄 刷新</button>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-left: 15px;">
+                        <button id="refreshBtn-portfolio" onclick="refreshCurrentPage()" class="refresh-button">🔄 刷新</button>
+                        <span id="lastRefreshTime-portfolio" style="font-size: 0.85rem; color: #666; min-width: 60px;"></span>
+                    </div>
                 </h1>
             </div>
 
@@ -5870,25 +4113,6 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                     实际收益以基金公司最终结算为准，可能因份额确认时间、分红方式、费用扣除等因素存在偏差。
                     投资有风险，入市需谨慎。
                 </p>
-            </div>
-
-            <!-- 基金估值趋势图 -->
-            <div id="fundChartContainer" class="chart-card" style="background-color: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 20px;">
-                <div class="chart-card-header" style="padding: 12px 15px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
-                    <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
-                        <h3 id="fundChartTitle" style="margin: 0; font-size: 1rem; color: var(--text-main); flex-shrink: 0;">📈 基金估值</h3>
-                        <div class="fund-selector-wrapper" id="fundSelectorWrapper" style="flex: 1; min-width: 280px; max-width: 100%;">
-                            <input type="text" id="fundSelector" list="fundList" placeholder="选择或搜索基金代码/名称..." autocomplete="off">
-                            <span id="fundSelectorClear" class="input-clear-btn">✕</span>
-                            <datalist id="fundList">
-                                <!-- 动态填充基金选项 -->
-                            </datalist>
-                        </div>
-                    </div>
-                </div>
-                <div class="chart-card-content" style="padding: 15px; height: 300px;">
-                    <canvas id="fundChart"></canvas>
-                </div>
             </div>
 
             <!-- 基金内容 -->
@@ -5956,26 +4180,52 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
         </div>
     </div>
 
-    <script src="/static/js/main.js"></script>
+    <script src="/static/js/main.js?v=20260316"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {{
             // 自动颜色化
             const cells = document.querySelectorAll('.style-table td');
+            const extractSignedNumber = (text) => {{
+                // 优先提取百分号前的最后一个数字（适配“3/20 -1.23%”）
+                const pctMatches = [...text.matchAll(/([+-]?\\d+(?:\\.\\d+)?)\\s*%/g)];
+                if (pctMatches.length > 0) {{
+                    return parseFloat(pctMatches[pctMatches.length - 1][1]);
+                }}
+
+                // 其次提取文本中最后一个带符号数字
+                const signedMatches = text.match(/[+-]?\\d+(?:\\.\\d+)?/g);
+                if (signedMatches && signedMatches.length > 0) {{
+                    return parseFloat(signedMatches[signedMatches.length - 1]);
+                }}
+
+                return NaN;
+            }};
+
             cells.forEach(cell => {{
+                cell.classList.remove('positive', 'negative');
+
+                // 跳过基金名称列（如 A100 等名称中的数字不应触发着色）
+                if (cell.querySelector('.fund-name-cell')) {{
+                    return;
+                }}
+
                 const text = cell.textContent.trim();
-                const cleanText = text.replace(/[%,亿万手]/g, '');
-                const val = parseFloat(cleanText);
+                if (!text || text === '-' || text === 'N/A' || text === '---') {{
+                    return;
+                }}
+
+                // 仅对“像涨跌值”的文本进行着色，避免普通名称中的数字被误判
+                const hasFinancialHint = text.includes('%') || /^[+-]/.test(text) || /[+-]\\d/.test(text);
+                if (!hasFinancialHint) {{
+                    return;
+                }}
+
+                const val = extractSignedNumber(text);
 
                 if (!isNaN(val)) {{
-                    if (text.includes('%') || text.includes('涨跌')) {{
-                        if (text.includes('-')) {{
-                            cell.classList.add('negative');
-                        }} else if (val > 0) {{
-                            cell.classList.add('positive');
-                        }}
-                    }} else if (text.startsWith('-')) {{
+                    if (val < 0) {{
                         cell.classList.add('negative');
-                    }} else if (text.startsWith('+')) {{
+                    }} else if (val > 0) {{
                         cell.classList.add('positive');
                     }}
                 }}
@@ -6052,11 +4302,11 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             const extractFundCode = (input) => {{
                 const trimmed = input.trim();
                 // 如果直接是基金代码（6位数字）
-                if (/^\d{{6}}$/.test(trimmed)) {{
+                if (/^\\d{{6}}$/.test(trimmed)) {{
                     return trimmed;
                 }}
                 // 如果是"code - name"格式，提取code部分
-                const match = trimmed.match(/^(\d{{6}})\s*-\s*/);
+                const match = trimmed.match(/^(\\d{{6}})\\s*-\\s*/);
                 if (match) {{
                     return match[1];
                 }}
@@ -6167,6 +4417,9 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 options: {{
                     responsive: true,
                     maintainAspectRatio: false,
+                    layout: {{
+                        padding: isPerformanceChart ? {{ left: 8, right: 20 }} : {{ left: 0, right: 0 }}
+                    }},
                     interaction: {{
                         mode: 'index',
                         intersect: false,
@@ -6244,31 +4497,461 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             }});
         }}
 
-        async function loadFundChartData(fundCode) {{
-            try {{
-                const response = await fetch('/api/fund/chart-data?code=' + fundCode);
-                const data = await response.json();
+        // ==================== 行内基金图：供 main.js 调用 ====================
+        const FUND_PERFORMANCE_INTERVAL_OPTIONS = [
+            ["ONE_MONTH", "近1月"],
+            ["THREE_MONTH", "近3月"],
+            ["SIX_MONTH", "近6月"],
+            ["ONE_YEAR", "近1年"],
+            ["THREE_YEAR", "近3年"]
+        ];
 
-                // 更新全局数据
-                fundChartData = data.chart_data;
+        window.currentFundChartState = null;
+        window.fundRowChartInstance = null;
 
-                // 重新渲染图表
-                const canvas = document.getElementById('fundChart');
-                if (window.fundChartInstance) {{
-                    window.fundChartInstance.destroy();
-                }}
-                initFundChart();
-
-                // 保存用户偏好
-                await fetch('/api/fund/chart-default', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ fund_code: fundCode }})
-                }});
-            }} catch (error) {{
-                console.error('Failed to load fund chart data:', error);
+        async function loadFundChartDataInline(fundCode, chartType = 'estimate', interval = 'ONE_YEAR') {{
+            let url = '/api/fund/chart-data?code=' + encodeURIComponent(fundCode);
+            if (chartType === 'performance') {{
+                url = '/api/fund/performance-chart-data?code=' + encodeURIComponent(fundCode) + '&interval=' + encodeURIComponent(interval);
+            }} else if (chartType === 'profit') {{
+                url = '/api/fund/profit-chart-data?code=' + encodeURIComponent(fundCode) + '&interval=' + encodeURIComponent(interval);
             }}
+
+            const response = await fetch(url);
+            if (!response.ok) {{
+                throw new Error('Failed to fetch chart data');
+            }}
+            const data = await response.json();
+            return data.chart_data;
         }}
+
+        function buildFundChartRowContent(chartType, fundCode, interval) {{
+            if (chartType === 'estimate') {{
+                return `
+                    <div class="inline-fund-chart" style="height:260px; padding: 10px 20px;">
+                        <canvas></canvas>
+                    </div>
+                `;
+            }}
+
+            if (chartType === 'profit') {{
+                const buttonsHtml = FUND_PERFORMANCE_INTERVAL_OPTIONS.map(([value, label]) => `
+                    <button
+                        type="button"
+                        class="fund-performance-range-btn${{value === interval ? ' active' : ''}}"
+                        data-code="${{fundCode}}"
+                        data-chart-type="profit"
+                        data-interval="${{value}}"
+                        style="padding:4px 10px;border-radius:999px;border:1px solid ${{value === interval ? 'var(--accent)' : 'var(--border)'}};background:${{value === interval ? 'rgba(59,130,246,0.16)' : 'transparent'}};color:${{value === interval ? 'var(--accent)' : 'var(--text-dim)'}};cursor:pointer;font-size:12px;">
+                        ${{label}}
+                    </button>
+                `).join('');
+
+                return `
+                    <div class="inline-fund-chart" style="padding: 10px 20px;">
+                        <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;margin-bottom:10px;">
+                            <div></div>
+                            <div style="font-size:13px;font-weight:600;color:var(--text-main);text-align:center;">💹 累计收益曲线</div>
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;justify-self:end;">${{buttonsHtml}}</div>
+                        </div>
+                        <div style="height:260px;">
+                            <canvas></canvas>
+                        </div>
+                    </div>
+                `;
+            }}
+
+            const buttonsHtml = FUND_PERFORMANCE_INTERVAL_OPTIONS.map(([value, label]) => `
+                <button
+                    type="button"
+                    class="fund-performance-range-btn${{value === interval ? ' active' : ''}}"
+                    data-code="${{fundCode}}"
+                    data-interval="${{value}}"
+                    style="padding:4px 10px;border-radius:999px;border:1px solid ${{value === interval ? 'var(--accent)' : 'var(--border)'}};background:${{value === interval ? 'rgba(59,130,246,0.16)' : 'transparent'}};color:${{value === interval ? 'var(--accent)' : 'var(--text-dim)'}};cursor:pointer;font-size:12px;">
+                    ${{label}}
+                </button>
+            `).join('');
+
+            return `
+                <div class="inline-fund-chart" style="padding: 10px 20px;">
+                    <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
+                        <div class="fund-performance-latest-nav" style="font-size:12px;color:var(--text-dim);line-height:1.5;"></div>
+                        <div style="font-size:13px;font-weight:600;color:var(--text-main);text-align:center;">📈 基金业绩曲线</div>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-self:end;">${{buttonsHtml}}</div>
+                    </div>
+                    <div class="fund-performance-legend" style="display:flex;justify-content:center;gap:16px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;"></div>
+                    <div style="height:260px;">
+                        <canvas></canvas>
+                    </div>
+                </div>
+            `;
+        }}
+
+        function renderFundRowChart(canvas, chartData, chartType = 'estimate') {{
+            const growthData = chartData.growth || [];
+            const netValues = chartData.net_values || [];
+            const isPerformanceChart = chartType === 'performance';
+            const isProfitChart = chartType === 'profit';
+            const profitValues = chartData.profit_values || [];
+            const holdingGainValues = chartData.holding_gain_values || [];
+            const cumulativeBuyValues = chartData.cumulative_buy_values || [];
+            const cumulativeSellValues = chartData.cumulative_sell_values || [];
+            const benchmarkGrowthData = chartData.benchmark_growth || [];
+            const benchmarkLabel = chartData.benchmark_label || '沪深300';
+            const latestNetValue = chartData.latest_net_value;
+            const latestNetValueDate = chartData.latest_net_value_date;
+            const tradeMarkers = chartData.trade_markers || [];
+            const fundCurveColor = '#3b82f6';
+            const benchmarkColor = '#9ca3af';
+            const buyMarkerColor = '#ef4444';
+            const sellMarkerColor = '#3b82f6';
+
+            if (isPerformanceChart) {{
+                const wrapper = canvas.closest('.inline-fund-chart');
+                const latestNavEl = wrapper ? wrapper.querySelector('.fund-performance-latest-nav') : null;
+                const legendEl = wrapper ? wrapper.querySelector('.fund-performance-legend') : null;
+                if (latestNavEl) {{
+                    if (latestNetValue !== null && latestNetValue !== undefined && latestNetValue !== '') {{
+                        const navValue = Number(latestNetValue);
+                        const navDate = latestNetValueDate || '--';
+                        latestNavEl.innerHTML = `最新净值：<span style="color:var(--text-main);font-weight:600;">${{Number.isFinite(navValue) ? navValue.toFixed(4) : latestNetValue}}</span><br><span style="font-size:11px;">净值日期：${{navDate}}</span>`;
+                    }} else {{
+                        latestNavEl.innerHTML = `<span style="font-size:11px;">最新净值：--<br>净值日期：--</span>`;
+                    }}
+                }}
+                if (legendEl) {{
+                    legendEl.innerHTML = `
+                        <span style="display:inline-flex;align-items:center;gap:6px;color:${{fundCurveColor}};">
+                            <span style="display:inline-block;width:18px;height:0;border-top:2px solid ${{fundCurveColor}};"></span>基金业绩
+                        </span>
+                        <span style="display:inline-flex;align-items:center;gap:6px;color:${{benchmarkColor}};">
+                            <span style="display:inline-block;width:18px;height:0;border-top:2px solid ${{benchmarkColor}};"></span>${{benchmarkLabel}}
+                        </span>
+                        <span style="display:inline-flex;align-items:center;gap:6px;color:${{buyMarkerColor}};">
+                            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${{buyMarkerColor}};"></span>买入
+                        </span>
+                        <span style="display:inline-flex;align-items:center;gap:6px;color:${{sellMarkerColor}};">
+                            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${{sellMarkerColor}};"></span>卖出
+                        </span>
+                    `;
+                }}
+            }}
+
+            if (!chartData.labels || chartData.labels.length === 0) {{
+                const wrapper = canvas.closest('.inline-fund-chart');
+                if (wrapper) {{
+                    wrapper.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:13px;">${{isPerformanceChart ? '暂无可用业绩曲线数据' : (isProfitChart ? '暂无可用累计收益数据' : '暂无可用估值波形数据')}}</div>`;
+                }}
+                return;
+            }}
+
+            if (window.fundRowChartInstance) {{
+                window.fundRowChartInstance.destroy();
+            }}
+
+            const datasets = [{{
+                label: '基金业绩',
+                data: growthData,
+                order: 20,
+                borderColor: fundCurveColor,
+                segment: {{
+                    borderColor: fundCurveColor
+                }},
+                backgroundColor: function(context) {{
+                    const chart = context.chart;
+                    const {{ctx, chartArea}} = chart;
+                    if (!chartArea || isPerformanceChart) return null;
+                    const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+                    gradient.addColorStop(0, 'rgba(59, 130, 246, 0.20)');
+                    gradient.addColorStop(1, 'rgba(59, 130, 246, 0.00)');
+                    return gradient;
+                }},
+                fill: !isPerformanceChart,
+                tension: 0.4,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                borderWidth: 2,
+                spanGaps: true
+            }}];
+
+            if (isProfitChart) {{
+                datasets.length = 0;
+                datasets.push({{
+                    label: '累计收益',
+                    data: profitValues,
+                    order: 20,
+                    borderColor: '#3b82f6',
+                    backgroundColor: function(context) {{
+                        const chart = context.chart;
+                        const {{ctx, chartArea}} = chart;
+                        if (!chartArea) return null;
+                        const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+                        gradient.addColorStop(0, 'rgba(59, 130, 246, 0.20)');
+                        gradient.addColorStop(1, 'rgba(59, 130, 246, 0.00)');
+                        return gradient;
+                    }},
+                    fill: false,
+                    tension: 0,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    borderWidth: 2,
+                    spanGaps: true
+                }});
+            }}
+
+            if (isPerformanceChart && benchmarkGrowthData.some(value => value !== null && value !== undefined)) {{
+                datasets.push({{
+                    label: benchmarkLabel,
+                    data: benchmarkGrowthData,
+                    order: 21,
+                    borderColor: benchmarkColor,
+                    backgroundColor: 'transparent',
+                    fill: false,
+                    tension: 0.25,
+                    pointRadius: 0,
+                    pointHoverRadius: 3,
+                    borderWidth: 2,
+                    spanGaps: true
+                }});
+            }}
+
+            if (isPerformanceChart && tradeMarkers.length > 0) {{
+                const buyMarkers = tradeMarkers.filter(item => item.type === 'buy');
+                const sellMarkers = tradeMarkers.filter(item => item.type === 'sell');
+
+                if (buyMarkers.length > 0) {{
+                    datasets.push({{
+                        label: '买入',
+                        data: buyMarkers,
+                        type: 'line',
+                        order: 0,
+                        showLine: false,
+                        pointRadius: 3,
+                        pointHoverRadius: 4,
+                        pointBackgroundColor: buyMarkerColor,
+                        pointBorderColor: buyMarkerColor,
+                        pointBorderWidth: 0,
+                        borderColor: buyMarkerColor,
+                        parsing: false
+                    }});
+                }}
+
+                if (sellMarkers.length > 0) {{
+                    datasets.push({{
+                        label: '卖出',
+                        data: sellMarkers,
+                        type: 'line',
+                        order: 0,
+                        showLine: false,
+                        pointRadius: 3,
+                        pointHoverRadius: 4,
+                        pointBackgroundColor: sellMarkerColor,
+                        pointBorderColor: sellMarkerColor,
+                        pointBorderWidth: 0,
+                        borderColor: sellMarkerColor,
+                        parsing: false
+                    }});
+                }}
+            }}
+
+            window.fundRowChartInstance = new Chart(canvas.getContext('2d'), {{
+                type: 'line',
+                data: {{
+                    labels: chartData.labels || [],
+                    datasets: datasets
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {{
+                        mode: 'index',
+                        intersect: false,
+                    }},
+                    plugins: {{
+                        legend: {{ display: false }},
+                        tooltip: {{
+                            callbacks: {{
+                                title: function(context) {{
+                                    return (isPerformanceChart ? '日期: ' : '时间: ') + context[0].label;
+                                }},
+                                label: function(context) {{
+                                    const index = context.dataIndex;
+                                    const datasetLabel = context.dataset.label || '涨幅';
+                                    const dataValue = context.parsed.y;
+                                    const raw = context.raw || {{}};
+                                    if (isPerformanceChart) {{
+                                        if ((datasetLabel === '买入' || datasetLabel === '卖出') && raw.tx_time) {{
+                                            return [
+                                                datasetLabel + '：' + raw.tx_time,
+                                                '金额：¥' + Number(raw.amount || 0).toFixed(2),
+                                                '份额：' + Number(raw.shares || 0).toFixed(2),
+                                                '净值：' + Number(raw.net_value || 0).toFixed(4)
+                                            ];
+                                        }}
+                                        if (dataValue === null || dataValue === undefined) {{
+                                            return datasetLabel + ': --';
+                                        }}
+                                        return datasetLabel + ': ' + (dataValue >= 0 ? '+' : '') + dataValue.toFixed(2) + '%';
+                                    }}
+                                    if (isProfitChart) {{
+                                        const pointProfit = Number(profitValues[index] || 0);
+                                        const pointHolding = Number(holdingGainValues[index] || 0);
+                                        const pointBuy = Number(cumulativeBuyValues[index] || 0);
+                                        const pointSell = Number(cumulativeSellValues[index] || 0);
+                                        return [
+                                            '累计收益：¥' + pointProfit.toFixed(2),
+                                            '持有收益：¥' + pointHolding.toFixed(2),
+                                            '累计买入：¥' + pointBuy.toFixed(2),
+                                            '累计卖出：¥' + pointSell.toFixed(2)
+                                        ];
+                                    }}
+                                    const growth = growthData[index];
+                                    const netValue = netValues[index];
+                                    return [
+                                        '涨幅: ' + (growth >= 0 ? '+' : '') + growth.toFixed(2) + '%',
+                                        '净值: ' + netValue.toFixed(4)
+                                    ];
+                                }}
+                            }}
+                        }}
+                    }},
+                    scales: {{
+                        x: {{
+                            offset: isPerformanceChart,
+                            ticks: {{
+                                color: '#9ca3af',
+                                font: {{ size: 10 }},
+                                align: isPerformanceChart ? 'inner' : 'center',
+                                autoSkip: !isPerformanceChart,
+                                maxTicksLimit: isPerformanceChart ? 8 : 6,
+                                maxRotation: 0,
+                                minRotation: 0,
+                                callback: function(value, index, ticks) {{
+                                    if (!isPerformanceChart) {{
+                                        return this.getLabelForValue(value);
+                                    }}
+                                    const label = this.getLabelForValue(value);
+                                    if (index === 0 || index === ticks.length - 1) {{
+                                        return label;
+                                    }}
+                                    const targetCount = 8;
+                                    const step = Math.max(1, Math.ceil((ticks.length - 1) / (targetCount - 1)));
+                                    return index % step === 0 ? label : '';
+                                }}
+                            }},
+                            grid: {{
+                                color: 'rgba(148, 163, 184, 0.2)'
+                            }}
+                        }},
+                        y: {{
+                            border: {{
+                                display: !isPerformanceChart
+                            }},
+                            title: {{
+                                display: true,
+                                text: isPerformanceChart ? '业绩涨幅 (%)' : (isProfitChart ? '累计收益 (元)' : '涨幅 (%)'),
+                                color: '#9ca3af',
+                                font: {{ size: 11 }}
+                            }},
+                            ticks: {{
+                                color: '#9ca3af',
+                                callback: function(value) {{
+                                    if (isProfitChart) {{
+                                        return '¥' + Number(value).toFixed(0);
+                                    }}
+                                    return (value >= 0 ? '+' : '') + value.toFixed(2) + '%';
+                                }}
+                            }},
+                            grid: {{
+                                color: 'rgba(148, 163, 184, 0.2)'
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+        }}
+
+        function bindChartRangeButtons(chartRow, fundCode) {{
+            chartRow.querySelectorAll('.fund-performance-range-btn').forEach(button => {{
+                button.addEventListener('click', function(e) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const nextInterval = button.dataset.interval || 'ONE_YEAR';
+                    const nextType = button.dataset.chartType || 'performance';
+                    if (window.currentFundChartState &&
+                        window.currentFundChartState.code === fundCode &&
+                        window.currentFundChartState.type === nextType &&
+                        window.currentFundChartState.interval === nextInterval) {{
+                        return;
+                    }}
+                    window.toggleFundRowChart(fundCode, nextType, nextInterval, {{ forceOpen: true }});
+                }});
+            }});
+        }}
+
+        window.toggleFundRowChart = async function(fundCode, chartType = 'estimate', interval = 'ONE_YEAR', options = {{}}) {{
+            try {{
+                const tableBody = document.querySelector('.style-table tbody');
+                if (!tableBody) return;
+
+                const normalizedType = chartType === 'performance' ? 'performance' : (chartType === 'profit' ? 'profit' : 'estimate');
+                const defaultInterval = normalizedType === 'profit' ? 'THREE_MONTH' : 'ONE_YEAR';
+                const normalizedInterval = (normalizedType === 'performance' || normalizedType === 'profit') ? (interval || defaultInterval) : null;
+                const currentState = window.currentFundChartState;
+
+                // 如果当前已展开的是同一只基金、同一类型、同一区间，则收起
+                if (!options.forceOpen &&
+                    currentState &&
+                    currentState.code === fundCode &&
+                    currentState.type === normalizedType &&
+                    currentState.interval === normalizedInterval) {{
+                    const existingRow = tableBody.querySelector('tr.fund-chart-row');
+                    if (existingRow) existingRow.remove();
+                    window.currentFundChartState = null;
+                    if (window.fundRowChartInstance) {{
+                        window.fundRowChartInstance.destroy();
+                        window.fundRowChartInstance = null;
+                    }}
+                    return;
+                }}
+
+                // 收起之前的行
+                const oldRow = tableBody.querySelector('tr.fund-chart-row');
+                if (oldRow) oldRow.remove();
+
+                const codeCell = tableBody.querySelector(`.fund-code-cell[data-code="${{fundCode}}"]`);
+                const nameCell = tableBody.querySelector(`.fund-name-cell[data-code="${{fundCode}}"]`);
+                const gainCell = tableBody.querySelector(`.fund-position-gain-cell[data-code="${{fundCode}}"]`);
+                const targetAnchor = normalizedType === 'performance' ? codeCell : (normalizedType === 'profit' ? gainCell : (nameCell || codeCell));
+                const targetRow = targetAnchor ? targetAnchor.closest('tr') : null;
+                if (!targetRow) return;
+
+                const colCount = targetRow.cells.length;
+                const chartRow = document.createElement('tr');
+                chartRow.className = 'fund-chart-row';
+                const chartCell = document.createElement('td');
+                chartCell.colSpan = colCount;
+                chartCell.innerHTML = buildFundChartRowContent(normalizedType, fundCode, normalizedInterval);
+                chartRow.appendChild(chartCell);
+                targetRow.parentNode.insertBefore(chartRow, targetRow.nextSibling);
+
+                if (normalizedType === 'performance' || normalizedType === 'profit') {{
+                    bindChartRangeButtons(chartRow, fundCode);
+                }}
+
+                const canvas = chartCell.querySelector('canvas');
+                const chartData = await loadFundChartDataInline(fundCode, normalizedType, normalizedInterval || (normalizedType === 'profit' ? 'THREE_MONTH' : 'ONE_YEAR'));
+                renderFundRowChart(canvas, chartData, normalizedType);
+
+                window.currentFundChartState = {{
+                    code: fundCode,
+                    type: normalizedType,
+                    interval: normalizedInterval
+                }};
+            }} catch (e) {{
+                console.error('toggleFundRowChart error:', e);
+            }}
+        }};
     </script>
 </body>
 </html>'''.format(css_style=css_style, username_display=username_display, fund_content=fund_content, fund_chart_data_json=fund_chart_data_json, fund_chart_info_json=fund_chart_info_json)
@@ -6569,18 +5252,6 @@ def get_sectors_page_html(sectors_content, select_fund_content, fund_map, userna
         <!-- 左侧导航栏 -->
         <div class="sidebar collapsed" id="sidebar">
             <div class="sidebar-toggle" id="sidebarToggle">▶</div>
-            <a href="/market" class="sidebar-item">
-                <span class="sidebar-icon">📰</span>
-                <span>7*24快讯</span>
-            </a>
-            <a href="/market-indices" class="sidebar-item">
-                <span class="sidebar-icon">📊</span>
-                <span>市场指数</span>
-            </a>
-            <a href="/precious-metals" class="sidebar-item">
-                <span class="sidebar-icon">🪙</span>
-                <span>贵金属行情</span>
-            </a>
             <a href="/portfolio" class="sidebar-item">
                 <span class="sidebar-icon">💼</span>
                 <span>持仓基金</span>
@@ -6608,7 +5279,10 @@ def get_sectors_page_html(sectors_content, select_fund_content, fund_map, userna
                 <div class="page-header">
                     <h1 style="display: flex; align-items: center;">
                         🏢 行业板块
-                        <button id="refreshBtn" onclick="refreshCurrentPage()" class="refresh-button" style="margin-left: 15px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 5px;">🔄 刷新</button>
+                        <div style="margin-left: 15px; display: flex; align-items: center; gap: 10px;">
+                            <button id="refreshBtn-sectors" onclick="refreshCurrentPage()" class="refresh-button" style="padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 5px;">🔄 刷新</button>
+                            <span id="lastRefreshTime-sectors" style="font-size: 0.85rem; color: #666; min-width: 60px;"></span>
+                        </div>
                     </h1>
                     <p>查看各行业板块的市场表现</p>
                 </div>
@@ -6622,7 +5296,10 @@ def get_sectors_page_html(sectors_content, select_fund_content, fund_map, userna
                 <div class="page-header">
                     <h1 style="display: flex; align-items: center;">
                         🔍 板块基金查询
-                        <button id="refreshBtn" onclick="refreshCurrentPage()" class="refresh-button" style="margin-left: 15px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 5px;">🔄 刷新</button>
+                        <div style="margin-left: 15px; display: flex; align-items: center; gap: 10px;">
+                            <button id="refreshBtn-sectors-query" onclick="refreshCurrentPage()" class="refresh-button" style="padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 5px;">🔄 刷新</button>
+                            <span id="lastRefreshTime-sectors" style="font-size: 0.85rem; color: #666; min-width: 60px;"></span>
+                        </div>
                     </h1>
                     <p>查询特定板块的基金产品</p>
                 </div>
@@ -6633,7 +5310,7 @@ def get_sectors_page_html(sectors_content, select_fund_content, fund_map, userna
         </div>
     </div>
 
-    <script src="/static/js/main.js"></script>
+    <script src="/static/js/main.js?v=20260316"></script>
     <script src="/static/js/sidebar-nav.js"></script>
     <script>
         function switchTab(tabName) {{

@@ -1,0 +1,52 @@
+# 基金估值项目配置
+
+data_sources:
+  urls:
+    # fund123，蚂蚁基金
+    fund123_origin: "https://www.fund123.cn"
+    fund123_fund_page: "https://www.fund123.cn/fund"
+    fund123_search_api: "https://www.fund123.cn/api/fund/searchFund"
+    # 基金详情
+    fund123_matiaria_tpl: "https://www.fund123.cn/matiaria?fundCode={fund}"
+    # 业绩曲线，dateInterval可以取：ONE_MONTEH、THREE_MONTH、SIX_MONTH、ONE_YEAR、THREE_YEAR、ALL
+    fund123_curves_api: "https://www.fund123.cn/api/fund/queryFundQuotationCurves"
+    # 估值曲线
+    fund123_intraday_api: "https://www.fund123.cn/api/fund/queryFundEstimateIntraday"
+    # 历史净值（可指定起止日期查询）
+    fund123_history_net_value_api: "https://www.fund123.cn/api/fund/queryFundHistoryNetValueList"
+
+    # baidu
+    gushitong_origin: "https://gushitong.baidu.com"
+    gushitong_referer: "https://gushitong.baidu.com/"
+    baidu_index_warmup: "https://gushitong.baidu.com/index/ab-000001"
+    baidu_getbanner_tpl: "https://finance.pae.baidu.com/api/getbanner?market={market}&finClientType=pc"
+    baidu_getquotation_api: "https://finance.pae.baidu.com/vapi/v1/getquotation"
+    baidu_expressnews_tpl: "https://finance.pae.baidu.com/selfselect/expressnews?rn={count}&pn=0&tag=A股&finClientType=pc"
+    baidu_metrictrend_api: "https://finance.pae.baidu.com/sapi/v1/metrictrend"
+
+    # eastmoney
+    eastmoney_fundguide_api: "https://fund.eastmoney.com/data/FundGuideapi.aspx"
+    eastmoney_fundguide_referer: "https://fund.eastmoney.com/daogou/"
+    eastmoney_bk_api: "https://push2.eastmoney.com/api/qt/clist/get"
+
+    # jijinhao / cngold
+    cngold_hist_referer: "https://quote.cngold.org/gjs/swhj_zghj.html"
+    cngold_realtime_referer: "https://quote.cngold.org/gjs/gjhj.html"
+    jijinhao_history_api: "https://api.jijinhao.com/quoteCenter/history.htm"
+    jijinhao_realtime_api: "https://api.jijinhao.com/quoteCenter/realTime.htm"
+
+logging:
+  level: "INFO"
+  log_response_time: true
+  log_file: "logs/fund_eval.log"
+
+# HTTP详细请求日志终端输出开关
+http_timing:
+  console_log: false
+
+update_interval: 300  # 单位：秒
+
+# 页面刷新配置
+page_refresh:
+  # 自动刷新间隔时长（毫秒）
+  auto_refresh_interval: 300000  # 5 分钟
