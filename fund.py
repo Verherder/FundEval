@@ -8,6 +8,7 @@ import random
 import re
 import threading
 import time
+from decimal import Decimal, ROUND_HALF_UP
 
 import requests
 import urllib3
@@ -1189,6 +1190,18 @@ class LanFund:
                 text = f"{rounded_value:.2f}%"
             return f"<span style='color:{color} !important;font-weight:600;'>{text}</span>"
 
+        def format_money_value(value):
+            if value is None:
+                return "--"
+            rounded_value = round(float(value), 2)
+            if abs(rounded_value) < 1e-10:
+                color = "var(--text-main)"
+            elif rounded_value > 0:
+                color = "var(--up-color)"
+            else:
+                color = "var(--down-color)"
+            return f"<span style='color:{color} !important;font-weight:600;'>¥{rounded_value:,.2f}</span>"
+
         def xnpv(rate, cashflows):
             if rate <= -0.999999:
                 return float("inf")
@@ -1240,34 +1253,38 @@ class LanFund:
             return (low + high) / 2
 
         def compute_holding_metrics(fund_code, current_shares, current_net_value):
+            share_eps = 1e-4
             if not self.db or self.user_id is None or current_shares <= 0 or current_net_value <= 0:
-                return None, None
+                return None, None, None, current_shares
 
             transactions = self.db.get_fund_transactions(self.user_id, fund_code)
             if not transactions:
-                return None, None
+                return None, None, None, current_shares
 
             running_shares = 0.0
             cycle_start = 0
             for index, tx in enumerate(transactions):
                 tx_shares = safe_float(tx.get('shares'), 0.0)
-                if tx.get('tx_type') == 'buy':
+                tx_type = str(tx.get('tx_type', '')).lower()
+                if tx_type == 'buy':
                     running_shares += tx_shares
-                elif tx.get('tx_type') == 'sell':
+                elif tx_type == 'sell':
                     running_shares -= tx_shares
 
-                if running_shares <= 1e-8:
+                if abs(running_shares) <= share_eps:
                     running_shares = 0.0
                     cycle_start = index + 1
 
             cycle_transactions = transactions[cycle_start:]
             if not cycle_transactions:
-                return None, None
+                return None, None, None, current_shares
 
-            remaining_lots = []
+            tx_remaining_shares = 0.0
+            tx_remaining_cost = 0.0
             cashflows = []
+
             for tx in cycle_transactions:
-                tx_type = tx.get('tx_type')
+                tx_type = str(tx.get('tx_type', '')).lower()
                 tx_shares = safe_float(tx.get('shares'), 0.0)
                 tx_amount = safe_float(tx.get('amount'), 0.0)
                 tx_net_value = safe_float(tx.get('net_value'), 0.0)
@@ -1280,45 +1297,44 @@ class LanFund:
                         tx_date = datetime.datetime.now()
 
                 if tx_type == 'buy' and tx_shares > 0:
-                    lot_cost = tx_amount if tx_amount > 0 else tx_shares * tx_net_value
-                    remaining_lots.append({
-                        'shares': tx_shares,
-                        'cost': lot_cost,
-                    })
-                    cashflows.append((tx_date, -lot_cost))
-                elif tx_type == 'sell' and tx_shares > 0:
-                    shares_to_consume = tx_shares
-                    while shares_to_consume > 1e-8 and remaining_lots:
-                        lot = remaining_lots[0]
-                        consume = min(lot['shares'], shares_to_consume)
-                        cost_ratio = consume / lot['shares'] if lot['shares'] > 0 else 0
-                        lot['cost'] -= lot['cost'] * cost_ratio
-                        lot['shares'] -= consume
-                        shares_to_consume -= consume
-                        if lot['shares'] <= 1e-8:
-                            remaining_lots.pop(0)
+                    buy_cost = tx_amount if tx_amount > 0 else tx_shares * tx_net_value
+                    tx_remaining_shares += tx_shares
+                    tx_remaining_cost += buy_cost
+                    cashflows.append((tx_date, -buy_cost))
+                elif tx_type == 'sell' and tx_shares > 0 and tx_remaining_shares > share_eps:
+                    avg_cost_before = (tx_remaining_cost / tx_remaining_shares) if tx_remaining_shares > share_eps else 0.0
+                    sell_shares = min(tx_shares, tx_remaining_shares)
+                    tx_remaining_cost -= sell_shares * avg_cost_before
+                    tx_remaining_shares -= sell_shares
+                    if tx_remaining_shares <= share_eps:
+                        tx_remaining_shares = 0.0
+                        tx_remaining_cost = 0.0
                     proceeds = tx_amount if tx_amount > 0 else tx_shares * tx_net_value
                     cashflows.append((tx_date, proceeds))
 
-            remaining_shares = sum(lot['shares'] for lot in remaining_lots)
-            if remaining_shares <= 1e-8:
-                return None, None
+            if tx_remaining_shares <= share_eps:
+                return None, None, None, current_shares
 
-            holding_cost = sum(lot['cost'] for lot in remaining_lots)
-            if abs(remaining_shares - current_shares) > 1e-6 and remaining_shares > 0:
-                holding_cost *= current_shares / remaining_shares
-            current_value = current_shares * current_net_value
+            tx_remaining_shares = float(Decimal(str(tx_remaining_shares)).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP))
+            effective_shares = current_shares
+            if abs(tx_remaining_shares - current_shares) > share_eps:
+                effective_shares = tx_remaining_shares
+
+            avg_unit_cost = (tx_remaining_cost / tx_remaining_shares) if tx_remaining_shares > share_eps else 0.0
+            holding_cost = effective_shares * avg_unit_cost
+            current_value = effective_shares * current_net_value
+            holding_gain = current_value - holding_cost
             holding_return = ((current_value - holding_cost) / holding_cost * 100) if holding_cost > 0 else None
 
             cashflows.append((datetime.datetime.now(), current_value))
             annual_rate = solve_xirr(cashflows)
             annual_return = annual_rate * 100 if annual_rate is not None else None
-            return holding_return, annual_return
+            return holding_return, annual_return, holding_gain, effective_shares
 
         total = len(result)
         hold_count = sum(1 for r in result if self.CACHE_MAP.get(r[0], {}).get("is_hold", False))
-        # 列：标记、基金代码、基金名称(共X个持有Y个)、估值、日涨幅、连涨/跌、近30天、持仓金额、持有/年化
-        titles = ["标记", "基金代码", f"基金名称 (共{total}个持有{hold_count}个)", "估值", "日涨幅", "连涨/跌", "近30天", "持仓金额", "持有/年化"]
+        # 列：标记、基金代码、基金名称(共X个持有Y个)、估值、日涨幅、连涨/跌、近30天、持仓/收益、持有/年化
+        titles = ["标记", "基金代码", f"基金名称 (共{total}个持有{hold_count}个)", "估值", "日涨幅", "连涨/跌", "近30天", "持仓/收益", "持有/年化"]
         rows = []
         for row in result:
             code = row[0]
@@ -1348,12 +1364,16 @@ class LanFund:
             net_value_display = net_value_text.split('(')[0] if isinstance(net_value_text, str) else net_value_text
             shares = safe_float(self.CACHE_MAP.get(code, {}).get('shares', 0), 0.0)
             net_value_num = safe_float(net_value_display, 0.0)
-            position_amount = net_value_num * shares
+            holding_return, annual_return, holding_gain, effective_shares = compute_holding_metrics(code, shares, net_value_num)
+            calc_shares = effective_shares if effective_shares is not None else shares
+            position_amount = net_value_num * calc_shares
             position_amount_display = (
-                f"¥{position_amount:,.2f}"
-                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{shares:,.2f}份</span>"
+                f"<span class='fund-position-amount-cell' data-code='{code}' "
+                f"style='cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看交易记录'>"
+                f"¥{position_amount:,.2f}</span>"
+                f"<br><span class='fund-position-gain-cell' data-code='{code}' "
+                f"style='font-size:11px;color:var(--text-dim);font-weight:400;cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看累计收益曲线'>{format_money_value(holding_gain)}</span>"
             )
-            holding_return, annual_return = compute_holding_metrics(code, shares, net_value_num)
             performance_display = (
                 f"{format_pct_value(holding_return)}"
                 f"<br>{format_pct_value(annual_return)}"

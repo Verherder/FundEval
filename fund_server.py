@@ -502,6 +502,7 @@ def _settle_pending_buys(user_id):
             shares=shares,
             net_value=latest_net_value,
             tx_time=tx_time,
+            fee=0,
         )
 
         if tx_id is None:
@@ -550,6 +551,82 @@ def _find_net_value_by_date_from_trend(user_id, fund_code, target_date):
         except (TypeError, ValueError):
             continue
 
+    return None
+
+
+def _find_net_value_by_date_from_history_api(user_id, fund_code, target_date):
+    """通过历史净值接口按指定日期精确查询净值。"""
+    user_funds = db.get_user_funds(user_id)
+    fund_data = user_funds.get(fund_code)
+    if not fund_data:
+        return None
+
+    fund_key = fund_data.get('fund_key')
+    if not fund_key:
+        return None
+
+    try:
+        normalized_date = datetime.date.fromisoformat(str(target_date)).strftime("%Y%m%d")
+    except Exception:
+        return None
+
+    importlib.reload(fund)
+    my_fund = fund.LanFund(user_id=user_id, db=db)
+
+    api_url = fund.DATA_SOURCE_URLS.get('fund123_history_net_value_api')
+    if not api_url:
+        return None
+
+    headers = {
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+        "Origin": fund.DATA_SOURCE_URLS['fund123_origin'],
+        "Referer": fund.DATA_SOURCE_URLS['fund123_fund_page'],
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+        "X-API-Key": "foobar",
+        "accept": "json"
+    }
+
+    payload = {
+        "productId": fund_key,
+        "startDate": normalized_date,
+        "endDate": normalized_date,
+        "pageNum": 1,
+        "pageSize": 10,
+    }
+
+    try:
+        response = my_fund.session.post(
+            api_url,
+            params={"_csrf": my_fund._csrf},
+            json=payload,
+            headers=headers,
+            timeout=10,
+            verify=False,
+        )
+        response_json = response.json()
+    except Exception as e:
+        logger.warning(f"历史净值接口请求失败【{fund_code} {target_date}】: {e}")
+        return None
+
+    if not response_json.get("success"):
+        return None
+
+    value_list = response_json.get("list", []) or []
+    if not value_list:
+        return None
+
+    for item in value_list:
+        item_date = str(item.get("netValueDate", "")).strip()
+        if item_date and item_date != str(target_date):
+            continue
+        try:
+            net_value = float(item.get("netValue"))
+            if net_value > 0:
+                return round(net_value, 4)
+        except (TypeError, ValueError):
+            continue
     return None
 
 def _get_latest_fund_net_value(user_id, fund_code):
@@ -667,7 +744,8 @@ def api_fund_buy_backfill():
         data = request.json or {}
         code = str(data.get('code', '')).strip()
         amount = data.get('amount', 0)
-        net_value = data.get('net_value', 0)
+        fee = data.get('fee', 0)
+        net_value = data.get('net_value', None)
         trade_date = str(data.get('trade_date', '')).strip()
 
         if not code:
@@ -681,22 +759,39 @@ def api_fund_buy_backfill():
             return {'success': False, 'message': '买入金额必须大于0'}
 
         try:
-            net_value = float(net_value)
+            fee = float(fee)
         except (TypeError, ValueError):
-            return {'success': False, 'message': '净值格式错误'}
-        if net_value <= 0:
-            return {'success': False, 'message': '净值必须大于0'}
+            return {'success': False, 'message': '手续费格式错误'}
+        if fee < 0:
+            return {'success': False, 'message': '手续费不能为负数'}
+        if amount <= fee:
+            return {'success': False, 'message': '买入金额需大于手续费'}
 
         try:
             normalized_date = datetime.date.fromisoformat(trade_date).isoformat()
         except Exception:
             return {'success': False, 'message': '交易日期格式错误，请使用YYYY-MM-DD'}
 
-        buy_shares = float((Decimal(str(amount)) / Decimal(str(net_value))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        user_id = get_current_user_id()
+
+        net_value_missing = (net_value is None) or (str(net_value).strip() == "")
+        if net_value_missing:
+            net_value = _find_net_value_by_date_from_history_api(user_id, code, normalized_date)
+            if net_value is None:
+                return {'success': False, 'message': '未查询到该日期净值，请手动输入净值后重试'}
+        else:
+            try:
+                net_value = float(str(net_value).strip())
+            except (TypeError, ValueError):
+                return {'success': False, 'message': '净值格式错误'}
+            if net_value <= 0:
+                return {'success': False, 'message': '净值必须大于0'}
+
+        net_buy_amount = float((Decimal(str(amount)) - Decimal(str(fee))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        buy_shares = float((Decimal(str(net_buy_amount)) / Decimal(str(net_value))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
         if buy_shares <= 0:
             return {'success': False, 'message': '买入金额过小，折算份额为0'}
 
-        user_id = get_current_user_id()
         user_funds = db.get_user_funds(user_id)
         if code not in user_funds:
             return {'success': False, 'message': '基金不存在'}
@@ -714,6 +809,7 @@ def api_fund_buy_backfill():
             shares=buy_shares,
             net_value=net_value,
             tx_time=tx_time,
+            fee=fee,
         )
         if tx_id is None:
             db.update_fund_shares_delta(user_id, code, -buy_shares)
@@ -721,10 +817,11 @@ def api_fund_buy_backfill():
 
         return {
             'success': True,
-            'message': f'补录成功：{normalized_date} 按净值 {net_value:.4f} 买入 ¥{amount:,.2f}（{buy_shares:.2f}份）',
+            'message': f'补录成功：{normalized_date} 按净值 {net_value:.4f} 买入 ¥{amount:,.2f}（手续费¥{fee:,.2f}，{buy_shares:.2f}份）',
             'current_shares': new_shares,
             'trade_date': normalized_date,
             'shares': buy_shares,
+            'fee': fee,
         }
     except Exception as e:
         logger.error(f"补录买入失败: {e}")
@@ -734,7 +831,7 @@ def api_fund_buy_backfill():
 @app.route('/api/fund/net-value-by-date', methods=['GET'])
 @login_required
 def api_fund_net_value_by_date():
-    """按日期从趋势数据获取基金净值（若可用）。"""
+    """按日期获取基金净值（历史净值接口优先，趋势数据兜底）。"""
     try:
         code = str(request.args.get('code', '')).strip()
         trade_date = str(request.args.get('date', '')).strip()
@@ -748,13 +845,15 @@ def api_fund_net_value_by_date():
             return {'success': False, 'message': '日期格式错误，请使用YYYY-MM-DD'}
 
         user_id = get_current_user_id()
-        net_value = _find_net_value_by_date_from_trend(user_id, code, normalized_date)
+        net_value = _find_net_value_by_date_from_history_api(user_id, code, normalized_date)
+        if net_value is None:
+            net_value = _find_net_value_by_date_from_trend(user_id, code, normalized_date)
 
         if net_value is None:
             return {
                 'success': True,
                 'found': False,
-                'message': '趋势数据中未找到该日期净值，请手动输入',
+                'message': '未找到该日期净值，请手动输入',
                 'trade_date': normalized_date,
             }
 
@@ -767,6 +866,123 @@ def api_fund_net_value_by_date():
     except Exception as e:
         logger.error(f"按日期查询净值失败: {e}")
         return {'success': False, 'message': f'按日期查询净值失败: {str(e)}'}
+
+
+@app.route('/api/fund/sell-backfill', methods=['POST'])
+@login_required
+def api_fund_sell_backfill():
+    """补录卖出：按指定日期净值与金额生成卖出交易。"""
+    try:
+        data = request.json or {}
+        code = str(data.get('code', '')).strip()
+        amount = data.get('amount', None)
+        shares_input = data.get('shares', None)
+        fee = data.get('fee', 0)
+        net_value = data.get('net_value', None)
+        trade_date = str(data.get('trade_date', '')).strip()
+
+        if not code:
+            return {'success': False, 'message': '请提供基金代码'}
+
+        sell_amount = None
+        if amount is not None and str(amount).strip() != "":
+            try:
+                sell_amount = float(amount)
+            except (TypeError, ValueError):
+                return {'success': False, 'message': '卖出金额格式错误'}
+            if sell_amount <= 0:
+                return {'success': False, 'message': '卖出金额必须大于0'}
+
+        shares = None
+        if shares_input is not None and str(shares_input).strip() != "":
+            try:
+                shares = float(shares_input)
+            except (TypeError, ValueError):
+                return {'success': False, 'message': '卖出份额格式错误'}
+            if shares <= 0:
+                return {'success': False, 'message': '卖出份额必须大于0'}
+
+        try:
+            fee = float(fee)
+        except (TypeError, ValueError):
+            return {'success': False, 'message': '手续费格式错误'}
+        if fee < 0:
+            return {'success': False, 'message': '手续费不能为负数'}
+
+        try:
+            normalized_date = datetime.date.fromisoformat(trade_date).isoformat()
+        except Exception:
+            return {'success': False, 'message': '交易日期格式错误，请使用YYYY-MM-DD'}
+
+        user_id = get_current_user_id()
+        user_funds = db.get_user_funds(user_id)
+        if code not in user_funds:
+            return {'success': False, 'message': '基金不存在'}
+
+        current_holding = float(user_funds[code].get('shares', 0) or 0)
+
+        net_value_missing = (net_value is None) or (str(net_value).strip() == "")
+        if net_value_missing:
+            net_value = _find_net_value_by_date_from_history_api(user_id, code, normalized_date)
+            if net_value is None:
+                return {'success': False, 'message': '未查询到该日期净值，请手动输入净值后重试'}
+        else:
+            try:
+                net_value = float(str(net_value).strip())
+            except (TypeError, ValueError):
+                return {'success': False, 'message': '净值格式错误'}
+            if net_value <= 0:
+                return {'success': False, 'message': '净值必须大于0'}
+
+        if sell_amount is None and shares is None:
+            return {'success': False, 'message': '请提供卖出金额'}
+
+        if sell_amount is None and shares is not None:
+            gross_sell_amount = float((Decimal(str(shares)) * Decimal(str(net_value))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+            if fee > gross_sell_amount:
+                return {'success': False, 'message': '手续费不能大于卖出总额'}
+            sell_amount = float((Decimal(str(gross_sell_amount)) - Decimal(str(fee))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        else:
+            gross_sell_amount = float((Decimal(str(sell_amount)) + Decimal(str(fee))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+            shares = float((Decimal(str(gross_sell_amount)) / Decimal(str(net_value))).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP))
+
+        if shares is None or shares <= 0:
+            return {'success': False, 'message': '卖出金额过小，折算份额为0'}
+
+        if shares - current_holding > 1e-8:
+            return {'success': False, 'message': f'卖出份额超过当前持仓（{current_holding:.4f}）'}
+
+        new_shares = db.update_fund_shares_delta(user_id, code, -shares)
+        if new_shares is None:
+            return {'success': False, 'message': '补录卖出失败，份额更新异常'}
+
+        tx_time = f"{normalized_date} 15:00:00"
+        tx_id = db.add_fund_transaction(
+            user_id=user_id,
+            fund_code=code,
+            tx_type='sell',
+            amount=sell_amount,
+            shares=shares,
+            net_value=net_value,
+            tx_time=tx_time,
+            fee=fee,
+        )
+        if tx_id is None:
+            db.update_fund_shares_delta(user_id, code, shares)
+            return {'success': False, 'message': '补录卖出失败，交易记录写入异常'}
+
+        return {
+            'success': True,
+            'message': f'补录卖出成功：{normalized_date} 按净值 {net_value:.4f} 卖出 {shares:.4f}份（到账¥{sell_amount:,.2f}，手续费¥{fee:,.2f}）',
+            'current_shares': new_shares,
+            'trade_date': normalized_date,
+            'shares': shares,
+            'amount': sell_amount,
+            'fee': fee,
+        }
+    except Exception as e:
+        logger.error(f"补录卖出失败: {e}")
+        return {'success': False, 'message': f'补录卖出失败: {str(e)}'}
 
 
 @app.route('/api/fund/sell', methods=['POST'])
@@ -813,6 +1029,7 @@ def api_fund_sell():
             amount=sell_amount,
             shares=shares,
             net_value=net_value,
+            fee=0,
         )
 
         return {
@@ -824,6 +1041,198 @@ def api_fund_sell():
     except Exception as e:
         logger.error(f"卖出失败: {e}")
         return {'success': False, 'message': f'卖出失败: {str(e)}'}
+
+
+@app.route('/api/fund/transactions', methods=['GET'])
+@login_required
+def api_fund_transactions():
+    """获取单只基金交易记录。"""
+    try:
+        code = str(request.args.get('code', '')).strip()
+        if not code:
+            return {'success': False, 'message': '请提供基金代码'}
+
+        user_id = get_current_user_id()
+
+        user_funds = db.get_user_funds(user_id)
+        if code not in user_funds:
+            return {'success': False, 'message': '基金不存在'}
+
+        rows = db.get_fund_transactions(user_id, code)
+        share_eps = 1e-6
+        running_shares = 0.0
+        running_cost = 0.0
+        transactions = []
+        for row in rows:
+            tx_type = str(row.get('tx_type', '') or '').lower()
+            tx_amount = float(row.get('amount', 0) or 0)
+            tx_shares = float(row.get('shares', 0) or 0)
+            tx_net_value = float(row.get('net_value', 0) or 0) if row.get('net_value') is not None else 0.0
+
+            if tx_type == 'buy' and tx_shares > 0:
+                buy_cost = tx_amount if tx_amount > 0 else tx_shares * tx_net_value
+                running_shares += tx_shares
+                running_cost += buy_cost
+            elif tx_type == 'sell' and tx_shares > 0 and running_shares > share_eps:
+                avg_cost_before = (running_cost / running_shares) if running_shares > share_eps else 0.0
+                sell_shares = min(tx_shares, running_shares)
+                running_cost -= sell_shares * avg_cost_before
+                running_shares -= sell_shares
+
+            if running_shares <= share_eps:
+                running_shares = 0.0
+                running_cost = 0.0
+
+            avg_cost_after = (running_cost / running_shares) if running_shares > share_eps else None
+
+            transactions.append({
+                'id': int(row.get('id', 0) or 0),
+                'fund_code': code,
+                'tx_type': tx_type,
+                'amount': tx_amount,
+                'shares': tx_shares,
+                'net_value': float(row.get('net_value', 0) or 0) if row.get('net_value') is not None else None,
+                'fee': float(row.get('fee', 0) or 0),
+                'tx_time': str(row.get('tx_time', '') or ''),
+                'avg_cost_after': avg_cost_after,
+                'holding_shares_after': running_shares,
+            })
+
+        transactions = transactions[::-1]
+
+        return {
+            'success': True,
+            'fund_code': code,
+            'transactions': transactions,
+        }
+    except Exception as e:
+        logger.error(f"查询交易记录失败: {e}")
+        return {'success': False, 'message': f'查询交易记录失败: {str(e)}'}
+
+
+@app.route('/api/fund/transaction/update', methods=['POST'])
+@login_required
+def api_fund_transaction_update():
+    """更新交易记录并重算持仓份额。"""
+    try:
+        data = request.json or {}
+        code = str(data.get('code', '')).strip()
+        tx_id_raw = data.get('transaction_id', None)
+        tx_type = str(data.get('tx_type', '')).strip().lower()
+        amount_raw = data.get('amount', 0)
+        shares_raw = data.get('shares', 0)
+        net_value_raw = data.get('net_value', 0)
+        fee_raw = data.get('fee', 0)
+        tx_time_raw = str(data.get('tx_time', '')).strip()
+
+        if not code:
+            return {'success': False, 'message': '请提供基金代码'}
+
+        try:
+            tx_id = int(str(tx_id_raw).strip())
+        except (TypeError, ValueError):
+            return {'success': False, 'message': '交易ID格式错误'}
+        if tx_id <= 0:
+            return {'success': False, 'message': '交易ID无效'}
+
+        if tx_type not in ('buy', 'sell'):
+            return {'success': False, 'message': '交易类型必须为买入或卖出'}
+
+        try:
+            amount = float(amount_raw)
+            shares = float(shares_raw)
+            net_value = float(net_value_raw)
+            fee = float(fee_raw)
+        except (TypeError, ValueError):
+            return {'success': False, 'message': '金额/份额/净值/手续费格式错误'}
+
+        if amount <= 0 or shares <= 0 or net_value <= 0:
+            return {'success': False, 'message': '金额、份额、净值都必须大于0'}
+        if fee < 0:
+            return {'success': False, 'message': '手续费不能为负数'}
+
+        if not tx_time_raw:
+            return {'success': False, 'message': '交易时间不能为空'}
+        parsed_dt = None
+        for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M', '%Y-%m-%dT%H:%M:%S'):
+            try:
+                parsed_dt = datetime.datetime.strptime(tx_time_raw, fmt)
+                break
+            except Exception:
+                continue
+        if parsed_dt is None:
+            return {'success': False, 'message': '交易时间格式错误'}
+        tx_time = parsed_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+        user_id = get_current_user_id()
+        user_funds = db.get_user_funds(user_id)
+        if code not in user_funds:
+            return {'success': False, 'message': '基金不存在'}
+
+        result = db.update_fund_transaction_and_recalculate(
+            user_id=user_id,
+            fund_code=code,
+            tx_id=tx_id,
+            tx_type=tx_type,
+            amount=amount,
+            shares=shares,
+            net_value=net_value,
+            tx_time=tx_time,
+            fee=fee,
+        )
+        if not result:
+            return {'success': False, 'message': '更新失败，交易不存在或处理异常'}
+
+        return {
+            'success': True,
+            'message': '交易记录已更新',
+            'current_shares': float(result.get('current_shares', 0) or 0),
+            'current_is_hold': bool(result.get('current_is_hold', False)),
+        }
+    except Exception as e:
+        logger.error(f"更新交易记录失败: {e}")
+        return {'success': False, 'message': f'更新交易记录失败: {str(e)}'}
+
+
+@app.route('/api/fund/transaction/delete', methods=['POST'])
+@login_required
+def api_fund_transaction_delete():
+    """删除交易记录并重算持仓份额。"""
+    try:
+        data = request.json or {}
+        code = str(data.get('code', '')).strip()
+        tx_id_raw = data.get('transaction_id', None)
+
+        if not code:
+            return {'success': False, 'message': '请提供基金代码'}
+
+        try:
+            tx_id = int(str(tx_id_raw).strip())
+        except (TypeError, ValueError):
+            return {'success': False, 'message': '交易ID格式错误'}
+        if tx_id <= 0:
+            return {'success': False, 'message': '交易ID无效'}
+
+        user_id = get_current_user_id()
+
+        result = db.delete_fund_transaction_and_recalculate(user_id, code, tx_id)
+        if not result:
+            return {'success': False, 'message': '删除失败，交易不存在或处理异常'}
+
+        deleted_tx = result.get('deleted', {})
+        deleted_type = '买入' if str(deleted_tx.get('tx_type', '')).lower() == 'buy' else '卖出'
+        deleted_shares = float(deleted_tx.get('shares', 0) or 0)
+
+        return {
+            'success': True,
+            'message': f'已删除{deleted_type}记录（{deleted_shares:.2f}份）',
+            'current_shares': float(result.get('current_shares', 0) or 0),
+            'current_is_hold': bool(result.get('current_is_hold', False)),
+            'deleted_id': int(deleted_tx.get('id', 0) or 0),
+        }
+    except Exception as e:
+        logger.error(f"删除交易记录失败: {e}")
+        return {'success': False, 'message': f'删除交易记录失败: {str(e)}'}
 
 
 @app.route('/api/fund/data', methods=['GET'])
@@ -1452,6 +1861,275 @@ def api_fund_performance_chart_data():
         chart_data['latest_net_value'] = round(float(latest_net_value), 4)
     if latest_nav_date:
         chart_data['latest_net_value_date'] = latest_nav_date
+
+    return jsonify({
+        'chart_data': chart_data,
+        'fund_info': {
+            'code': fund_code,
+            'name': fund_data['fund_name']
+        }
+    })
+
+
+@app.route('/api/fund/profit-chart-data')
+@login_required
+def api_fund_profit_chart_data():
+    """获取基金累计收益曲线数据。"""
+    fund_code = request.args.get('code')
+    date_interval = request.args.get('interval', 'ONE_YEAR').strip().upper()
+    if not fund_code:
+        return jsonify({'error': 'Missing fund code'}), 400
+
+    if date_interval not in PERFORMANCE_CHART_INTERVALS:
+        return jsonify({'error': 'Invalid interval'}), 400
+
+    user_id = get_current_user_id()
+    user_funds = db.get_user_funds(user_id)
+    if fund_code not in user_funds:
+        return jsonify({'error': 'Fund not in user list'}), 400
+
+    fund_data = {
+        'fund_key': user_funds[fund_code]['fund_key'],
+        'fund_name': user_funds[fund_code]['fund_name']
+    }
+
+    importlib.reload(fund)
+    my_fund = fund.LanFund(user_id=user_id, db=db)
+    perf_data = my_fund.get_fund_performance_chart_data(fund_code, fund_data, date_interval)
+    labels = perf_data.get('labels', []) or []
+    net_values = perf_data.get('net_values', []) or []
+    growth_values = perf_data.get('growth', []) or []
+
+    if len(net_values) < len(labels):
+        net_values = net_values + [None] * (len(labels) - len(net_values))
+
+    def _safe_float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_label_date(label):
+        text = str(label or '').strip()
+        if not text:
+            return None
+        try:
+            return datetime.date.fromisoformat(text)
+        except Exception:
+            pass
+        try:
+            if len(text) == 5 and text[2] == '-':
+                dt = datetime.datetime.strptime(text, '%m-%d').date()
+                return datetime.date(datetime.date.today().year, dt.month, dt.day)
+        except Exception:
+            pass
+        return None
+
+    # 业绩曲线接口在部分场景仅返回涨幅，不返回净值；
+    # 为避免累计收益曲线全空，按“净值 = 基准净值 * (1 + 涨幅%)”回推净值序列。
+    has_valid_nav = any(_safe_float(value) not in (None, 0.0) for value in net_values)
+    if labels and not has_valid_nav:
+        latest_net_value, latest_nav_date, _latest_fund_data = _get_latest_fund_quote(user_id, fund_code)
+        latest_nav_num = _safe_float(latest_net_value)
+
+        reference_index = None
+        if latest_nav_date:
+            for idx, label in enumerate(labels):
+                if str(label) == str(latest_nav_date) or str(label).endswith(str(latest_nav_date)[5:]):
+                    reference_index = idx
+                    break
+
+        if reference_index is None:
+            for idx in range(len(growth_values) - 1, -1, -1):
+                if _safe_float(growth_values[idx]) is not None:
+                    reference_index = idx
+                    break
+
+        if latest_nav_num and latest_nav_num > 0 and reference_index is not None:
+            ref_growth = _safe_float(growth_values[reference_index])
+            if ref_growth is None:
+                ref_growth = 0.0
+
+            denominator = 1 + ref_growth / 100.0
+            if abs(denominator) > 1e-8:
+                base_nav = latest_nav_num / denominator
+                rebuilt_nav_values = []
+                for growth in growth_values:
+                    growth_num = _safe_float(growth)
+                    if growth_num is None:
+                        rebuilt_nav_values.append(None)
+                    else:
+                        rebuilt_nav_values.append(round(base_nav * (1 + growth_num / 100.0), 4))
+                net_values = rebuilt_nav_values
+
+    parsed_label_dates = [_parse_label_date(label) for label in labels]
+    valid_dates = [date for date in parsed_label_dates if date is not None]
+
+    expanded_labels = labels
+    expanded_net_values = net_values
+    if valid_dates:
+        start_date = min(valid_dates)
+        end_date = max(valid_dates)
+
+        nav_by_date = {}
+        for idx, point_date in enumerate(parsed_label_dates):
+            if point_date is None:
+                continue
+            nav_value = _safe_float(net_values[idx]) if idx < len(net_values) else None
+            if nav_value is not None and nav_value > 0:
+                nav_by_date[point_date] = round(nav_value, 4)
+
+        expanded_dates = []
+        cursor = start_date
+        while cursor <= end_date:
+            expanded_dates.append(cursor)
+            cursor += datetime.timedelta(days=1)
+
+        expanded_labels = [date.isoformat() for date in expanded_dates]
+        expanded_net_values = []
+        last_known_nav = None
+        for point_date in expanded_dates:
+            today_nav = nav_by_date.get(point_date)
+            if today_nav is not None:
+                last_known_nav = today_nav
+            expanded_net_values.append(last_known_nav)
+
+        first_known_nav = next((value for value in expanded_net_values if value is not None), None)
+        if first_known_nav is not None:
+            for idx, value in enumerate(expanded_net_values):
+                if value is None:
+                    expanded_net_values[idx] = first_known_nav
+                else:
+                    break
+
+    transactions = db.get_fund_transactions(user_id, fund_code)
+    sorted_txs = []
+    for tx in transactions:
+        tx_time = str(tx.get('tx_time', '') or '').strip()
+        if not tx_time:
+            continue
+
+        tx_dt = None
+        try:
+            tx_dt = datetime.datetime.fromisoformat(tx_time.replace(' ', 'T'))
+        except Exception:
+            try:
+                tx_dt = datetime.datetime.strptime(tx_time, '%Y-%m-%d %H:%M:%S')
+            except Exception:
+                pass
+        if tx_dt is None:
+            continue
+
+        tx_type = str(tx.get('tx_type', '') or '').strip().lower()
+        if tx_type not in ('buy', 'sell'):
+            continue
+
+        try:
+            tx_amount = float(tx.get('amount', 0) or 0)
+        except (TypeError, ValueError):
+            tx_amount = 0.0
+        try:
+            tx_shares = float(tx.get('shares', 0) or 0)
+        except (TypeError, ValueError):
+            tx_shares = 0.0
+        try:
+            tx_fee = float(tx.get('fee', 0) or 0)
+        except (TypeError, ValueError):
+            tx_fee = 0.0
+
+        sorted_txs.append({
+            'datetime': tx_dt,
+            'date': tx_dt.date(),
+            'type': tx_type,
+            'amount': max(tx_amount, 0.0),
+            'shares': max(tx_shares, 0.0),
+            'fee': max(tx_fee, 0.0),
+        })
+
+    sorted_txs.sort(key=lambda item: item['datetime'])
+
+    tx_index = 0
+    cumulative_buy = 0.0
+    cumulative_sell = 0.0
+    realized_gain = 0.0
+    holding_shares = 0.0
+    remaining_cost = 0.0
+
+    profit_values = []
+    holding_gain_values = []
+    cumulative_buy_values = []
+    cumulative_sell_values = []
+
+    for idx, label in enumerate(expanded_labels):
+        point_date = _parse_label_date(label)
+        while tx_index < len(sorted_txs) and point_date and sorted_txs[tx_index]['date'] <= point_date:
+            tx = sorted_txs[tx_index]
+            tx_type = tx['type']
+            tx_amount = tx['amount']
+            tx_shares = tx['shares']
+            tx_fee = tx['fee']
+
+            if tx_type == 'buy' and tx_shares > 0:
+                cumulative_buy += tx_amount
+                unit_cost = (tx_amount / tx_shares) if tx_shares > 0 else 0.0
+                holding_shares += tx_shares
+                remaining_cost += tx_shares * unit_cost
+            elif tx_type == 'sell' and tx_shares > 0:
+                if holding_shares > 1e-8:
+                    sold_shares = min(tx_shares, holding_shares)
+                    avg_cost = (remaining_cost / holding_shares) if holding_shares > 1e-8 else 0.0
+                    sold_cost = sold_shares * avg_cost
+                    proceeds = tx_amount
+                    if tx_fee > 0:
+                        proceeds = max(tx_amount - tx_fee, 0.0)
+
+                    # 若交易份额被截断，按比例截断卖出金额，避免超卖时收益畸高
+                    if tx_shares > sold_shares and tx_shares > 0:
+                        ratio = sold_shares / tx_shares
+                        proceeds = proceeds * ratio
+
+                    cumulative_sell += proceeds
+                    realized_gain += (proceeds - sold_cost)
+                    remaining_cost = max(remaining_cost - sold_cost, 0.0)
+                    holding_shares = max(holding_shares - sold_shares, 0.0)
+
+            tx_index += 1
+
+        net_value = expanded_net_values[idx] if idx < len(expanded_net_values) else None
+        if net_value is None:
+            profit_values.append(None)
+            holding_gain_values.append(None)
+            cumulative_buy_values.append(round(cumulative_buy, 2))
+            cumulative_sell_values.append(round(cumulative_sell, 2))
+            continue
+
+        try:
+            net_value_num = float(net_value)
+        except (TypeError, ValueError):
+            profit_values.append(None)
+            holding_gain_values.append(None)
+            cumulative_buy_values.append(round(cumulative_buy, 2))
+            cumulative_sell_values.append(round(cumulative_sell, 2))
+            continue
+
+        current_value = holding_shares * net_value_num
+        holding_gain = current_value - remaining_cost
+        cumulative_profit = realized_gain + holding_gain
+
+        profit_values.append(round(cumulative_profit, 2))
+        holding_gain_values.append(round(holding_gain, 2))
+        cumulative_buy_values.append(round(cumulative_buy, 2))
+        cumulative_sell_values.append(round(cumulative_sell, 2))
+
+    chart_data = {
+        'labels': expanded_labels,
+        'profit_values': profit_values,
+        'holding_gain_values': holding_gain_values,
+        'cumulative_buy_values': cumulative_buy_values,
+        'cumulative_sell_values': cumulative_sell_values,
+        'date_interval': date_interval,
+        'interval_label': perf_data.get('interval_label', date_interval),
+    }
 
     return jsonify({
         'chart_data': chart_data,

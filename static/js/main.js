@@ -9,6 +9,66 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize Auto Colorize
     autoColorize();
 
+    window.showSimpleMessage = function(message, type = 'info') {
+        if (!message) return;
+
+        let container = document.getElementById('simpleMessageContainer');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'simpleMessageContainer';
+            container.style.position = 'fixed';
+            container.style.top = '20px';
+            container.style.right = '20px';
+            container.style.zIndex = '99999';
+            container.style.display = 'flex';
+            container.style.flexDirection = 'column';
+            container.style.gap = '8px';
+            document.body.appendChild(container);
+        }
+
+        const item = document.createElement('div');
+        item.textContent = String(message);
+        item.style.padding = '10px 12px';
+        item.style.borderRadius = '8px';
+        item.style.fontSize = '13px';
+        item.style.background = 'var(--card-bg)';
+        item.style.color = 'var(--text-main)';
+        item.style.border = 'none';
+        item.style.boxShadow = '0 6px 16px rgba(0,0,0,0.12)';
+        item.style.maxWidth = '360px';
+        item.style.wordBreak = 'break-word';
+        item.style.opacity = '0';
+        item.style.transform = 'translateY(-6px)';
+        item.style.transition = 'all 0.2s ease';
+
+        if (type === 'success') {
+            item.style.background = 'var(--gh-success-bg)';
+            item.style.color = 'var(--gh-success-fg)';
+        } else if (type === 'backfill-success') {
+            item.style.background = 'var(--gh-accent-bg)';
+            item.style.color = 'var(--text-main)';
+        }
+
+        container.appendChild(item);
+        requestAnimationFrame(() => {
+            item.style.opacity = '1';
+            item.style.transform = 'translateY(0)';
+        });
+
+        setTimeout(() => {
+            item.style.opacity = '0';
+            item.style.transform = 'translateY(-6px)';
+            setTimeout(() => {
+                if (item.parentNode) {
+                    item.parentNode.removeChild(item);
+                }
+                if (container && !container.hasChildNodes() && container.parentNode) {
+                    container.parentNode.removeChild(container);
+                }
+            }, 220);
+        }, 1800);
+    };
+
     // 基金表格“标记”列：点击五角星切换持有/取消持有（事件委托，动态内容也生效）
     if (!window._fundHoldStarListenerAdded) {
         window._fundHoldStarListenerAdded = true;
@@ -16,7 +76,9 @@ document.addEventListener('DOMContentLoaded', function() {
             const star = e.target.closest('.fund-hold-star');
             const codeCell = !star ? e.target.closest('.fund-code-cell') : null;
             const nameCell = !star && !codeCell ? e.target.closest('.fund-name-cell') : null;
-            if (!star && !codeCell && !nameCell) return;
+            const positionAmountCell = !star && !codeCell && !nameCell ? e.target.closest('.fund-position-amount-cell') : null;
+            const positionGainCell = !star && !codeCell && !nameCell && !positionAmountCell ? e.target.closest('.fund-position-gain-cell') : null;
+            if (!star && !codeCell && !nameCell && !positionAmountCell && !positionGainCell) return;
             e.preventDefault();
             e.stopPropagation();
 
@@ -62,6 +124,20 @@ document.addEventListener('DOMContentLoaded', function() {
             if (nameCell && window.toggleFundRowChart) {
                 const code = nameCell.dataset.code;
                 window.toggleFundRowChart(code);
+                return;
+            }
+
+            // 持仓金额点击：打开交易记录弹窗
+            if (positionAmountCell && window.openTransactionModal) {
+                const code = positionAmountCell.dataset.code;
+                window.openTransactionModal(code);
+                return;
+            }
+
+            // 收益数值点击：展开累计收益曲线
+            if (positionGainCell && window.toggleFundRowChart) {
+                const code = positionGainCell.dataset.code;
+                window.toggleFundRowChart(code, 'profit', 'THREE_MONTH');
             }
         });
     }
@@ -171,6 +247,11 @@ function autoColorize() {
 
             // 跳过基金名称列（如 A100 等名称中的数字不应触发着色）
             if (cell.querySelector('.fund-name-cell')) {
+                return;
+            }
+
+            // 跳过“持仓/收益”单元格，避免持仓金额被红绿着色
+            if (cell.querySelector('.fund-position-amount-cell, .fund-position-gain-cell')) {
                 return;
             }
 
@@ -1021,7 +1102,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 realValueSpan.textContent = `${estSign}¥${Math.abs(estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
             }
             estimatedGainPctEl.textContent = ` (${estSign}${estGainPct.toFixed(2)}%)`;
-            estimatedGainPctEl.style.color = estimatedGain >= 0 ? '#f44336' : '#4caf50';
+            estimatedGainPctEl.style.color = estimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
         }
 
         // 更新今日实际（只有当有基金净值更新至今日时才显示数值）
@@ -1040,7 +1121,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     realValueSpan.textContent = `${actSign}¥${Math.abs(actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
                 }
                 actualGainPctEl.textContent = ` (${actSign}${actGainPct.toFixed(2)}%)`;
-                actualGainPctEl.style.color = actualGain >= 0 ? '#f44336' : '#4caf50';
+                actualGainPctEl.style.color = actualGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
             } else {
                 const sensitiveSpan = actualGainEl.querySelector('.sensitive-value');
                 if (sensitiveSpan) {
@@ -1076,8 +1157,8 @@ document.addEventListener('DOMContentLoaded', function() {
             const tableBody = document.getElementById('fundDetailsTableBody');
             if (tableBody) {
                 tableBody.innerHTML = fundDetailsData.map(fund => {
-                    const estColor = fund.estimatedGain >= 0 ? '#f44336' : '#4caf50';
-                    const actColor = fund.actualGain >= 0 ? '#f44336' : '#4caf50';
+                    const estColor = fund.estimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
+                    const actColor = fund.actualGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
                     const estSign = fund.estimatedGain >= 0 ? '+' : '';
                     const actSign = fund.actualGain >= 0 ? '+' : '';
                     // 基金名称中已包含板块标签，不再重复添加
@@ -1085,12 +1166,12 @@ document.addEventListener('DOMContentLoaded', function() {
                         <tr style="border-bottom: 1px solid var(--border);">
                             <td style="padding: 10px; text-align: center; vertical-align: middle; color: var(--accent); font-weight: 500;">${fund.code}</td>
                             <td style="padding: 10px; text-align: center; vertical-align: middle; color: var(--text-main); white-space: nowrap; min-width: 120px;">${fund.name}</td>
-                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono);"><span class="real-value">${fund.shares.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
-                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); font-weight: 600;"><span class="real-value">¥${fund.positionValue.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
-                            <td class="sensitive-value ${estColor === '#f44336' ? 'positive' : 'negative'}" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${estColor}; font-weight: 500;"><span class="real-value">¥${Math.abs(fund.estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
-                            <td class="${estColor === '#f44336' ? 'positive' : 'negative'}" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${estColor}; font-weight: 500;">${estSign}${fund.estimatedGainPct.toFixed(2)}%</td>
-                            <td class="sensitive-value ${actColor === '#f44336' ? 'positive' : 'negative'}" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${actColor}; font-weight: 500;"><span class="real-value">¥${Math.abs(fund.actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
-                            <td class="${actColor === '#f44336' ? 'positive' : 'negative'}" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${actColor}; font-weight: 500;">${actSign}${fund.actualGainPct.toFixed(2)}%</td>
+                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: var(--text-main);"><span class="real-value">${fund.shares.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
+                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); font-weight: 600; color: var(--text-main);"><span class="real-value">¥${fund.positionValue.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
+                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${estColor}; font-weight: 500;"><span class="real-value">¥${Math.abs(fund.estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
+                            <td style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${estColor}; font-weight: 500;">${estSign}${fund.estimatedGainPct.toFixed(2)}%</td>
+                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${actColor}; font-weight: 500;"><span class="real-value">¥${Math.abs(fund.actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
+                            <td style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${actColor}; font-weight: 500;">${actSign}${fund.actualGainPct.toFixed(2)}%</td>
                         </tr>
                     `;
                 }).join('');
@@ -1201,6 +1282,21 @@ document.addEventListener('DOMContentLoaded', function() {
     let currentTradeAction = null;
     let currentBackfillFundCode = null;
     let currentBackfillFetchToken = 0;
+    let currentBackfillNetValueLoading = false;
+    let currentTransactionFundCode = null;
+
+    function updateBackfillSubmitButtonsState() {
+        const buyBtn = document.getElementById('backfillModalBuyBtn');
+        const sellBtn = document.getElementById('backfillModalSellBtn');
+        const netValueInput = document.getElementById('backfillNetValue');
+        if (!buyBtn || !sellBtn || !netValueInput) return;
+
+        const netValue = parseFloat(String(netValueInput.value || '').trim());
+        const hasValidNetValue = Number.isFinite(netValue) && netValue > 0;
+        const shouldDisable = currentBackfillNetValueLoading || !hasValidNetValue;
+        buyBtn.disabled = shouldDisable;
+        sellBtn.disabled = shouldDisable;
+    }
 
     window.openTradeModal = function(action, fundCode) {
         currentTradeFundCode = fundCode;
@@ -1321,19 +1417,312 @@ document.addEventListener('DOMContentLoaded', function() {
         window.openTradeModal('sell', fundCode);
     };
 
+    window.openTransactionModal = function(fundCode) {
+        currentTransactionFundCode = fundCode;
+
+        const modal = document.getElementById('transactionModal');
+        const codeEl = document.getElementById('transactionModalFundCode');
+        const nameEl = document.getElementById('transactionModalFundName');
+        const hintEl = document.getElementById('transactionModalHint');
+        const tbody = document.getElementById('transactionModalTbody');
+        if (!modal || !codeEl || !hintEl || !tbody) {
+            alert('交易记录弹窗未初始化，请刷新页面后重试');
+            return;
+        }
+
+        const nameNode = document.querySelector(`.fund-name-cell[data-code="${fundCode}"]`);
+        const fundName = nameNode ? nameNode.textContent.replace(/🏷️.*/g, '').trim() : '';
+        codeEl.textContent = fundCode;
+        if (nameEl) {
+            nameEl.textContent = fundName;
+        }
+        hintEl.textContent = '正在加载交易记录...';
+        hintEl.style.color = 'var(--text-dim)';
+        tbody.innerHTML = '<tr><td colspan="8" style="padding:12px;text-align:center;color:var(--text-dim);">加载中...</td></tr>';
+
+        modal.classList.add('active');
+        window.loadFundTransactions();
+    };
+
+    window.closeTransactionModal = function() {
+        const modal = document.getElementById('transactionModal');
+        const tbody = document.getElementById('transactionModalTbody');
+        const hintEl = document.getElementById('transactionModalHint');
+        if (modal) {
+            modal.classList.remove('active');
+        }
+        if (tbody) {
+            tbody.innerHTML = '';
+        }
+        if (hintEl) {
+            hintEl.textContent = '';
+        }
+        currentTransactionFundCode = null;
+    };
+
+    window.loadFundTransactions = async function() {
+        if (!currentTransactionFundCode) return;
+
+        const fundCode = currentTransactionFundCode;
+        const hintEl = document.getElementById('transactionModalHint');
+        const tbody = document.getElementById('transactionModalTbody');
+        if (!hintEl || !tbody) return;
+
+        try {
+            const response = await fetch(`/api/fund/transactions?code=${encodeURIComponent(fundCode)}`);
+            const result = await response.json();
+
+            if (fundCode !== currentTransactionFundCode) return;
+
+            if (!result.success) {
+                hintEl.textContent = result.message || '加载交易记录失败';
+                hintEl.style.color = 'var(--down-color)';
+                tbody.innerHTML = '<tr><td colspan="8" style="padding:12px;text-align:center;color:var(--text-dim);">暂无数据</td></tr>';
+                return;
+            }
+
+            const rows = Array.isArray(result.transactions) ? result.transactions : [];
+            if (rows.length === 0) {
+                hintEl.textContent = '暂无交易记录';
+                hintEl.style.color = 'var(--text-dim)';
+                tbody.innerHTML = '<tr><td colspan="8" style="padding:12px;text-align:center;color:var(--text-dim);">暂无交易记录</td></tr>';
+                return;
+            }
+
+            hintEl.textContent = `共 ${rows.length} 条记录（按时间从新到旧）`;
+            hintEl.style.color = 'var(--text-dim)';
+            tbody.innerHTML = rows.map((item) => {
+                const txId = Number(item.id || 0);
+                const txType = String(item.tx_type || '').toLowerCase();
+                const txTypeColor = txType === 'buy' ? 'var(--up-color)' : 'var(--down-color)';
+                const txTypeText = txType === 'buy' ? '买入' : '卖出';
+                const amount = Number(item.amount || 0);
+                const shares = Number(item.shares || 0);
+                const netValue = item.net_value == null ? '-' : Number(item.net_value).toFixed(4);
+                const fee = Number(item.fee || 0);
+                const avgCostAfter = item.avg_cost_after == null ? '-' : Number(item.avg_cost_after).toFixed(4);
+                const txTime = String(item.tx_time || '');
+                const txDate = /^\d{4}-\d{2}-\d{2}/.test(txTime) ? txTime.slice(0, 10) : txTime;
+                const escapedTxTime = txTime
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+                return `
+                    <tr id="tx_row_${txId}" data-tx-time="${escapedTxTime}" data-tx-type="${txType}" data-net-value="${netValue === '-' ? '' : netValue}">
+                        <td style="padding: 8px; border-top: 1px solid var(--border);">
+                            <span style="color: var(--text-main);">${txDate || '-'}</span>
+                        </td>
+                        <td style="padding: 8px; border-top: 1px solid var(--border); color: ${txTypeColor}; font-weight: 600; font-size: 12px; white-space: nowrap;">
+                            <span style="font-size: 12px; white-space: nowrap;">${txTypeText}</span>
+                        </td>
+                        <td style="padding: 8px; border-top: 1px solid var(--border); text-align: right;">
+                            <input id="tx_amount_${txId}" type="number" step="0.01" min="0" value="${amount.toFixed(2)}" oninput="recalculateTransactionShares(${txId})" style="width: 110px; text-align: right; padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); color: var(--text-main);">
+                        </td>
+                        <td style="padding: 8px; border-top: 1px solid var(--border); text-align: right;">
+                            <span id="tx_shares_${txId}" style="font-family: var(--font-mono); color: var(--text-main);">${shares.toFixed(4)}</span>
+                        </td>
+                        <td style="padding: 8px; border-top: 1px solid var(--border); text-align: right;">
+                            <span id="tx_net_${txId}" style="font-family: var(--font-mono); color: var(--text-main);">${netValue === '-' ? '-' : netValue}</span>
+                        </td>
+                        <td style="padding: 8px; border-top: 1px solid var(--border); text-align: right;">
+                            <input id="tx_fee_${txId}" type="number" step="0.01" min="0" value="${fee.toFixed(2)}" oninput="recalculateTransactionShares(${txId})" style="width: 90px; text-align: right; padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); color: var(--text-main);">
+                        </td>
+                        <td style="padding: 10px; border-top: 1px solid var(--border); text-align: right;">${avgCostAfter}</td>
+                        <td style="padding: 10px; border-top: 1px solid var(--border); text-align: center;">
+                            <div style="display:flex;justify-content:center;align-items:center;gap:14px;">
+                                <button class="btn btn-primary" style="padding:4px 10px;font-size:12px;min-width:56px;display:inline-flex;align-items:center;justify-content:center;text-align:center;" onclick="updateFundTransaction(${txId})">更新</button>
+                                <button class="btn btn-danger" style="padding:4px 10px;font-size:12px;min-width:56px;display:inline-flex;align-items:center;justify-content:center;text-align:center;" onclick="deleteFundTransaction(${txId})">删除</button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        } catch (e) {
+            hintEl.textContent = '加载交易记录失败';
+            hintEl.style.color = 'var(--down-color)';
+            tbody.innerHTML = '<tr><td colspan="8" style="padding:12px;text-align:center;color:var(--text-dim);">加载失败</td></tr>';
+        }
+    };
+
+    window.recalculateTransactionShares = function(transactionId) {
+        const txId = Number(transactionId || 0);
+        if (!Number.isFinite(txId) || txId <= 0) return;
+
+        const row = document.getElementById(`tx_row_${txId}`);
+        const amountInput = document.getElementById(`tx_amount_${txId}`);
+        const feeInput = document.getElementById(`tx_fee_${txId}`);
+        const sharesInput = document.getElementById(`tx_shares_${txId}`);
+        if (!row || !amountInput || !feeInput || !sharesInput) return;
+
+        const netValue = parseFloat(row.dataset.netValue || '0');
+        const amount = parseFloat(amountInput.value || '0');
+        const fee = parseFloat(feeInput.value || '0');
+
+        if (!Number.isFinite(netValue) || netValue <= 0 || !Number.isFinite(amount) || !Number.isFinite(fee)) {
+            sharesInput.textContent = '0.0000';
+            return;
+        }
+
+        const netAmount = amount - fee;
+        if (netAmount <= 0) {
+            sharesInput.textContent = '0.0000';
+            return;
+        }
+
+        sharesInput.textContent = (netAmount / netValue).toFixed(4);
+    };
+
+    window.updateFundTransaction = async function(transactionId) {
+        if (!currentTransactionFundCode) return;
+
+        const txId = Number(transactionId || 0);
+        if (!Number.isFinite(txId) || txId <= 0) {
+            window.showSimpleMessage('交易ID无效', 'error');
+            return;
+        }
+
+        const txRow = document.getElementById(`tx_row_${txId}`);
+        const txTime = String(txRow?.dataset.txTime || '').trim();
+        const txType = String(txRow?.dataset.txType || '').trim();
+        const amount = parseFloat(document.getElementById(`tx_amount_${txId}`)?.value || '0');
+        const netValue = parseFloat(txRow?.dataset.netValue || '0');
+        const fee = parseFloat(document.getElementById(`tx_fee_${txId}`)?.value || '0');
+        const netAmount = amount - fee;
+        const shares = netValue > 0 ? (netAmount / netValue) : 0;
+
+        if (!txTime) {
+            window.showSimpleMessage('交易时间不能为空', 'error');
+            return;
+        }
+        if (!['buy', 'sell'].includes(txType)) {
+            window.showSimpleMessage('交易类型无效', 'error');
+            return;
+        }
+        if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(netValue) || netValue <= 0) {
+            window.showSimpleMessage('金额和净值都必须大于0', 'error');
+            return;
+        }
+        if (!Number.isFinite(fee) || fee < 0) {
+            window.showSimpleMessage('手续费必须大于等于0', 'error');
+            return;
+        }
+        if (!Number.isFinite(netAmount) || netAmount <= 0 || !Number.isFinite(shares) || shares <= 0) {
+            window.showSimpleMessage('金额需大于手续费，且计算份额必须大于0', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/fund/transaction/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    code: currentTransactionFundCode,
+                    transaction_id: txId,
+                    tx_time: txTime,
+                    tx_type: txType,
+                    amount,
+                    shares,
+                    net_value: netValue,
+                    fee,
+                })
+            });
+            const result = await response.json();
+            if (!result.success) {
+                window.showSimpleMessage(result.message || '更新失败', 'error');
+                return;
+            }
+
+            const updatedShares = parseFloat(result.current_shares || 0);
+            if (!window.fundSharesData) {
+                window.fundSharesData = {};
+            }
+            window.fundSharesData[currentTransactionFundCode] = updatedShares;
+
+            const star = document.querySelector(`.fund-hold-star[data-code="${currentTransactionFundCode}"]`);
+            if (star) {
+                const isHeld = updatedShares > 0;
+                star.textContent = isHeld ? '⭐' : '☆';
+                star.dataset.hold = isHeld ? '1' : '0';
+            }
+
+            window.showSimpleMessage(result.message || '更新成功', 'success');
+            window.loadFundTransactions();
+            if (typeof fetchPortfolioData === 'function') {
+                fetchPortfolioData().catch(() => {});
+            }
+        } catch (e) {
+            window.showSimpleMessage('更新失败: ' + (e?.message || e), 'error');
+        }
+    };
+
+    window.deleteFundTransaction = async function(transactionId) {
+        if (!currentTransactionFundCode) return;
+
+        const txId = Number(transactionId || 0);
+        if (!Number.isFinite(txId) || txId <= 0) {
+            window.showSimpleMessage('交易ID无效', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/fund/transaction/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    code: currentTransactionFundCode,
+                    transaction_id: txId,
+                })
+            });
+            const result = await response.json();
+            if (!result.success) {
+                window.showSimpleMessage(result.message || '删除失败', 'error');
+                return;
+            }
+
+            const updatedShares = parseFloat(result.current_shares || 0);
+            if (!window.fundSharesData) {
+                window.fundSharesData = {};
+            }
+            window.fundSharesData[currentTransactionFundCode] = updatedShares;
+
+            const star = document.querySelector(`.fund-hold-star[data-code="${currentTransactionFundCode}"]`);
+            if (star) {
+                const isHeld = updatedShares > 0;
+                star.textContent = isHeld ? '⭐' : '☆';
+                star.dataset.hold = isHeld ? '1' : '0';
+            }
+
+            window.showSimpleMessage(result.message || '删除成功', 'success');
+
+            window.loadFundTransactions();
+
+            if (typeof fetchPortfolioData === 'function') {
+                fetchPortfolioData().catch(() => {});
+            }
+        } catch (e) {
+            window.showSimpleMessage('删除失败: ' + (e?.message || e), 'error');
+        }
+    };
+
     window.openBackfillModal = function(fundCode) {
         currentBackfillFundCode = fundCode;
         currentBackfillFetchToken += 1;
 
         const modal = document.getElementById('backfillModal');
+        const titleEl = document.getElementById('backfillModalTitle');
         const codeDisplay = document.getElementById('backfillModalFundCode');
         const dateInput = document.getElementById('backfillTradeDate');
         const netValueInput = document.getElementById('backfillNetValue');
         const amountInput = document.getElementById('backfillAmount');
-        const confirmBtn = document.getElementById('backfillModalConfirmBtn');
+        const feeInput = document.getElementById('backfillFee');
+        const amountLabel = document.getElementById('backfillAmountLabel');
+        const buyBtn = document.getElementById('backfillModalBuyBtn');
+        const sellBtn = document.getElementById('backfillModalSellBtn');
         const hint = document.getElementById('backfillNetValueHint');
 
-        if (!modal || !codeDisplay || !dateInput || !netValueInput || !amountInput || !confirmBtn) {
+        if (!modal || !codeDisplay || !dateInput || !netValueInput || !amountInput || !feeInput || !buyBtn || !sellBtn) {
             alert('补录弹窗未初始化，请刷新页面后重试');
             return;
         }
@@ -1344,15 +1733,25 @@ document.addEventListener('DOMContentLoaded', function() {
         const dd = String(today.getDate()).padStart(2, '0');
 
         codeDisplay.textContent = fundCode;
+        if (titleEl) {
+            titleEl.textContent = '补录买入交易';
+        }
+        if (amountLabel) {
+            amountLabel.textContent = '金额（元）';
+        }
         dateInput.value = `${yyyy}-${mm}-${dd}`;
         netValueInput.value = '';
         amountInput.value = '';
+        feeInput.value = '';
+        amountInput.placeholder = '例如 100';
         if (hint) {
             hint.textContent = '正在尝试自动填充净值...';
             hint.style.color = 'var(--text-dim)';
         }
-        confirmBtn.disabled = false;
-        confirmBtn.textContent = '确定补录';
+        currentBackfillNetValueLoading = true;
+        updateBackfillSubmitButtonsState();
+        buyBtn.textContent = '补录买入';
+        sellBtn.textContent = '补录卖出';
 
         modal.classList.add('active');
         setTimeout(() => dateInput.focus(), 100);
@@ -1362,14 +1761,20 @@ document.addEventListener('DOMContentLoaded', function() {
 
     window.closeBackfillModal = function() {
         const modal = document.getElementById('backfillModal');
-        const confirmBtn = document.getElementById('backfillModalConfirmBtn');
+        const buyBtn = document.getElementById('backfillModalBuyBtn');
+        const sellBtn = document.getElementById('backfillModalSellBtn');
         if (modal) {
             modal.classList.remove('active');
         }
-        if (confirmBtn) {
-            confirmBtn.disabled = false;
-            confirmBtn.textContent = '确定补录';
+        if (buyBtn) {
+            buyBtn.disabled = false;
+            buyBtn.textContent = '补录买入';
         }
+        if (sellBtn) {
+            sellBtn.disabled = false;
+            sellBtn.textContent = '补录卖出';
+        }
+        currentBackfillNetValueLoading = false;
         currentBackfillFetchToken += 1;
         currentBackfillFundCode = null;
     };
@@ -1390,6 +1795,8 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         const fetchToken = ++currentBackfillFetchToken;
+        currentBackfillNetValueLoading = true;
+        updateBackfillSubmitButtonsState();
         hint.textContent = '正在查询该日期净值...';
         hint.style.color = 'var(--text-dim)';
 
@@ -1402,6 +1809,8 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!result.success) {
                 hint.textContent = result.message || '自动查询净值失败，请手动输入';
                 hint.style.color = 'var(--down-color)';
+                currentBackfillNetValueLoading = false;
+                updateBackfillSubmitButtonsState();
                 return;
             }
 
@@ -1409,72 +1818,111 @@ document.addEventListener('DOMContentLoaded', function() {
                 netValueInput.value = parseFloat(result.net_value).toFixed(4);
                 hint.textContent = `已自动填充 ${result.trade_date} 净值：${parseFloat(result.net_value).toFixed(4)}`;
                 hint.style.color = 'var(--up-color)';
+                currentBackfillNetValueLoading = false;
+                updateBackfillSubmitButtonsState();
                 return;
             }
 
             hint.textContent = result.message || '趋势数据中无该日期净值，请手动输入';
             hint.style.color = 'var(--text-dim)';
+            currentBackfillNetValueLoading = false;
+            updateBackfillSubmitButtonsState();
         } catch (e) {
             if (fetchToken !== currentBackfillFetchToken) return;
             hint.textContent = '自动查询净值失败，请手动输入';
             hint.style.color = 'var(--down-color)';
+            currentBackfillNetValueLoading = false;
+            updateBackfillSubmitButtonsState();
         }
     };
 
-    window.confirmBackfillBuy = async function() {
+    window.setBackfillAmountQuick = function(amount) {
+        const amountInput = document.getElementById('backfillAmount');
+        if (!amountInput) return;
+        const value = Number(amount || 0);
+        if (!Number.isFinite(value) || value <= 0) return;
+        amountInput.value = String(value);
+        amountInput.focus();
+    };
+
+    window.confirmBackfillTrade = async function(action = 'buy') {
         if (!currentBackfillFundCode) {
-            alert('未选择基金');
+            window.showSimpleMessage('未选择基金', 'error');
             return;
         }
 
         const dateInput = document.getElementById('backfillTradeDate');
         const netValueInput = document.getElementById('backfillNetValue');
         const amountInput = document.getElementById('backfillAmount');
-        const confirmBtn = document.getElementById('backfillModalConfirmBtn');
-        if (!dateInput || !netValueInput || !amountInput || !confirmBtn) return;
+        const feeInput = document.getElementById('backfillFee');
+        const buyBtn = document.getElementById('backfillModalBuyBtn');
+        const sellBtn = document.getElementById('backfillModalSellBtn');
+        if (!dateInput || !netValueInput || !amountInput || !feeInput || !buyBtn || !sellBtn) return;
 
         const tradeDate = String(dateInput.value || '').trim();
         const netValue = parseFloat(netValueInput.value);
-        const amount = parseFloat(amountInput.value);
+        const amountOrShares = parseFloat(amountInput.value);
+        const feeValue = String(feeInput.value || '').trim() === '' ? 0 : parseFloat(feeInput.value);
+        const isSellBackfill = action === 'sell';
 
         if (!tradeDate) {
-            alert('请选择买入日期');
+            window.showSimpleMessage('请选择交易日期', 'error');
             dateInput.focus();
             return;
         }
 
         if (!isFinite(netValue) || netValue <= 0) {
-            alert('请输入大于0的当日净值');
+            window.showSimpleMessage('请输入大于0的当日净值', 'error');
             netValueInput.focus();
             return;
         }
 
-        if (!isFinite(amount) || amount <= 0) {
-            alert('请输入大于0的买入金额');
+        if (!isFinite(amountOrShares) || amountOrShares <= 0) {
+            window.showSimpleMessage(isSellBackfill ? '请输入大于0的卖出金额' : '请输入大于0的买入金额', 'error');
             amountInput.focus();
             return;
         }
 
-        confirmBtn.disabled = true;
-        confirmBtn.textContent = '补录中...';
+        if (!isFinite(feeValue) || feeValue < 0) {
+            window.showSimpleMessage('请输入大于等于0的手续费', 'error');
+            feeInput.focus();
+            return;
+        }
+
+        if (!isSellBackfill && amountOrShares <= feeValue) {
+            window.showSimpleMessage('买入金额需大于手续费', 'error');
+            amountInput.focus();
+            return;
+        }
+
+        buyBtn.disabled = true;
+        sellBtn.disabled = true;
+        if (isSellBackfill) {
+            sellBtn.textContent = '补录卖出中...';
+        } else {
+            buyBtn.textContent = '补录买入中...';
+        }
 
         try {
-            const response = await fetch('/api/fund/buy-backfill', {
+            const response = await fetch(isSellBackfill ? '/api/fund/sell-backfill' : '/api/fund/buy-backfill', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     code: currentBackfillFundCode,
                     trade_date: tradeDate,
                     net_value: netValue,
-                    amount: amount,
+                    fee: feeValue,
+                    amount: amountOrShares,
                 })
             });
 
             const result = await response.json();
             if (!result.success) {
-                alert(result.message || '补录失败');
-                confirmBtn.disabled = false;
-                confirmBtn.textContent = '确定补录';
+                window.showSimpleMessage(result.message || '补录失败', 'error');
+                buyBtn.disabled = false;
+                sellBtn.disabled = false;
+                buyBtn.textContent = '补录买入';
+                sellBtn.textContent = '补录卖出';
                 return;
             }
 
@@ -1491,19 +1939,24 @@ document.addEventListener('DOMContentLoaded', function() {
                 star.dataset.hold = isHeld ? '1' : '0';
             }
 
-            window.closeBackfillModal();
+            amountInput.value = '';
+            amountInput.focus();
+            buyBtn.disabled = false;
+            sellBtn.disabled = false;
+            buyBtn.textContent = '补录买入';
+            sellBtn.textContent = '补录卖出';
 
-            if (typeof fetchPortfolioData === 'function') {
-                await fetchPortfolioData();
-            } else if (typeof calculatePositionSummary === 'function') {
+            if (typeof calculatePositionSummary === 'function') {
                 calculatePositionSummary();
             }
 
-            alert(result.message || '补录成功');
+            window.showSimpleMessage(result.message || '补录成功', 'backfill-success');
         } catch (e) {
-            alert('补录失败: ' + (e?.message || e));
-            confirmBtn.disabled = false;
-            confirmBtn.textContent = '确定补录';
+            window.showSimpleMessage('补录失败: ' + (e?.message || e), 'error');
+            buyBtn.disabled = false;
+            sellBtn.disabled = false;
+            buyBtn.textContent = '补录买入';
+            sellBtn.textContent = '补录卖出';
         }
     };
 
@@ -1657,7 +2110,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (backfillAmountInput) {
         backfillAmountInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
-                confirmBackfillBuy();
+                confirmBackfillTrade('buy');
             }
         });
     }
@@ -1667,6 +2120,15 @@ document.addEventListener('DOMContentLoaded', function() {
         backfillTradeDateInput.addEventListener('change', function() {
             if (typeof window.tryAutoFillBackfillNetValue === 'function') {
                 window.tryAutoFillBackfillNetValue();
+            }
+        });
+    }
+
+    const backfillNetValueInput = document.getElementById('backfillNetValue');
+    if (backfillNetValueInput) {
+        backfillNetValueInput.addEventListener('input', function() {
+            if (!currentBackfillNetValueLoading) {
+                updateBackfillSubmitButtonsState();
             }
         });
     }

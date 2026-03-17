@@ -119,6 +119,16 @@ class Database:
                        )
                        ''')
 
+        cursor.execute("PRAGMA table_info(fund_transactions)")
+        tx_columns = [col[1] for col in cursor.fetchall()]
+        if 'fee' not in tx_columns:
+            try:
+                cursor.execute('ALTER TABLE fund_transactions ADD COLUMN fee REAL NOT NULL DEFAULT 0')
+                logger.debug("Added fee column to fund_transactions table")
+            except Exception as e:
+                if "duplicate column" not in str(e).lower():
+                    logger.warning(f"Failed to add fee column: {e}")
+
         # 待确认买入记录（按生效净值日确认份额）
         cursor.execute('''
                        CREATE TABLE IF NOT EXISTS fund_pending_buys
@@ -493,7 +503,7 @@ class Database:
             logger.error(f"Failed to update shares delta: {e}")
             return None
 
-    def add_fund_transaction(self, user_id, fund_code, tx_type, amount, shares, net_value=None, tx_time=None):
+    def add_fund_transaction(self, user_id, fund_code, tx_type, amount, shares, net_value=None, tx_time=None, fee=0.0):
         """写入基金交易记录。"""
         try:
             conn = self.get_connection()
@@ -502,15 +512,15 @@ class Database:
             if tx_time:
                 cursor.execute('''
                     INSERT INTO fund_transactions
-                    (user_id, fund_code, tx_type, amount, shares, net_value, tx_time)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (user_id, fund_code, tx_type, amount, shares, net_value, tx_time))
+                    (user_id, fund_code, tx_type, amount, shares, net_value, tx_time, fee)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (user_id, fund_code, tx_type, amount, shares, net_value, tx_time, fee))
             else:
                 cursor.execute('''
                     INSERT INTO fund_transactions
-                    (user_id, fund_code, tx_type, amount, shares, net_value)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (user_id, fund_code, tx_type, amount, shares, net_value))
+                    (user_id, fund_code, tx_type, amount, shares, net_value, fee)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (user_id, fund_code, tx_type, amount, shares, net_value, fee))
 
             tx_id = cursor.lastrowid
             conn.commit()
@@ -596,7 +606,7 @@ class Database:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT id, user_id, fund_code, tx_type, amount, shares, net_value, tx_time
+                SELECT id, user_id, fund_code, tx_type, amount, shares, net_value, tx_time, fee
                 FROM fund_transactions
                 WHERE user_id = ? AND fund_code = ?
                 ORDER BY datetime(tx_time) ASC, id ASC
@@ -607,6 +617,145 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to get transactions for user {user_id}, fund {fund_code}: {e}")
             return []
+
+    def update_fund_transaction_and_recalculate(self, user_id, fund_code, tx_id, tx_type, amount, shares, net_value, tx_time, fee=0.0):
+        """更新交易并按剩余交易重算该基金份额。"""
+        conn = None
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT id FROM fund_transactions
+                WHERE id = ? AND user_id = ? AND fund_code = ?
+            ''', (tx_id, user_id, fund_code))
+            target_tx = cursor.fetchone()
+            if not target_tx:
+                conn.close()
+                return None
+
+            cursor.execute('''
+                UPDATE fund_transactions
+                SET tx_type = ?, amount = ?, shares = ?, net_value = ?, tx_time = ?, fee = ?
+                WHERE id = ? AND user_id = ? AND fund_code = ?
+            ''', (tx_type, amount, shares, net_value, tx_time, fee, tx_id, user_id, fund_code))
+            if cursor.rowcount <= 0:
+                conn.rollback()
+                conn.close()
+                return None
+
+            cursor.execute('''
+                SELECT tx_type, shares
+                FROM fund_transactions
+                WHERE user_id = ? AND fund_code = ?
+                ORDER BY datetime(tx_time) ASC, id ASC
+            ''', (user_id, fund_code))
+            rows = cursor.fetchall()
+
+            total_shares = 0.0
+            for row in rows:
+                now_type = str(row['tx_type'] or '').strip().lower()
+                now_shares = float(row['shares'] or 0)
+                if now_type == 'buy':
+                    total_shares += now_shares
+                elif now_type == 'sell':
+                    total_shares -= now_shares
+
+            total_shares = max(total_shares, 0.0)
+            is_hold = 1 if total_shares > 0 else 0
+            cursor.execute('''
+                UPDATE user_funds
+                SET shares = ?, is_hold = ?
+                WHERE user_id = ? AND fund_code = ?
+            ''', (total_shares, is_hold, user_id, fund_code))
+
+            conn.commit()
+            conn.close()
+            return {
+                'current_shares': total_shares,
+                'current_is_hold': bool(is_hold),
+            }
+        except Exception as e:
+            if conn:
+                conn.rollback()
+                conn.close()
+            logger.error(f"Failed to update transaction and recalculate shares: {e}")
+            return None
+
+    def delete_fund_transaction_and_recalculate(self, user_id, fund_code, tx_id):
+        """删除交易并按剩余交易重算该基金份额。"""
+        conn = None
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT id, tx_type, shares
+                FROM fund_transactions
+                WHERE id = ? AND user_id = ? AND fund_code = ?
+            ''', (tx_id, user_id, fund_code))
+            target_tx = cursor.fetchone()
+            if not target_tx:
+                conn.close()
+                return None
+
+            cursor.execute('''
+                UPDATE fund_pending_buys
+                SET settled_tx_id = NULL
+                WHERE settled_tx_id = ?
+            ''', (tx_id,))
+
+            cursor.execute('''
+                DELETE FROM fund_transactions
+                WHERE id = ? AND user_id = ? AND fund_code = ?
+            ''', (tx_id, user_id, fund_code))
+            if cursor.rowcount <= 0:
+                conn.rollback()
+                conn.close()
+                return None
+
+            cursor.execute('''
+                SELECT tx_type, shares
+                FROM fund_transactions
+                WHERE user_id = ? AND fund_code = ?
+                ORDER BY datetime(tx_time) ASC, id ASC
+            ''', (user_id, fund_code))
+            rows = cursor.fetchall()
+
+            total_shares = 0.0
+            for row in rows:
+                tx_type = str(row['tx_type'] or '').strip().lower()
+                tx_shares = float(row['shares'] or 0)
+                if tx_type == 'buy':
+                    total_shares += tx_shares
+                elif tx_type == 'sell':
+                    total_shares -= tx_shares
+
+            total_shares = max(total_shares, 0.0)
+            is_hold = 1 if total_shares > 0 else 0
+            cursor.execute('''
+                UPDATE user_funds
+                SET shares = ?, is_hold = ?
+                WHERE user_id = ? AND fund_code = ?
+            ''', (total_shares, is_hold, user_id, fund_code))
+
+            conn.commit()
+            conn.close()
+            return {
+                'deleted': {
+                    'id': int(target_tx['id']),
+                    'tx_type': str(target_tx['tx_type'] or ''),
+                    'shares': float(target_tx['shares'] or 0),
+                },
+                'current_shares': total_shares,
+                'current_is_hold': bool(is_hold),
+            }
+        except Exception as e:
+            if conn:
+                conn.rollback()
+                conn.close()
+            logger.error(f"Failed to delete transaction and recalculate shares: {e}")
+            return None
 
     def get_chart_default_fund(self, user_id):
         """获取估值趋势图默认基金

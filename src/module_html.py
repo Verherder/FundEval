@@ -190,7 +190,7 @@ def enhance_fund_tab_content(content, shares_map=None):
     backfill_modal = """
         <div class="sector-modal" id="backfillModal">
             <div class="sector-modal-content" style="max-width: 460px;">
-                <div class="sector-modal-header">补录买入交易</div>
+                <div class="sector-modal-header" id="backfillModalTitle">补录买入交易</div>
                 <div style="padding: 20px;">
                     <div style="margin-bottom: 15px;">
                         <label style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">基金代码</label>
@@ -208,14 +208,61 @@ def enhance_fund_tab_content(content, shares_map=None):
                         <div id="backfillNetValueHint" style="margin-top: 6px; font-size: 12px; color: var(--text-dim);">选择日期后将尝试自动填充净值（若趋势数据可用）</div>
                     </div>
                     <div style="margin-bottom: 8px;">
-                        <label for="backfillAmount" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">买入金额（元）</label>
+                        <label for="backfillAmount" id="backfillAmountLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">金额（元）</label>
                         <input type="number" id="backfillAmount" step="0.01" min="0" placeholder="例如 100"
+                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                        <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(500)">500</button>
+                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(1000)">1000</button>
+                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(2000)">2000</button>
+                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(4000)">4000</button>
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <label for="backfillFee" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">手续费（元）</label>
+                        <input type="number" id="backfillFee" step="0.01" min="0" placeholder="默认 0"
                                style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
                     </div>
                 </div>
                 <div class="sector-modal-footer">
                     <button class="btn btn-secondary" onclick="closeBackfillModal()">取消</button>
-                    <button class="btn btn-primary" id="backfillModalConfirmBtn" onclick="confirmBackfillBuy()">确定补录</button>
+                    <button class="btn btn-primary" id="backfillModalBuyBtn" onclick="confirmBackfillTrade('buy')">补录买入</button>
+                    <button class="btn btn-primary" id="backfillModalSellBtn" onclick="confirmBackfillTrade('sell')" style="background:#10b981;">补录卖出</button>
+                </div>
+            </div>
+        </div>
+    """
+
+    transaction_modal = """
+        <div class="sector-modal" id="transactionModal">
+            <div class="sector-modal-content" style="max-width: 980px;">
+                <div class="sector-modal-header">交易记录</div>
+                <div style="padding: 20px;">
+                    <div style="margin-bottom: 12px; color: var(--text-main); font-weight: 600;">
+                        基金：<span id="transactionModalFundCode" style="font-family: monospace; color: #3b82f6;"></span>
+                        <span id="transactionModalFundName" style="margin-left: 8px; color: var(--text-main);"></span>
+                    </div>
+                    <div id="transactionModalHint" style="margin-bottom: 10px; font-size: 12px; color: var(--text-dim);"></div>
+                    <div style="max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 6px;">
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background: rgba(59, 130, 246, 0.08);">
+                                    <th style="padding: 10px; text-align: left; font-size: 13px;">日期</th>
+                                    <th style="padding: 10px; text-align: left; font-size: 13px;">类型</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 13px;">金额(元)</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 13px;">份额</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 13px;">净值</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 13px;">手续费</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 13px;">持仓成本价</th>
+                                    <th style="padding: 10px; text-align: center; font-size: 13px;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="transactionModalTbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="sector-modal-footer">
+                    <button class="btn btn-secondary" onclick="closeTransactionModal()">关闭</button>
                 </div>
             </div>
         </div>
@@ -236,16 +283,6 @@ def enhance_fund_tab_content(content, shares_map=None):
         fund_code = code_match.group(1)
         row_with_ops = row_content[:-5] + f'''<td>
             <div style="display:flex;gap:6px;justify-content:center;align-items:center;flex-wrap:nowrap;">
-                <button class="shares-button" id="buyBtn_{fund_code}"
-                        onclick="buyFund('{fund_code}')"
-                        style="padding: 6px 10px; background: #ef4444; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s;">
-                    买入
-                </button>
-                <button class="shares-button" id="sellBtn_{fund_code}"
-                        onclick="sellFund('{fund_code}')"
-                        style="padding: 6px 10px; background: #10b981; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s;">
-                    卖出
-                </button>
                 <button class="shares-button" id="backfillBtn_{fund_code}"
                         onclick="window.openBackfillModal && window.openBackfillModal('{fund_code}')"
                         style="padding: 6px 10px; background: #6366f1; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s;">
@@ -257,7 +294,7 @@ def enhance_fund_tab_content(content, shares_map=None):
 
     content = re.sub(r'<tr>.*?</tr>', add_operation_to_row, content, flags=re.DOTALL)
 
-    return file_operations + position_summary + operations_panel + add_fund_area + trade_modal + backfill_modal + content
+    return file_operations + position_summary + operations_panel + add_fund_area + trade_modal + backfill_modal + transaction_modal + content
 
 
 def get_top_navbar_html(username=None):
@@ -4473,9 +4510,12 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
         window.fundRowChartInstance = null;
 
         async function loadFundChartDataInline(fundCode, chartType = 'estimate', interval = 'ONE_YEAR') {{
-            const url = chartType === 'performance'
-                ? '/api/fund/performance-chart-data?code=' + encodeURIComponent(fundCode) + '&interval=' + encodeURIComponent(interval)
-                : '/api/fund/chart-data?code=' + encodeURIComponent(fundCode);
+            let url = '/api/fund/chart-data?code=' + encodeURIComponent(fundCode);
+            if (chartType === 'performance') {{
+                url = '/api/fund/performance-chart-data?code=' + encodeURIComponent(fundCode) + '&interval=' + encodeURIComponent(interval);
+            }} else if (chartType === 'profit') {{
+                url = '/api/fund/profit-chart-data?code=' + encodeURIComponent(fundCode) + '&interval=' + encodeURIComponent(interval);
+            }}
 
             const response = await fetch(url);
             if (!response.ok) {{
@@ -4486,10 +4526,37 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
         }}
 
         function buildFundChartRowContent(chartType, fundCode, interval) {{
-            if (chartType !== 'performance') {{
+            if (chartType === 'estimate') {{
                 return `
                     <div class="inline-fund-chart" style="height:260px; padding: 10px 20px;">
                         <canvas></canvas>
+                    </div>
+                `;
+            }}
+
+            if (chartType === 'profit') {{
+                const buttonsHtml = FUND_PERFORMANCE_INTERVAL_OPTIONS.map(([value, label]) => `
+                    <button
+                        type="button"
+                        class="fund-performance-range-btn${{value === interval ? ' active' : ''}}"
+                        data-code="${{fundCode}}"
+                        data-chart-type="profit"
+                        data-interval="${{value}}"
+                        style="padding:4px 10px;border-radius:999px;border:1px solid ${{value === interval ? 'var(--accent)' : 'var(--border)'}};background:${{value === interval ? 'rgba(59,130,246,0.16)' : 'transparent'}};color:${{value === interval ? 'var(--accent)' : 'var(--text-dim)'}};cursor:pointer;font-size:12px;">
+                        ${{label}}
+                    </button>
+                `).join('');
+
+                return `
+                    <div class="inline-fund-chart" style="padding: 10px 20px;">
+                        <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;margin-bottom:10px;">
+                            <div></div>
+                            <div style="font-size:13px;font-weight:600;color:var(--text-main);text-align:center;">💹 累计收益曲线</div>
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;justify-self:end;">${{buttonsHtml}}</div>
+                        </div>
+                        <div style="height:260px;">
+                            <canvas></canvas>
+                        </div>
                     </div>
                 `;
             }}
@@ -4524,6 +4591,11 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             const growthData = chartData.growth || [];
             const netValues = chartData.net_values || [];
             const isPerformanceChart = chartType === 'performance';
+            const isProfitChart = chartType === 'profit';
+            const profitValues = chartData.profit_values || [];
+            const holdingGainValues = chartData.holding_gain_values || [];
+            const cumulativeBuyValues = chartData.cumulative_buy_values || [];
+            const cumulativeSellValues = chartData.cumulative_sell_values || [];
             const benchmarkGrowthData = chartData.benchmark_growth || [];
             const benchmarkLabel = chartData.benchmark_label || '沪深300';
             const latestNetValue = chartData.latest_net_value;
@@ -4568,7 +4640,7 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             if (!chartData.labels || chartData.labels.length === 0) {{
                 const wrapper = canvas.closest('.inline-fund-chart');
                 if (wrapper) {{
-                    wrapper.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:13px;">${{isPerformanceChart ? '暂无可用业绩曲线数据' : '暂无可用估值波形数据'}}</div>`;
+                    wrapper.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:13px;">${{isPerformanceChart ? '暂无可用业绩曲线数据' : (isProfitChart ? '暂无可用累计收益数据' : '暂无可用估值波形数据')}}</div>`;
                 }}
                 return;
             }}
@@ -4601,6 +4673,31 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 borderWidth: 2,
                 spanGaps: true
             }}];
+
+            if (isProfitChart) {{
+                datasets.length = 0;
+                datasets.push({{
+                    label: '累计收益',
+                    data: profitValues,
+                    order: 20,
+                    borderColor: '#3b82f6',
+                    backgroundColor: function(context) {{
+                        const chart = context.chart;
+                        const {{ctx, chartArea}} = chart;
+                        if (!chartArea) return null;
+                        const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+                        gradient.addColorStop(0, 'rgba(59, 130, 246, 0.20)');
+                        gradient.addColorStop(1, 'rgba(59, 130, 246, 0.00)');
+                        return gradient;
+                    }},
+                    fill: false,
+                    tension: 0,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    borderWidth: 2,
+                    spanGaps: true
+                }});
+            }}
 
             if (isPerformanceChart && benchmarkGrowthData.some(value => value !== null && value !== undefined)) {{
                 datasets.push({{
@@ -4696,6 +4793,18 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                                         }}
                                         return datasetLabel + ': ' + (dataValue >= 0 ? '+' : '') + dataValue.toFixed(2) + '%';
                                     }}
+                                    if (isProfitChart) {{
+                                        const pointProfit = Number(profitValues[index] || 0);
+                                        const pointHolding = Number(holdingGainValues[index] || 0);
+                                        const pointBuy = Number(cumulativeBuyValues[index] || 0);
+                                        const pointSell = Number(cumulativeSellValues[index] || 0);
+                                        return [
+                                            '累计收益：¥' + pointProfit.toFixed(2),
+                                            '持有收益：¥' + pointHolding.toFixed(2),
+                                            '累计买入：¥' + pointBuy.toFixed(2),
+                                            '累计卖出：¥' + pointSell.toFixed(2)
+                                        ];
+                                    }}
                                     const growth = growthData[index];
                                     const netValue = netValues[index];
                                     return [
@@ -4740,13 +4849,16 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                             }},
                             title: {{
                                 display: true,
-                                text: isPerformanceChart ? '业绩涨幅 (%)' : '涨幅 (%)',
+                                text: isPerformanceChart ? '业绩涨幅 (%)' : (isProfitChart ? '累计收益 (元)' : '涨幅 (%)'),
                                 color: '#9ca3af',
                                 font: {{ size: 11 }}
                             }},
                             ticks: {{
                                 color: '#9ca3af',
                                 callback: function(value) {{
+                                    if (isProfitChart) {{
+                                        return '¥' + Number(value).toFixed(0);
+                                    }}
                                     return (value >= 0 ? '+' : '') + value.toFixed(2) + '%';
                                 }}
                             }},
@@ -4759,19 +4871,20 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             }});
         }}
 
-        function bindPerformanceRangeButtons(chartRow, fundCode) {{
+        function bindChartRangeButtons(chartRow, fundCode) {{
             chartRow.querySelectorAll('.fund-performance-range-btn').forEach(button => {{
                 button.addEventListener('click', function(e) {{
                     e.preventDefault();
                     e.stopPropagation();
                     const nextInterval = button.dataset.interval || 'ONE_YEAR';
+                    const nextType = button.dataset.chartType || 'performance';
                     if (window.currentFundChartState &&
                         window.currentFundChartState.code === fundCode &&
-                        window.currentFundChartState.type === 'performance' &&
+                        window.currentFundChartState.type === nextType &&
                         window.currentFundChartState.interval === nextInterval) {{
                         return;
                     }}
-                    window.toggleFundRowChart(fundCode, 'performance', nextInterval, {{ forceOpen: true }});
+                    window.toggleFundRowChart(fundCode, nextType, nextInterval, {{ forceOpen: true }});
                 }});
             }});
         }}
@@ -4781,8 +4894,9 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 const tableBody = document.querySelector('.style-table tbody');
                 if (!tableBody) return;
 
-                const normalizedType = chartType === 'performance' ? 'performance' : 'estimate';
-            const normalizedInterval = normalizedType === 'performance' ? (interval || 'ONE_YEAR') : null;
+                const normalizedType = chartType === 'performance' ? 'performance' : (chartType === 'profit' ? 'profit' : 'estimate');
+                const defaultInterval = normalizedType === 'profit' ? 'THREE_MONTH' : 'ONE_YEAR';
+                const normalizedInterval = (normalizedType === 'performance' || normalizedType === 'profit') ? (interval || defaultInterval) : null;
                 const currentState = window.currentFundChartState;
 
                 // 如果当前已展开的是同一只基金、同一类型、同一区间，则收起
@@ -4807,7 +4921,8 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
 
                 const codeCell = tableBody.querySelector(`.fund-code-cell[data-code="${{fundCode}}"]`);
                 const nameCell = tableBody.querySelector(`.fund-name-cell[data-code="${{fundCode}}"]`);
-                const targetAnchor = normalizedType === 'performance' ? codeCell : (nameCell || codeCell);
+                const gainCell = tableBody.querySelector(`.fund-position-gain-cell[data-code="${{fundCode}}"]`);
+                const targetAnchor = normalizedType === 'performance' ? codeCell : (normalizedType === 'profit' ? gainCell : (nameCell || codeCell));
                 const targetRow = targetAnchor ? targetAnchor.closest('tr') : null;
                 if (!targetRow) return;
 
@@ -4820,12 +4935,12 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 chartRow.appendChild(chartCell);
                 targetRow.parentNode.insertBefore(chartRow, targetRow.nextSibling);
 
-                if (normalizedType === 'performance') {{
-                    bindPerformanceRangeButtons(chartRow, fundCode);
+                if (normalizedType === 'performance' || normalizedType === 'profit') {{
+                    bindChartRangeButtons(chartRow, fundCode);
                 }}
 
                 const canvas = chartCell.querySelector('canvas');
-                const chartData = await loadFundChartDataInline(fundCode, normalizedType, normalizedInterval || 'ONE_YEAR');
+                const chartData = await loadFundChartDataInline(fundCode, normalizedType, normalizedInterval || (normalizedType === 'profit' ? 'THREE_MONTH' : 'ONE_YEAR'));
                 renderFundRowChart(canvas, chartData, normalizedType);
 
                 window.currentFundChartState = {{
