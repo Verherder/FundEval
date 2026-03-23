@@ -1339,10 +1339,7 @@ class LanFund:
         for row in result:
             code = row[0]
             is_hold = self.CACHE_MAP.get(code, {}).get("is_hold", False)
-            code_cell = (
-                f'<span class="fund-code-cell" data-code="{code}" '
-                f'style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">{code}</span>'
-            )
+            code_cell = f'{code}'
             star_char = "⭐" if is_hold else "☆"
             star_html = (
                 f'<span class="fund-hold-star" data-code="{code}" data-hold="{1 if is_hold else 0}" '
@@ -1384,7 +1381,8 @@ class LanFund:
             consecutive_info = row[7]
             monthly_info = row[8]
             estimate_cell = (
-                f"{forecast_growth}"
+                f"<span class='fund-estimate-cell' data-code='{code}' "
+                f"style='cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看估值曲线'>{forecast_growth}</span>"
                 f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{now_time}</span>"
             )
 

@@ -634,6 +634,171 @@ def _get_latest_fund_net_value(user_id, fund_code):
     net_value, _nav_date, fund_data = _get_latest_fund_quote(user_id, fund_code)
     return net_value, fund_data
 
+
+def _parse_tx_datetime(tx_time):
+    text = str(tx_time or '').strip()
+    if not text:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(text.replace(' ', 'T'))
+    except Exception:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.datetime.strptime(text, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        if default is None:
+            return None
+        try:
+            return float(default)
+        except (TypeError, ValueError):
+            return None
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        if default is None:
+            return None
+        try:
+            return int(default)
+        except (TypeError, ValueError):
+            return None
+
+
+def _xnpv(rate, cashflows):
+    if rate <= -0.999999:
+        return float('inf')
+    if not cashflows:
+        return 0.0
+    t0 = cashflows[0][0]
+    total_value = 0.0
+    for tx_date, amount in cashflows:
+        days = (tx_date - t0).total_seconds() / 86400.0
+        total_value += amount / ((1 + rate) ** (days / 365.0))
+    return total_value
+
+
+def _solve_xirr(cashflows):
+    if len(cashflows) < 2:
+        return None
+    has_positive = any(amount > 0 for _, amount in cashflows)
+    has_negative = any(amount < 0 for _, amount in cashflows)
+    if not (has_positive and has_negative):
+        return None
+
+    low, high = -0.9999, 10.0
+    try:
+        f_low = _xnpv(low, cashflows)
+        f_high = _xnpv(high, cashflows)
+    except Exception:
+        return None
+
+    expand_count = 0
+    while f_low * f_high > 0 and expand_count < 20:
+        high *= 2
+        try:
+            f_high = _xnpv(high, cashflows)
+        except Exception:
+            return None
+        expand_count += 1
+
+    if f_low * f_high > 0:
+        return None
+
+    for _ in range(100):
+        mid = (low + high) / 2.0
+        f_mid = _xnpv(mid, cashflows)
+        if f_mid is None:
+            return None
+        if abs(f_mid) < 1e-7:
+            return mid
+        if f_low * f_mid <= 0:
+            high = mid
+            f_high = f_mid
+        else:
+            low = mid
+            f_low = f_mid
+    return (low + high) / 2.0
+
+
+def _build_clear_cycles(transactions):
+    share_eps = 1e-4
+    running_shares = 0.0
+    cycle_start_dt = None
+    cycle_total_buy = 0.0
+    cycle_total_sell = 0.0
+    cycle_cashflows = []
+    clear_cycles = []
+
+    for tx in transactions:
+        tx_type = str(tx.get('tx_type', '')).strip().lower()
+        tx_shares = _safe_float(tx.get('shares', 0), 0.0)
+        tx_amount = _safe_float(tx.get('amount', 0), 0.0)
+        tx_net_value = _safe_float(tx.get('net_value', 0), 0.0)
+        tx_fee = _safe_float(tx.get('fee', 0), 0.0)
+        tx_dt = _parse_tx_datetime(tx.get('tx_time'))
+        if tx_dt is None:
+            continue
+
+        gross_amount = tx_amount if tx_amount > 0 else (tx_shares * tx_net_value)
+        if tx_type == 'sell' and tx_fee > 0:
+            gross_amount += tx_fee
+        effective_amount = gross_amount
+
+        if tx_type == 'buy' and tx_shares > 0:
+            if running_shares <= share_eps and cycle_start_dt is None:
+                cycle_start_dt = tx_dt
+                cycle_total_buy = 0.0
+                cycle_total_sell = 0.0
+                cycle_cashflows = []
+            running_shares += tx_shares
+            cycle_total_buy += effective_amount
+            cycle_cashflows.append((tx_dt, -effective_amount))
+        elif tx_type == 'sell' and tx_shares > 0:
+            if running_shares <= share_eps:
+                continue
+            sell_shares = min(tx_shares, running_shares)
+            if sell_shares <= 0:
+                continue
+            running_shares -= sell_shares
+            scale = (sell_shares / tx_shares) if tx_shares > 0 else 0.0
+            proceeds = effective_amount * scale
+            cycle_total_sell += proceeds
+            cycle_cashflows.append((tx_dt, proceeds))
+
+            if running_shares <= share_eps:
+                running_shares = 0.0
+                period_start = cycle_start_dt or tx_dt
+                period_end = tx_dt
+                cycle_profit = cycle_total_sell - cycle_total_buy
+                cycle_return_pct = (cycle_profit / cycle_total_buy * 100.0) if cycle_total_buy > 0 else None
+                annual_rate = _solve_xirr(cycle_cashflows)
+                annual_return_pct = (annual_rate * 100.0) if annual_rate is not None else None
+                clear_cycles.append({
+                    'clear_tx_id': _safe_int(tx.get('id', 0), 0),
+                    'period_start': period_start.strftime('%Y-%m-%d'),
+                    'period_end': period_end.strftime('%Y-%m-%d'),
+                    'cycle_profit': round(cycle_profit, 2),
+                    'cycle_return_pct': round(cycle_return_pct, 2) if cycle_return_pct is not None else None,
+                    'annual_return_pct': round(annual_return_pct, 2) if annual_return_pct is not None else None,
+                })
+                cycle_start_dt = None
+                cycle_total_buy = 0.0
+                cycle_total_sell = 0.0
+                cycle_cashflows = []
+
+    return clear_cycles
+
 @app.route('/api/fund/shares', methods=['POST'])
 @login_required
 def api_fund_shares():
@@ -788,7 +953,7 @@ def api_fund_buy_backfill():
                 return {'success': False, 'message': '净值必须大于0'}
 
         net_buy_amount = float((Decimal(str(amount)) - Decimal(str(fee))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
-        buy_shares = float((Decimal(str(net_buy_amount)) / Decimal(str(net_value))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        buy_shares = float((Decimal(str(net_buy_amount)) / Decimal(str(net_value))).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP))
         if buy_shares <= 0:
             return {'success': False, 'message': '买入金额过小，折算份额为0'}
 
@@ -817,7 +982,7 @@ def api_fund_buy_backfill():
 
         return {
             'success': True,
-            'message': f'补录成功：{normalized_date} 按净值 {net_value:.4f} 买入 ¥{amount:,.2f}（手续费¥{fee:,.2f}，{buy_shares:.2f}份）',
+            'message': f'补录成功：{normalized_date} 按净值 {net_value:.4f} 买入 ¥{amount:,.2f}（手续费¥{fee:,.2f}，{buy_shares:.4f}份）',
             'current_shares': new_shares,
             'trade_date': normalized_date,
             'shares': buy_shares,
@@ -871,11 +1036,10 @@ def api_fund_net_value_by_date():
 @app.route('/api/fund/sell-backfill', methods=['POST'])
 @login_required
 def api_fund_sell_backfill():
-    """补录卖出：按指定日期净值与金额生成卖出交易。"""
+    """补录卖出：按份额与指定日期净值生成卖出交易。"""
     try:
         data = request.json or {}
         code = str(data.get('code', '')).strip()
-        amount = data.get('amount', None)
         shares_input = data.get('shares', None)
         fee = data.get('fee', 0)
         net_value = data.get('net_value', None)
@@ -883,15 +1047,6 @@ def api_fund_sell_backfill():
 
         if not code:
             return {'success': False, 'message': '请提供基金代码'}
-
-        sell_amount = None
-        if amount is not None and str(amount).strip() != "":
-            try:
-                sell_amount = float(amount)
-            except (TypeError, ValueError):
-                return {'success': False, 'message': '卖出金额格式错误'}
-            if sell_amount <= 0:
-                return {'success': False, 'message': '卖出金额必须大于0'}
 
         shares = None
         if shares_input is not None and str(shares_input).strip() != "":
@@ -934,20 +1089,18 @@ def api_fund_sell_backfill():
             if net_value <= 0:
                 return {'success': False, 'message': '净值必须大于0'}
 
-        if sell_amount is None and shares is None:
-            return {'success': False, 'message': '请提供卖出金额'}
+        if shares is None:
+            return {'success': False, 'message': '请提供卖出份额'}
 
-        if sell_amount is None and shares is not None:
-            gross_sell_amount = float((Decimal(str(shares)) * Decimal(str(net_value))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
-            if fee > gross_sell_amount:
-                return {'success': False, 'message': '手续费不能大于卖出总额'}
-            sell_amount = float((Decimal(str(gross_sell_amount)) - Decimal(str(fee))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
-        else:
-            gross_sell_amount = float((Decimal(str(sell_amount)) + Decimal(str(fee))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
-            shares = float((Decimal(str(gross_sell_amount)) / Decimal(str(net_value))).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP))
+        gross_sell_amount = float((Decimal(str(shares)) * Decimal(str(net_value))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        if fee > gross_sell_amount:
+            return {'success': False, 'message': '手续费不能大于卖出总额'}
+        sell_amount = float((Decimal(str(gross_sell_amount)) - Decimal(str(fee))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
 
         if shares is None or shares <= 0:
             return {'success': False, 'message': '卖出金额过小，折算份额为0'}
+        if sell_amount <= 0:
+            return {'success': False, 'message': '到账金额必须大于0，请检查份额和手续费'}
 
         if shares - current_holding > 1e-8:
             return {'success': False, 'message': f'卖出份额超过当前持仓（{current_holding:.4f}）'}
@@ -1834,6 +1987,9 @@ def api_fund_performance_chart_data():
         if index < len(chart_growth)
     }
 
+    clear_cycles = _build_clear_cycles(transactions)
+    clear_cycle_map = {item['clear_tx_id']: item for item in clear_cycles}
+
     trade_markers = []
     for tx in transactions:
         tx_time = str(tx.get('tx_time', '')).strip()
@@ -1844,17 +2000,94 @@ def api_fund_performance_chart_data():
         if point_value is None:
             continue
         tx_type = str(tx.get('tx_type', '')).strip().lower()
-        trade_markers.append({
+        tx_id = _safe_int(tx.get('id', 0), 0)
+        cycle_info = clear_cycle_map.get(tx_id)
+        marker_type = 'clear' if cycle_info else tx_type
+        marker_item = {
             'type': tx_type,
+            'marker_type': marker_type,
             'x': tx_date,
             'y': point_value,
-            'amount': float(tx.get('amount', 0) or 0),
-            'shares': float(tx.get('shares', 0) or 0),
-            'net_value': float(tx.get('net_value', 0) or 0),
+            'amount': _safe_float(tx.get('amount', 0), 0.0),
+            'shares': _safe_float(tx.get('shares', 0), 0.0),
+            'net_value': _safe_float(tx.get('net_value', 0), 0.0),
             'tx_time': tx_time,
-        })
+        }
+        if cycle_info:
+            marker_item.update(cycle_info)
+        trade_markers.append(marker_item)
 
     chart_data['trade_markers'] = trade_markers
+
+    # 计算每个业绩曲线日期点的持有收益率（含已实现收益）
+    net_values = chart_data.get('net_values', []) or []
+    parsed_labels = []
+    for label in chart_labels:
+        label_text = str(label or '').strip()
+        try:
+            parsed_labels.append(datetime.date.fromisoformat(label_text))
+        except Exception:
+            parsed_labels.append(None)
+
+    tx_points = []
+    for tx in transactions:
+        tx_time = str(tx.get('tx_time', '')).strip()
+        if not tx_time:
+            continue
+        tx_date_text = tx_time.split(' ')[0]
+        try:
+            tx_date = datetime.date.fromisoformat(tx_date_text)
+        except Exception:
+            continue
+        tx_points.append({
+            'date': tx_date,
+            'tx_type': str(tx.get('tx_type', '')).strip().lower(),
+            'shares': _safe_float(tx.get('shares', 0), 0.0),
+            'amount': _safe_float(tx.get('amount', 0), 0.0),
+        })
+
+    tx_points.sort(key=lambda item: item['date'])
+    tx_cursor = 0
+    holding_shares = 0.0
+    cumulative_buy = 0.0
+    cumulative_sell = 0.0
+    holding_return_pct = []
+
+    for idx, label_date in enumerate(parsed_labels):
+        if label_date is None:
+            holding_return_pct.append(None)
+            continue
+
+        while tx_cursor < len(tx_points) and tx_points[tx_cursor]['date'] <= label_date:
+            current_tx = tx_points[tx_cursor]
+            tx_type = current_tx['tx_type']
+            tx_shares = current_tx['shares']
+            tx_amount = current_tx['amount']
+            if tx_type == 'buy':
+                holding_shares += tx_shares
+                cumulative_buy += tx_amount
+            elif tx_type == 'sell':
+                holding_shares -= tx_shares
+                cumulative_sell += tx_amount
+            tx_cursor += 1
+
+        if holding_shares < 0:
+            holding_shares = 0.0
+
+        if cumulative_buy <= 0:
+            holding_return_pct.append(None)
+            continue
+
+        nav = _safe_float(net_values[idx] if idx < len(net_values) else None, None)
+        if nav is None:
+            holding_return_pct.append(None)
+            continue
+
+        total_value = cumulative_sell + holding_shares * nav
+        total_return = total_value - cumulative_buy
+        holding_return_pct.append(round(total_return / cumulative_buy * 100.0, 2))
+
+    chart_data['holding_return_pct'] = holding_return_pct
 
     latest_net_value, latest_nav_date, _latest_fund_data = _get_latest_fund_quote(user_id, fund_code)
     if latest_net_value and latest_net_value > 0:

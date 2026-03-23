@@ -197,7 +197,7 @@ def enhance_fund_tab_content(content, shares_map=None):
                         <div id="backfillModalFundCode" style="padding: 10px; background: rgba(59, 130, 246, 0.1); border-radius: 6px; color: #3b82f6; font-weight: 600; font-family: monospace;"></div>
                     </div>
                     <div style="margin-bottom: 12px;">
-                        <label for="backfillTradeDate" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">买入日期</label>
+                        <label for="backfillTradeDate" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">交易日期</label>
                         <input type="date" id="backfillTradeDate"
                                style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
                     </div>
@@ -217,6 +217,11 @@ def enhance_fund_tab_content(content, shares_map=None):
                             <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(2000)">2000</button>
                             <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(4000)">4000</button>
                         </div>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <label for="backfillShares" id="backfillSharesLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">卖出份额</label>
+                        <input type="number" id="backfillShares" step="0.0001" min="0" placeholder="补录卖出时填写"
+                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
                     </div>
                     <div style="margin-bottom: 8px;">
                         <label for="backfillFee" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">手续费（元）</label>
@@ -4522,6 +4527,12 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 throw new Error('Failed to fetch chart data');
             }}
             const data = await response.json();
+            if (!data || typeof data !== 'object') {{
+                return {{ labels: [], growth: [], net_values: [] }};
+            }}
+            if (!data.chart_data || typeof data.chart_data !== 'object') {{
+                return {{ labels: [], growth: [], net_values: [] }};
+            }}
             return data.chart_data;
         }}
 
@@ -4588,6 +4599,14 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
         }}
 
         function renderFundRowChart(canvas, chartData, chartType = 'estimate') {{
+            if (!canvas) return;
+            if (!chartData || typeof chartData !== 'object') {{
+                const wrapper = canvas.closest('.inline-fund-chart');
+                if (wrapper) {{
+                    wrapper.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:13px;">图表数据异常，请重试</div>`;
+                }}
+                return;
+            }}
             const growthData = chartData.growth || [];
             const netValues = chartData.net_values || [];
             const isPerformanceChart = chartType === 'performance';
@@ -4597,14 +4616,16 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             const cumulativeBuyValues = chartData.cumulative_buy_values || [];
             const cumulativeSellValues = chartData.cumulative_sell_values || [];
             const benchmarkGrowthData = chartData.benchmark_growth || [];
+            const holdingReturnPctData = chartData.holding_return_pct || [];
             const benchmarkLabel = chartData.benchmark_label || '沪深300';
             const latestNetValue = chartData.latest_net_value;
             const latestNetValueDate = chartData.latest_net_value_date;
             const tradeMarkers = chartData.trade_markers || [];
             const fundCurveColor = '#3b82f6';
             const benchmarkColor = '#9ca3af';
-            const buyMarkerColor = '#ef4444';
-            const sellMarkerColor = '#3b82f6';
+            const buyMarkerColor = '#2563eb';
+            const sellMarkerColor = '#ef4444';
+            const clearMarkerColor = '#7f1d1d';
 
             if (isPerformanceChart) {{
                 const wrapper = canvas.closest('.inline-fund-chart');
@@ -4632,6 +4653,9 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                         </span>
                         <span style="display:inline-flex;align-items:center;gap:6px;color:${{sellMarkerColor}};">
                             <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${{sellMarkerColor}};"></span>卖出
+                        </span>
+                        <span style="display:inline-flex;align-items:center;gap:6px;color:${{clearMarkerColor}};">
+                            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${{clearMarkerColor}};"></span>清仓
                         </span>
                     `;
                 }}
@@ -4716,8 +4740,9 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             }}
 
             if (isPerformanceChart && tradeMarkers.length > 0) {{
-                const buyMarkers = tradeMarkers.filter(item => item.type === 'buy');
-                const sellMarkers = tradeMarkers.filter(item => item.type === 'sell');
+                const buyMarkers = tradeMarkers.filter(item => (item.marker_type || item.type) === 'buy');
+                const sellMarkers = tradeMarkers.filter(item => (item.marker_type || item.type) === 'sell');
+                const clearMarkers = tradeMarkers.filter(item => (item.marker_type || item.type) === 'clear');
 
                 if (buyMarkers.length > 0) {{
                     datasets.push({{
@@ -4728,11 +4753,12 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                         showLine: false,
                         pointRadius: 3,
                         pointHoverRadius: 4,
+                        pointHitRadius: 10,
                         pointBackgroundColor: buyMarkerColor,
                         pointBorderColor: buyMarkerColor,
                         pointBorderWidth: 0,
                         borderColor: buyMarkerColor,
-                        parsing: false
+                        parsing: {{ xAxisKey: 'x', yAxisKey: 'y' }}
                     }});
                 }}
 
@@ -4745,17 +4771,85 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                         showLine: false,
                         pointRadius: 3,
                         pointHoverRadius: 4,
+                        pointHitRadius: 10,
                         pointBackgroundColor: sellMarkerColor,
                         pointBorderColor: sellMarkerColor,
                         pointBorderWidth: 0,
                         borderColor: sellMarkerColor,
-                        parsing: false
+                        parsing: {{ xAxisKey: 'x', yAxisKey: 'y' }}
+                    }});
+                }}
+
+                if (clearMarkers.length > 0) {{
+                    datasets.push({{
+                        label: '清仓',
+                        data: clearMarkers,
+                        type: 'line',
+                        order: 0,
+                        showLine: false,
+                        pointRadius: 4,
+                        pointHoverRadius: 5,
+                        pointHitRadius: 10,
+                        pointBackgroundColor: clearMarkerColor,
+                        pointBorderColor: clearMarkerColor,
+                        pointBorderWidth: 0,
+                        borderColor: clearMarkerColor,
+                        parsing: {{ xAxisKey: 'x', yAxisKey: 'y' }}
                     }});
                 }}
             }}
 
-            window.fundRowChartInstance = new Chart(canvas.getContext('2d'), {{
+            const clearCycleLabelPlugin = {{
+                id: 'clearCycleLabelPlugin',
+                afterDatasetsDraw(chart) {{
+                    if (!isPerformanceChart || !tradeMarkers.length) return;
+                    const clearDatasetIndex = chart.data.datasets.findIndex(ds => ds.label === '清仓');
+                    if (clearDatasetIndex < 0) return;
+                    const meta = chart.getDatasetMeta(clearDatasetIndex);
+                    if (!meta || !meta.data || !meta.data.length) return;
+                    const ctx = chart.ctx;
+                    ctx.save();
+                    ctx.font = '11px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'bottom';
+                    ctx.fillStyle = clearMarkerColor;
+
+                    const formatMoney = (value) => {{
+                        const num = Number(value || 0);
+                        return '¥' + num.toFixed(2);
+                    }};
+                    const formatPct = (value) => {{
+                        if (value === null || value === undefined || Number.isNaN(Number(value))) return '--';
+                        const num = Number(value);
+                        return (num >= 0 ? '+' : '') + num.toFixed(2) + '%';
+                    }};
+
+                    meta.data.forEach((pointElement, index) => {{
+                        const raw = chart.data.datasets[clearDatasetIndex].data[index] || {{}};
+                        if (!raw.period_start || !raw.period_end) return;
+                        const y = pointElement.y;
+                        const x = pointElement.x;
+                        const lines = [
+                            `${{raw.period_start}} ~ ${{raw.period_end}}`,
+                            `收益 ${{formatMoney(raw.cycle_profit)}}`,
+                            `收益率 ${{formatPct(raw.cycle_return_pct)}}`,
+                            `年化 ${{formatPct(raw.annual_return_pct)}}`
+                        ];
+                        const lineHeight = 13;
+                        let textY = y - 10 - (lines.length - 1) * lineHeight;
+                        const minTop = chart.chartArea.top + 4;
+                        if (textY < minTop) textY = minTop;
+                        lines.forEach((line, lineIndex) => {{
+                            ctx.fillText(line, x, textY + lineIndex * lineHeight);
+                        }});
+                    }});
+                    ctx.restore();
+                }}
+            }};
+
+            const chartConfig = {{
                 type: 'line',
+                plugins: [clearCycleLabelPlugin],
                 data: {{
                     labels: chartData.labels || [],
                     datasets: datasets
@@ -4764,8 +4858,8 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                     responsive: true,
                     maintainAspectRatio: false,
                     interaction: {{
-                        mode: 'index',
-                        intersect: false,
+                        mode: isPerformanceChart ? 'nearest' : 'index',
+                        intersect: isPerformanceChart,
                     }},
                     plugins: {{
                         legend: {{ display: false }},
@@ -4780,13 +4874,32 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                                     const dataValue = context.parsed.y;
                                     const raw = context.raw || {{}};
                                     if (isPerformanceChart) {{
-                                        if ((datasetLabel === '买入' || datasetLabel === '卖出') && raw.tx_time) {{
-                                            return [
+                                        if ((datasetLabel === '买入' || datasetLabel === '卖出' || datasetLabel === '清仓') && raw.tx_time) {{
+                                            const txDate = raw.x || String(raw.tx_time).split(' ')[0] || context.label;
+                                            const dateIndex = (chartData.labels || []).indexOf(txDate);
+                                            const fundPerf = dateIndex >= 0 ? Number(growthData[dateIndex]) : Number(dataValue);
+                                            const benchmarkPerf = dateIndex >= 0 ? Number(benchmarkGrowthData[dateIndex]) : null;
+                                            const holdingReturnPct = dateIndex >= 0 ? Number(holdingReturnPctData[dateIndex]) : null;
+                                            const formatPct = function(value) {{
+                                                if (value === null || value === undefined || !Number.isFinite(value)) return '--';
+                                                return (value >= 0 ? '+' : '') + value.toFixed(2) + '%';
+                                            }};
+                                            const baseLines = [
                                                 datasetLabel + '：' + raw.tx_time,
                                                 '金额：¥' + Number(raw.amount || 0).toFixed(2),
                                                 '份额：' + Number(raw.shares || 0).toFixed(2),
-                                                '净值：' + Number(raw.net_value || 0).toFixed(4)
+                                                '净值：' + Number(raw.net_value || 0).toFixed(4),
+                                                '基金业绩：' + formatPct(fundPerf),
+                                                benchmarkLabel + '：' + formatPct(benchmarkPerf),
+                                                '持有收益率：' + formatPct(holdingReturnPct)
                                             ];
+                                            if (datasetLabel === '清仓') {{
+                                                baseLines.push('周期：' + (raw.period_start || '--') + ' ~ ' + (raw.period_end || '--'));
+                                                baseLines.push('周期收益：¥' + Number(raw.cycle_profit || 0).toFixed(2));
+                                                baseLines.push('周期收益率：' + ((raw.cycle_return_pct === null || raw.cycle_return_pct === undefined) ? '--' : ((Number(raw.cycle_return_pct) >= 0 ? '+' : '') + Number(raw.cycle_return_pct).toFixed(2) + '%')));
+                                                baseLines.push('年化收益率：' + ((raw.annual_return_pct === null || raw.annual_return_pct === undefined) ? '--' : ((Number(raw.annual_return_pct) >= 0 ? '+' : '') + Number(raw.annual_return_pct).toFixed(2) + '%')));
+                                            }}
+                                            return baseLines;
                                         }}
                                         if (dataValue === null || dataValue === undefined) {{
                                             return datasetLabel + ': --';
@@ -4868,7 +4981,15 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                         }}
                     }}
                 }}
-            }});
+            }};
+
+            try {{
+                window.fundRowChartInstance = new Chart(canvas.getContext('2d'), chartConfig);
+            }} catch (chartErr) {{
+                console.warn('fund row chart init failed, retrying without custom plugin', chartErr);
+                chartConfig.plugins = [];
+                window.fundRowChartInstance = new Chart(canvas.getContext('2d'), chartConfig);
+            }}
         }}
 
         function bindChartRangeButtons(chartRow, fundCode) {{
@@ -4921,8 +5042,9 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
 
                 const codeCell = tableBody.querySelector(`.fund-code-cell[data-code="${{fundCode}}"]`);
                 const nameCell = tableBody.querySelector(`.fund-name-cell[data-code="${{fundCode}}"]`);
+                const estimateCell = tableBody.querySelector(`.fund-estimate-cell[data-code="${{fundCode}}"]`);
                 const gainCell = tableBody.querySelector(`.fund-position-gain-cell[data-code="${{fundCode}}"]`);
-                const targetAnchor = normalizedType === 'performance' ? codeCell : (normalizedType === 'profit' ? gainCell : (nameCell || codeCell));
+                const targetAnchor = normalizedType === 'performance' ? (nameCell || codeCell) : (normalizedType === 'profit' ? gainCell : (estimateCell || nameCell || codeCell));
                 const targetRow = targetAnchor ? targetAnchor.closest('tr') : null;
                 if (!targetRow) return;
 
@@ -4941,13 +5063,20 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
 
                 const canvas = chartCell.querySelector('canvas');
                 const chartData = await loadFundChartDataInline(fundCode, normalizedType, normalizedInterval || (normalizedType === 'profit' ? 'THREE_MONTH' : 'ONE_YEAR'));
-                renderFundRowChart(canvas, chartData, normalizedType);
-
                 window.currentFundChartState = {{
                     code: fundCode,
                     type: normalizedType,
                     interval: normalizedInterval
                 }};
+
+                try {{
+                    renderFundRowChart(canvas, chartData, normalizedType);
+                }} catch (renderErr) {{
+                    console.error('renderFundRowChart error:', renderErr);
+                    if (chartCell) {{
+                        chartCell.innerHTML = `<div style="padding:18px;color:var(--down-color);font-size:12px;">图表渲染失败，请稍后重试</div>`;
+                    }}
+                }}
             }} catch (e) {{
                 console.error('toggleFundRowChart error:', e);
             }}
