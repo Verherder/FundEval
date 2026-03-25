@@ -7,7 +7,9 @@ window.process = {
 
 document.addEventListener('DOMContentLoaded', function() {
     // Initialize Auto Colorize
-    autoColorize();
+    if (window.location.pathname !== '/portfolio') {
+        autoColorize();
+    }
 
     window.showSimpleMessage = function(message, type = 'info') {
         if (!message) return;
@@ -67,6 +69,61 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             }, 220);
         }, 1800);
+    };
+
+    window.showTaskProgress = function(title = '处理中', detail = '准备中...', percent = 0, statsText = '') {
+        let panel = document.getElementById('taskProgressPanel');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 'taskProgressPanel';
+            panel.style.position = 'fixed';
+            panel.style.right = '20px';
+            panel.style.bottom = '20px';
+            panel.style.zIndex = '100000';
+            panel.style.width = '320px';
+            panel.style.maxWidth = 'calc(100vw - 32px)';
+            panel.style.padding = '14px 16px';
+            panel.style.borderRadius = '12px';
+            panel.style.background = 'var(--card-bg)';
+            panel.style.color = 'var(--text-main)';
+            panel.style.boxShadow = '0 12px 30px rgba(0,0,0,0.18)';
+            panel.style.border = '1px solid var(--border)';
+            panel.innerHTML = `
+                <div id="taskProgressTitle" style="font-size:14px;font-weight:600;margin-bottom:8px;"></div>
+                <div id="taskProgressDetail" style="font-size:12px;color:var(--text-dim);margin-bottom:10px;"></div>
+                <div style="height:8px;border-radius:999px;background:rgba(148,163,184,0.22);overflow:hidden;">
+                    <div id="taskProgressBar" style="height:100%;width:0%;background:linear-gradient(90deg,#60a5fa,#3b82f6);transition:width 0.2s ease;"></div>
+                </div>
+                <div id="taskProgressPercent" style="margin-top:8px;font-size:12px;color:var(--text-dim);text-align:right;"></div>
+            `;
+            document.body.appendChild(panel);
+        }
+        panel.style.display = 'block';
+        window.updateTaskProgress(title, detail, percent, statsText);
+    };
+
+    window.updateTaskProgress = function(title = '处理中', detail = '准备中...', percent = 0, statsText = '') {
+        const panel = document.getElementById('taskProgressPanel');
+        if (!panel) return;
+        const titleEl = document.getElementById('taskProgressTitle');
+        const detailEl = document.getElementById('taskProgressDetail');
+        const barEl = document.getElementById('taskProgressBar');
+        const percentEl = document.getElementById('taskProgressPercent');
+        const normalizedPercent = Math.max(0, Math.min(100, Number(percent || 0)));
+        if (titleEl) titleEl.textContent = String(title || '处理中');
+        if (detailEl) detailEl.textContent = String(detail || '');
+        if (barEl) barEl.style.width = `${normalizedPercent}%`;
+        if (percentEl) {
+            percentEl.textContent = statsText
+                ? `${statsText} · ${Math.round(normalizedPercent)}%`
+                : `${Math.round(normalizedPercent)}%`;
+        }
+    };
+
+    window.hideTaskProgress = function() {
+        const panel = document.getElementById('taskProgressPanel');
+        if (!panel) return;
+        panel.style.display = 'none';
     };
 
     // 基金表格“标记”列：点击五角星切换持有/取消持有（事件委托，动态内容也生效）
@@ -941,6 +998,72 @@ document.addEventListener('DOMContentLoaded', function() {
         window.location.href = '/api/fund/download';
     };
 
+    window.clearAllFundTransactions = async function() {
+        try {
+            window.location.href = '/api/fund/transactions/download-all';
+
+            const confirmText = '清空全部交易';
+            const inputText = window.prompt(
+                '危险操作：将清空全部基金交易记录，并将所有基金持仓重置为0。\n已开始下载全量交易备份。\n\n请输入“清空全部交易”以确认：',
+                ''
+            );
+            if (inputText === null) {
+                return;
+            }
+
+            const response = await fetch('/api/fund/transactions/clear-all', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ confirm_text: inputText })
+            });
+            const result = await response.json();
+            if (!result.success) {
+                window.showSimpleMessage(result.message || '清空失败', 'error');
+                return;
+            }
+
+            window.fundSharesData = {};
+            document.querySelectorAll('.fund-hold-star').forEach((star) => {
+                star.textContent = '☆';
+                star.dataset.hold = '0';
+            });
+
+            window.showSimpleMessage(result.message || '清空成功', 'success');
+
+            if (currentTransactionFundCode && typeof window.loadFundTransactions === 'function') {
+                await window.loadFundTransactions();
+            }
+            if (typeof fetchPortfolioData === 'function') {
+                await fetchPortfolioData();
+            } else {
+                location.reload();
+            }
+        } catch (e) {
+            window.showSimpleMessage('清空失败: ' + (e?.message || e), 'error');
+        }
+    };
+
+    window.clearFundTransactionsDanger = async function() {
+        const defaultValue = currentTransactionFundCode || '';
+        const inputText = window.prompt(
+            '危险操作：请输入 6 位基金代码以清空该基金交易记录，或输入“全部”清空全部交易记录。\n\n可输入示例：000001 / 全部',
+            defaultValue
+        );
+        if (inputText === null) {
+            return;
+        }
+        const normalized = String(inputText || '').trim();
+        if (normalized === '全部') {
+            await window.clearAllFundTransactions();
+            return;
+        }
+        if (!/^\d{6}$/.test(normalized)) {
+            window.showSimpleMessage('请输入 6 位基金代码，或输入“全部”', 'info');
+            return;
+        }
+        await window.clearFundTransactionsByCode(normalized);
+    };
+
     // 上传fund_map.json
     window.uploadFundMap = async function(file) {
         if (!file) {
@@ -973,13 +1096,315 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     };
 
+    // 上传交易记录Excel
+    window.uploadTransactionRecords = async function(file) {
+        if (!file) {
+            alert('请选择文件');
+            return;
+        }
+
+        if (!file.name.toLowerCase().endsWith('.xlsx')) {
+            alert('仅支持 .xlsx 格式Excel文件');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+        if (typeof window.showTaskProgress === 'function') {
+            window.showTaskProgress('交易记录导入中', '准备上传文件...', 0, '已处理 0/0');
+        }
+
+        try {
+            const uploadResult = await new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', '/api/fund/transactions/import', true);
+                xhr.responseType = 'json';
+
+                xhr.upload.onloadstart = function() {
+                    if (typeof window.updateTaskProgress === 'function') {
+                        window.updateTaskProgress('交易记录导入中', '开始上传文件...', 5, '已处理 0/0');
+                    }
+                };
+
+                xhr.upload.onprogress = function(event) {
+                    if (typeof window.updateTaskProgress !== 'function') return;
+                    if (event.lengthComputable && event.total > 0) {
+                        const uploadPercent = Math.min(75, Math.round((event.loaded / event.total) * 75));
+                        window.updateTaskProgress('交易记录导入中', '正在上传文件...', uploadPercent, '已处理 0/0');
+                    } else {
+                        window.updateTaskProgress('交易记录导入中', '正在上传文件...', 40, '已处理 0/0');
+                    }
+                };
+
+                xhr.upload.onload = function() {
+                    if (typeof window.updateTaskProgress === 'function') {
+                        window.updateTaskProgress('交易记录导入中', '文件上传完成，服务器处理中...', 80, '已处理 0/0');
+                    }
+                };
+
+                xhr.onerror = function() {
+                    reject(new Error('网络异常，上传失败'));
+                };
+
+                xhr.onload = function() {
+                    if (xhr.status < 200 || xhr.status >= 300) {
+                        reject(new Error(`导入请求失败: ${xhr.status}`));
+                        return;
+                    }
+                    const responseData = xhr.response || JSON.parse(xhr.responseText || '{}');
+                    resolve(responseData);
+                };
+
+                xhr.send(formData);
+            });
+
+            if (!uploadResult || !uploadResult.success || !uploadResult.job_id) {
+                throw new Error(uploadResult?.message || '导入任务创建失败');
+            }
+
+            const result = await new Promise((resolve, reject) => {
+                let stopped = false;
+                const poll = async () => {
+                    if (stopped) return;
+                    try {
+                        const response = await fetch(`/api/fund/transactions/import-progress?job_id=${encodeURIComponent(uploadResult.job_id)}`, {
+                            cache: 'no-store'
+                        });
+                        const progressResult = await response.json();
+                        if (!progressResult.success || !progressResult.job) {
+                            throw new Error(progressResult.message || '导入进度获取失败');
+                        }
+
+                        const job = progressResult.job || {};
+                        const processedCount = Number(job.processed_count || 0);
+                        const totalCount = Number(job.total_count || 0);
+                        const statsText = `已处理 ${processedCount}/${totalCount || 0}`;
+
+                        if (typeof window.updateTaskProgress === 'function') {
+                            window.updateTaskProgress(
+                                job.title || '交易记录导入中',
+                                job.detail || '服务器处理中...',
+                                Number(job.percent || 0),
+                                statsText
+                            );
+                        }
+
+                        if (job.done) {
+                            stopped = true;
+                            resolve(job);
+                            return;
+                        }
+
+                        setTimeout(poll, 800);
+                    } catch (error) {
+                        stopped = true;
+                        reject(error);
+                    }
+                };
+                poll();
+            });
+
+            const duplicateCount = Number(result.duplicate_count || 0);
+            const warningMessages = Array.isArray(result.warning_messages) ? result.warning_messages : [];
+            if (!result.success) {
+                if (typeof window.hideTaskProgress === 'function') {
+                    window.hideTaskProgress();
+                }
+                const failedRows = Array.isArray(result.failed_rows) ? result.failed_rows : [];
+                const warningText = warningMessages.length > 0
+                    ? '\n告警信息:\n' + warningMessages.slice(0, 10).join('\n')
+                    : '';
+                const detailText = failedRows.length > 0
+                    ? '\n失败明细:\n' + failedRows.slice(0, 10).map(item => `第${item.row}行: ${item.reason}`).join('\n')
+                    : '';
+                const duplicateText = duplicateCount > 0 ? `\n重复订单：${duplicateCount}条` : '';
+                alert((result.message || '导入失败') + duplicateText + warningText + detailText);
+                return;
+            }
+
+            if (typeof window.updateTaskProgress === 'function') {
+                window.updateTaskProgress(
+                    '交易记录导入中',
+                    '导入完成，正在刷新页面数据...',
+                    100,
+                    `已处理 ${Number(result.processed_count || 0)}/${Number(result.total_count || 0)}`
+                );
+            }
+
+            const failedRows = Array.isArray(result.failed_rows) ? result.failed_rows : [];
+            const warningText = warningMessages.length > 0
+                ? '\n告警信息:\n' + warningMessages.slice(0, 10).join('\n')
+                : '';
+            const detailText = failedRows.length > 0
+                ? '\n失败明细:\n' + failedRows.slice(0, 10).map(item => `第${item.row}行: ${item.reason}`).join('\n')
+                : '';
+            const duplicateText = duplicateCount > 0 ? `\n重复订单：${duplicateCount}条` : '';
+            alert((result.message || '导入成功') + duplicateText + warningText + detailText);
+
+            if (typeof fetchPortfolioData === 'function') {
+                await fetchPortfolioData();
+            } else {
+                location.reload();
+            }
+
+            if (currentTransactionFundCode && typeof window.loadFundTransactions === 'function') {
+                await window.loadFundTransactions();
+            }
+            if (typeof window.hideTaskProgress === 'function') {
+                setTimeout(() => window.hideTaskProgress(), 400);
+            }
+        } catch (e) {
+            if (typeof window.hideTaskProgress === 'function') {
+                window.hideTaskProgress();
+            }
+            alert('导入交易记录失败: ' + (e?.message || e));
+        } finally {
+            const tradeFileInput = document.getElementById('uploadTradeFile');
+            if (tradeFileInput) {
+                tradeFileInput.value = '';
+            }
+        }
+    };
+
+    window.summaryPanelsExpanded = false;
+    window.summaryPanelsHasData = false;
+    window.summaryPanelsHasDetails = false;
+    const DAILY_GAIN_CACHE_KEY = 'portfolioDailyGainSnapshotV1';
+
+    function formatDateKey(date) {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    }
+
+    function getPortfolioSummaryDateContext() {
+        const now = new Date();
+        const inUpdateWindow = now.getHours() >= 15;
+        const targetDate = new Date(now);
+        if (!inUpdateWindow) {
+            targetDate.setDate(targetDate.getDate() - 1);
+        }
+        const month = targetDate.getMonth() + 1;
+        const day = targetDate.getDate();
+        return {
+            inUpdateWindow,
+            dateKey: formatDateKey(targetDate),
+            dayLabel: `${month}月${day}日`
+        };
+    }
+
+    function readDailyGainSnapshot() {
+        try {
+            const raw = localStorage.getItem(DAILY_GAIN_CACHE_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function saveDailyGainSnapshot(snapshot) {
+        try {
+            localStorage.setItem(DAILY_GAIN_CACHE_KEY, JSON.stringify(snapshot));
+        } catch (_) {
+            // ignore storage exceptions
+        }
+    }
+
+    function applyDailyGainLabels(dayLabel) {
+        const estimatedGainLabel = document.getElementById('estimatedGainLabel');
+        const actualGainLabel = document.getElementById('actualGainLabel');
+        const toolbarEstimatedGainLabel = document.getElementById('toolbarEstimatedGainLabel');
+
+        if (estimatedGainLabel) {
+            estimatedGainLabel.textContent = `${dayLabel}预估收益`;
+        }
+        if (actualGainLabel) {
+            actualGainLabel.textContent = `${dayLabel}实际收益`;
+        }
+        if (toolbarEstimatedGainLabel) {
+            toolbarEstimatedGainLabel.textContent = `${dayLabel}收益估计`;
+        }
+    }
+
+    function applySummaryPanelsVisibility() {
+        const summaryDiv = document.getElementById('positionSummary');
+        const fundDetailsDiv = document.getElementById('fundDetailsSummary');
+        const shouldShowSummary = window.summaryPanelsExpanded && window.summaryPanelsHasData;
+        const shouldShowDetails = window.summaryPanelsExpanded && window.summaryPanelsHasDetails;
+
+        if (summaryDiv) {
+            summaryDiv.style.display = shouldShowSummary ? 'block' : 'none';
+        }
+        if (fundDetailsDiv) {
+            fundDetailsDiv.style.display = shouldShowDetails ? 'block' : 'none';
+        }
+    }
+
+    function initSummaryPanelsToggleByToolbarEstimate() {
+        const toolbarEstimatedGainEl = document.getElementById('toolbarEstimatedGain');
+        const toolbarEstimatedGainPctEl = document.getElementById('toolbarEstimatedGainPct');
+        const toolbarEstimatedGainWrap = document.getElementById('toolbarEstimatedGainWrap');
+        if (!toolbarEstimatedGainEl || !toolbarEstimatedGainPctEl) return;
+        if (toolbarEstimatedGainEl.dataset.summaryToggleBound === '1') return;
+
+        const toggle = () => {
+            if (!window.summaryPanelsHasData) {
+                return;
+            }
+            window.summaryPanelsExpanded = !window.summaryPanelsExpanded;
+            applySummaryPanelsVisibility();
+        };
+
+        [toolbarEstimatedGainEl, toolbarEstimatedGainPctEl].forEach((node) => {
+            node.style.cursor = 'pointer';
+            node.style.textDecoration = 'underline';
+            node.style.textDecorationStyle = 'dotted';
+            node.title = '点击展开/折叠持仓统计与涨跌明细';
+            node.addEventListener('click', toggle);
+        });
+
+        if (toolbarEstimatedGainWrap) {
+            toolbarEstimatedGainWrap.title = '点击收益估计值展开/折叠明细';
+        }
+
+        toolbarEstimatedGainEl.dataset.summaryToggleBound = '1';
+    }
+
     // 计算并显示持仓统计
     function calculatePositionSummary() {
         let totalValue = 0;
         let estimatedGain = 0;
         let actualGain = 0;
         let settledValue = 0;
-        const today = new Date().toISOString().split('T')[0];
+        const summaryDateContext = getPortfolioSummaryDateContext();
+        const targetDate = summaryDateContext.dateKey;
+        applyDailyGainLabels(summaryDateContext.dayLabel);
+
+        const parseFirstNumber = (text, opts = {}) => {
+            const { isPercent = false } = opts;
+            const raw = String(text || '').replace(/,/g, '');
+            const pattern = isPercent
+                ? /[-+]?\d+(?:\.\d+)?(?=%)/
+                : /[-+]?\d+(?:\.\d+)?/;
+            const match = raw.match(pattern);
+            if (!match) return null;
+            const value = Number(match[0]);
+            return Number.isFinite(value) ? value : null;
+        };
+
+        const countHeldFunds = () => {
+            let heldCount = 0;
+            if (!window.fundSharesData) return heldCount;
+            for (const code in window.fundSharesData) {
+                if (window.fundSharesData[code] > 0) {
+                    heldCount++;
+                }
+            }
+            return heldCount;
+        };
 
         // 存储每个基金的详细涨跌信息
         const fundDetailsData = [];
@@ -990,29 +1415,32 @@ document.addEventListener('DOMContentLoaded', function() {
             const cells = row.querySelectorAll('td');
             if (cells.length < 9) return;
 
-            // 获取基金代码（第一列）
-            const codeCell = cells[0];
-            const fundCode = codeCell.textContent.trim();
+            // 兼容当前表格结构：优先使用 data-code，再回退到第二列纯代码
+            const nameNode = row.querySelector('.fund-name-cell[data-code]');
+            const fundCode = String(nameNode?.dataset?.code || cells[1]?.textContent || '').trim();
+            if (!fundCode) return;
 
             // 从全局数据获取份额
             const shares = (window.fundSharesData && window.fundSharesData[fundCode]) || 0;
             if (shares <= 0) return;
 
             try {
-                // 获取基金名称（第二列，索引1），使用 innerHTML 保留 HTML 标签（如板块标签样式）
-                const fundName = cells[1].innerHTML.trim();
+                // 获取基金名称（第三列，索引2），优先保留 fund-name-cell 的 innerHTML
+                const fundName = nameNode ? nameNode.innerHTML.trim() : cells[2].innerHTML.trim();
 
-                // 解析净值 "1.234" (第八列，索引7)
-                const netValueText = cells[7].textContent.trim();
-                const netValue = parseFloat(netValueText);
-                if (!isFinite(netValue)) return;
+                const positionNode = row.querySelector(`.fund-position-amount-cell[data-code="${fundCode}"]`);
+                const estimateNode = row.querySelector(`.fund-estimate-cell[data-code="${fundCode}"]`);
+                if (!positionNode) return;
+
+                const positionValue = parseFirstNumber(positionNode.textContent);
+                const estimatedGrowth = parseFirstNumber(estimateNode.textContent, { isPercent: true });
+                if (positionValue == null || positionValue <= 0) return;
 
                 // 净值日期从“日涨幅”单元格副文本中提取（格式示例：03-13 或 2026-03-13）
                 const dayGrowthFullText = cells[4].textContent.trim();
                 const fullDateMatch = dayGrowthFullText.match(/(\d{4}-\d{2}-\d{2})/);
                 const shortDateMatch = dayGrowthFullText.match(/(\d{2}-\d{2})/);
                 let netValueDate = fullDateMatch ? fullDateMatch[1] : (shortDateMatch ? shortDateMatch[1] : '');
-                if (!netValueDate) return;
 
                 // 处理净值日期格式：API可能返回"MM-DD"或"YYYY-MM-DD"
                 // 如果是"MM-DD"格式，添加当前年份
@@ -1021,28 +1449,22 @@ document.addEventListener('DOMContentLoaded', function() {
                     netValueDate = `${currentYear}-${netValueDate}`;
                 }
 
-                // 解析估值增长率 (第四列，索引3)
-                const estimatedGrowthText = cells[3].textContent.trim();
-                const estimatedGrowth = estimatedGrowthText !== 'N/A' ?
-                    parseFloat(estimatedGrowthText.replace('%', '')) : 0;
-
                 // 解析日涨幅 (第五列，索引4)
                 const dayGrowthText = cells[4].textContent.trim();
                 const dayGrowth = dayGrowthText !== 'N/A' ?
                     parseFloat(dayGrowthText.replace('%', '')) : 0;
 
-                // 计算持仓市值
-                const positionValue = shares * netValue;
                 totalValue += positionValue;
 
                 // 计算预估涨跌（始终计算）
-                const fundEstimatedGain = positionValue * estimatedGrowth / 100;
+                const fundEstimatedGain = estimatedGrowth == null ? 0 : (positionValue * estimatedGrowth / 100);
                 estimatedGain += fundEstimatedGain;
 
                 // 计算实际涨跌
                 // 逻辑：只有当净值日期是今天时（今日净值已更新），才计算实际涨跌
                 let fundActualGain = 0;
-                if (netValueDate === today) {
+                const isSettledToday = netValueDate === targetDate;
+                if (isSettledToday) {
                     // 今日净值已更新，计算实际收益
                     fundActualGain = positionValue * dayGrowth / 100;
                     actualGain += fundActualGain;
@@ -1061,7 +1483,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     estimatedGain: fundEstimatedGain,
                     estimatedGainPct: estimatedGrowth,
                     actualGain: fundActualGain,
-                    actualGainPct: netValueDate === today ? dayGrowth : 0,
+                    actualGainPct: isSettledToday ? dayGrowth : 0,
                     sectors: sectors
                 });
             } catch (e) {
@@ -1071,13 +1493,35 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // 保存基金明细数据到全局变量，供炫耀卡片使用
         window.fundDetailsData = fundDetailsData;
+        window.summaryPanelsHasData = totalValue > 0;
+        window.summaryPanelsHasDetails = fundDetailsData.length > 0;
+        applySummaryPanelsVisibility();
+        initSummaryPanelsToggleByToolbarEstimate();
 
-        // 显示或隐藏持仓统计区域 (旧版布局)
-        const summaryDiv = document.getElementById('positionSummary');
-        if (summaryDiv && totalValue > 0) {
-            summaryDiv.style.display = 'block';
-        } else if (summaryDiv) {
-            summaryDiv.style.display = 'none';
+        let displayEstimatedGain = estimatedGain;
+        let displayActualGain = actualGain;
+        let displaySettledValue = settledValue;
+        let displayEstimatedGainPct = totalValue > 0 ? (estimatedGain / totalValue * 100) : 0;
+        let displayActualGainPct = settledValue > 0 ? (actualGain / settledValue * 100) : 0;
+
+        if (summaryDateContext.inUpdateWindow) {
+            saveDailyGainSnapshot({
+                dateKey: targetDate,
+                estimatedGain: estimatedGain,
+                estimatedGainPct: displayEstimatedGainPct,
+                actualGain: actualGain,
+                actualGainPct: displayActualGainPct,
+                settledValue: settledValue,
+            });
+        } else {
+            const cached = readDailyGainSnapshot();
+            if (cached && cached.dateKey === targetDate) {
+                displayEstimatedGain = Number(cached.estimatedGain) || 0;
+                displayEstimatedGainPct = Number(cached.estimatedGainPct) || 0;
+                displayActualGain = Number(cached.actualGain) || 0;
+                displayActualGainPct = Number(cached.actualGainPct) || 0;
+                displaySettledValue = Number(cached.settledValue) || 0;
+            }
         }
 
         // 更新持仓基金页面的汇总数据 (始终执行)
@@ -1095,37 +1539,55 @@ document.addEventListener('DOMContentLoaded', function() {
         const estimatedGainEl = document.getElementById('estimatedGain');
         const estimatedGainPctEl = document.getElementById('estimatedGainPct');
         if (estimatedGainEl && estimatedGainPctEl) {
-            const estGainPct = totalValue > 0 ? (estimatedGain / totalValue * 100) : 0;
-            const estSign = estimatedGain >= 0 ? '+' : '';
+            const estGainPct = displayEstimatedGainPct;
+            const estSign = displayEstimatedGain >= 0 ? '+' : '';
             const sensitiveSpan = estimatedGainEl.querySelector('.sensitive-value');
             if (sensitiveSpan) {
-                sensitiveSpan.className = estimatedGain >= 0 ? 'sensitive-value positive' : 'sensitive-value negative';
+                sensitiveSpan.className = displayEstimatedGain >= 0 ? 'sensitive-value positive' : 'sensitive-value negative';
             }
             const realValueSpan = estimatedGainEl.querySelector('.real-value');
             if (realValueSpan) {
-                realValueSpan.textContent = `${estSign}¥${Math.abs(estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                realValueSpan.textContent = `${estSign}¥${Math.abs(displayEstimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
             }
             estimatedGainPctEl.textContent = ` (${estSign}${estGainPct.toFixed(2)}%)`;
-            estimatedGainPctEl.style.color = estimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
+            estimatedGainPctEl.style.color = displayEstimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
+        }
+
+        const toolbarEstimatedGainEl = document.getElementById('toolbarEstimatedGain');
+        const toolbarEstimatedGainPctEl = document.getElementById('toolbarEstimatedGainPct');
+        if (toolbarEstimatedGainEl && toolbarEstimatedGainPctEl) {
+            if (totalValue > 0) {
+                const estGainPct = displayEstimatedGainPct;
+                const estSign = displayEstimatedGain >= 0 ? '+' : '';
+                toolbarEstimatedGainEl.textContent = `${estSign}¥${Math.abs(displayEstimatedGain).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                toolbarEstimatedGainEl.style.color = displayEstimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
+                toolbarEstimatedGainPctEl.textContent = `${estSign}${estGainPct.toFixed(2)}%`;
+                toolbarEstimatedGainPctEl.style.color = displayEstimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
+            } else {
+                toolbarEstimatedGainEl.textContent = '--';
+                toolbarEstimatedGainEl.style.color = 'var(--text-main)';
+                toolbarEstimatedGainPctEl.textContent = '--';
+                toolbarEstimatedGainPctEl.style.color = 'var(--text-dim)';
+            }
         }
 
         // 更新今日实际（只有当有基金净值更新至今日时才显示数值）
         const actualGainEl = document.getElementById('actualGain');
         const actualGainPctEl = document.getElementById('actualGainPct');
         if (actualGainEl && actualGainPctEl) {
-            if (settledValue > 0) {
-                const actGainPct = (actualGain / settledValue * 100);
-                const actSign = actualGain >= 0 ? '+' : '';
+            if (displaySettledValue > 0) {
+                const actGainPct = displayActualGainPct;
+                const actSign = displayActualGain >= 0 ? '+' : '';
                 const sensitiveSpan = actualGainEl.querySelector('.sensitive-value');
                 if (sensitiveSpan) {
-                    sensitiveSpan.className = actualGain >= 0 ? 'sensitive-value positive' : 'sensitive-value negative';
+                    sensitiveSpan.className = displayActualGain >= 0 ? 'sensitive-value positive' : 'sensitive-value negative';
                 }
                 const realValueSpan = actualGainEl.querySelector('.real-value');
                 if (realValueSpan) {
-                    realValueSpan.textContent = `${actSign}¥${Math.abs(actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                    realValueSpan.textContent = `${actSign}¥${Math.abs(displayActualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
                 }
                 actualGainPctEl.textContent = ` (${actSign}${actGainPct.toFixed(2)}%)`;
-                actualGainPctEl.style.color = actualGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
+                actualGainPctEl.style.color = displayActualGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
             } else {
                 const sensitiveSpan = actualGainEl.querySelector('.sensitive-value');
                 if (sensitiveSpan) {
@@ -1142,25 +1604,16 @@ document.addEventListener('DOMContentLoaded', function() {
         // 更新持仓数量
         const holdCountEl = document.getElementById('holdCount');
         if (holdCountEl) {
-            // 从全局数据计算持仓数量
-            let heldCount = 0;
-            if (window.fundSharesData) {
-                for (const code in window.fundSharesData) {
-                    if (window.fundSharesData[code] > 0) {
-                        heldCount++;
-                    }
-                }
-            }
-            holdCountEl.textContent = heldCount + ' 只';
+            holdCountEl.textContent = countHeldFunds() + ' 只';
         }
 
         // 填充分基金明细表格
         const fundDetailsDiv = document.getElementById('fundDetailsSummary');
         if (fundDetailsDiv && fundDetailsData.length > 0) {
-            fundDetailsDiv.style.display = 'block';
             const tableBody = document.getElementById('fundDetailsTableBody');
             if (tableBody) {
                 tableBody.innerHTML = fundDetailsData.map(fund => {
+                    const hasEstimate = Number.isFinite(fund.estimatedGainPct);
                     const estColor = fund.estimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
                     const actColor = fund.actualGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
                     const estSign = fund.estimatedGain >= 0 ? '+' : '';
@@ -1172,30 +1625,20 @@ document.addEventListener('DOMContentLoaded', function() {
                             <td style="padding: 10px; text-align: center; vertical-align: middle; color: var(--text-main); white-space: nowrap; min-width: 120px;">${fund.name}</td>
                             <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: var(--text-main);"><span class="real-value">${fund.shares.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
                             <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); font-weight: 600; color: var(--text-main);"><span class="real-value">¥${fund.positionValue.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
-                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${estColor}; font-weight: 500;"><span class="real-value">¥${Math.abs(fund.estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
-                            <td style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${estColor}; font-weight: 500;">${estSign}${fund.estimatedGainPct.toFixed(2)}%</td>
+                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${hasEstimate ? estColor : 'var(--text-dim)'}; font-weight: 500;"><span class="real-value">${hasEstimate ? `¥${Math.abs(fund.estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}` : '--'}</span><span class="hidden-value">****</span></td>
+                            <td style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${hasEstimate ? estColor : 'var(--text-dim)'}; font-weight: 500;">${hasEstimate ? `${estSign}${fund.estimatedGainPct.toFixed(2)}%` : '--'}</td>
                             <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${actColor}; font-weight: 500;"><span class="real-value">¥${Math.abs(fund.actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
                             <td style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${actColor}; font-weight: 500;">${actSign}${fund.actualGainPct.toFixed(2)}%</td>
                         </tr>
                     `;
                 }).join('');
             }
-        } else if (fundDetailsDiv) {
-            fundDetailsDiv.style.display = 'none';
         }
 
         // Update new summary bar if it exists (sidebar layout)
         const summaryBar = document.getElementById('summaryBar');
         if (summaryBar) {
-            // Count held funds from global data
-            let heldCount = 0;
-            if (window.fundSharesData) {
-                for (const code in window.fundSharesData) {
-                    if (window.fundSharesData[code] > 0) {
-                        heldCount++;
-                    }
-                }
-            }
+            const heldCount = countHeldFunds();
 
             // Update total value
             const summaryTotalValue = document.getElementById('summaryTotalValue');
@@ -1215,34 +1658,34 @@ document.addEventListener('DOMContentLoaded', function() {
             // Update estimated gain
             const summaryEstGain = document.getElementById('summaryEstGain');
             if (summaryEstGain) {
-                const estSign = estimatedGain >= 0 ? '+' : '';
-                summaryEstGain.textContent = `${estSign}¥${Math.abs(estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                const estSign = displayEstimatedGain >= 0 ? '+' : '';
+                summaryEstGain.textContent = `${estSign}¥${Math.abs(displayEstimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
             }
 
             // Update estimated change
             const summaryEstChange = document.getElementById('summaryEstChange');
             if (summaryEstChange) {
-                const estGainPct = totalValue > 0 ? (estimatedGain / totalValue * 100) : 0;
-                const estSign = estimatedGain >= 0 ? '+' : '';
+                const estGainPct = displayEstimatedGainPct;
+                const estSign = displayEstimatedGain >= 0 ? '+' : '';
                 summaryEstChange.textContent = `${estSign}${estGainPct.toFixed(2)}%`;
-                summaryEstChange.className = 'summary-change ' + (estimatedGain >= 0 ? 'positive' : 'negative');
+                summaryEstChange.className = 'summary-change ' + (displayEstimatedGain >= 0 ? 'positive' : 'negative');
             }
 
             // Update actual gain
             const summaryActualGain = document.getElementById('summaryActualGain');
             if (summaryActualGain) {
-                const actSign = actualGain >= 0 ? '+' : '';
-                summaryActualGain.textContent = `${actSign}¥${Math.abs(actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                const actSign = displayActualGain >= 0 ? '+' : '';
+                summaryActualGain.textContent = `${actSign}¥${Math.abs(displayActualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
             }
 
             // Update actual change
             const summaryActualChange = document.getElementById('summaryActualChange');
             if (summaryActualChange) {
-                if (settledValue > 0) {
-                    const actGainPct = (actualGain / settledValue * 100);
-                    const actSign = actualGain >= 0 ? '+' : '';
+                if (displaySettledValue > 0) {
+                    const actGainPct = displayActualGainPct;
+                    const actSign = displayActualGain >= 0 ? '+' : '';
                     summaryActualChange.textContent = `${actSign}${actGainPct.toFixed(2)}%`;
-                    summaryActualChange.className = 'summary-change ' + (actualGain >= 0 ? 'positive' : 'negative');
+                    summaryActualChange.className = 'summary-change ' + (displayActualGain >= 0 ? 'positive' : 'negative');
                 } else {
                     summaryActualChange.textContent = '0.00%';
                     summaryActualChange.className = 'summary-change neutral';
@@ -1287,19 +1730,158 @@ document.addEventListener('DOMContentLoaded', function() {
     let currentBackfillFundCode = null;
     let currentBackfillFetchToken = 0;
     let currentBackfillNetValueLoading = false;
+    let currentBackfillView = 'trade';
     let currentTransactionFundCode = null;
 
+    function getBackfillActionButtons() {
+        return {
+            buyBtn: document.getElementById('backfillModalBuyBtn'),
+            sellBtn: document.getElementById('backfillModalSellBtn'),
+            dividendBtn: document.getElementById('backfillModalDividendBtn'),
+        };
+    }
+
     function updateBackfillSubmitButtonsState() {
-        const buyBtn = document.getElementById('backfillModalBuyBtn');
-        const sellBtn = document.getElementById('backfillModalSellBtn');
+        const { buyBtn, sellBtn, dividendBtn } = getBackfillActionButtons();
         const netValueInput = document.getElementById('backfillNetValue');
-        if (!buyBtn || !sellBtn || !netValueInput) return;
+        if (!netValueInput) return;
 
         const netValue = parseFloat(String(netValueInput.value || '').trim());
         const hasValidNetValue = Number.isFinite(netValue) && netValue > 0;
-        const shouldDisable = currentBackfillNetValueLoading || !hasValidNetValue;
-        buyBtn.disabled = shouldDisable;
-        sellBtn.disabled = shouldDisable;
+        const isDividendView = currentBackfillView === 'dividend';
+        const shouldDisableBuySell = currentBackfillNetValueLoading || !hasValidNetValue;
+        if (buyBtn) buyBtn.disabled = isDividendView || shouldDisableBuySell;
+        if (sellBtn) sellBtn.disabled = isDividendView || shouldDisableBuySell;
+        if (dividendBtn) dividendBtn.disabled = !isDividendView;
+    }
+
+    function setBackfillView(view = 'trade') {
+        const isDividendView = view === 'dividend';
+        currentBackfillView = isDividendView ? 'dividend' : 'trade';
+
+        if (isDividendView) {
+            currentBackfillNetValueLoading = false;
+            currentBackfillFetchToken += 1;
+        }
+
+        const topGrid = document.getElementById('backfillTopGrid');
+        const amountSharesGrid = document.getElementById('backfillAmountSharesGrid');
+        const titleEl = document.getElementById('backfillModalTitle');
+        const amountLabel = document.getElementById('backfillAmountLabel');
+        const amountQuickButtons = document.getElementById('backfillAmountQuickButtons');
+        const sharesGroup = document.getElementById('backfillSharesGroup');
+        const netValueGroup = document.getElementById('backfillNetValueGroup');
+        const feeGroup = document.getElementById('backfillFeeGroup');
+        const tradeActions = document.getElementById('backfillTradeActions');
+        const tradeViewBtn = document.getElementById('backfillViewTradeBtn');
+        const dividendViewBtn = document.getElementById('backfillViewDividendBtn');
+        const hint = document.getElementById('backfillNetValueHint');
+        const { dividendBtn } = getBackfillActionButtons();
+
+        if (topGrid) {
+            topGrid.style.gridTemplateColumns = isDividendView ? '1fr' : 'repeat(2, minmax(0, 1fr))';
+        }
+        if (amountSharesGrid) {
+            amountSharesGrid.style.gridTemplateColumns = isDividendView ? '1fr' : 'repeat(2, minmax(0, 1fr))';
+        }
+
+        if (titleEl) {
+            titleEl.textContent = isDividendView ? '补录分红' : '补录交易';
+        }
+        if (amountLabel) {
+            amountLabel.textContent = isDividendView ? '分红金额（元）' : '金额（买入，元）';
+        }
+        if (amountQuickButtons) {
+            amountQuickButtons.style.display = isDividendView ? 'none' : 'flex';
+        }
+        if (sharesGroup) {
+            sharesGroup.style.display = isDividendView ? 'none' : '';
+        }
+        if (netValueGroup) {
+            netValueGroup.style.display = isDividendView ? 'none' : '';
+        }
+        if (feeGroup) {
+            feeGroup.style.display = isDividendView ? 'none' : '';
+        }
+        if (tradeActions) {
+            tradeActions.style.display = isDividendView ? 'none' : 'flex';
+        }
+        if (dividendBtn) {
+            dividendBtn.style.display = isDividendView ? '' : 'none';
+            dividendBtn.textContent = '补录分红';
+        }
+        if (tradeViewBtn) {
+            tradeViewBtn.className = isDividendView ? 'btn btn-secondary' : 'btn btn-primary';
+        }
+        if (dividendViewBtn) {
+            dividendViewBtn.className = isDividendView ? 'btn btn-primary' : 'btn btn-secondary';
+        }
+        if (hint) {
+            hint.textContent = isDividendView
+                ? '分红模式：无需净值和手续费'
+                : '选择日期后将尝试自动填充净值（若趋势数据可用）';
+            hint.style.color = 'var(--text-dim)';
+        }
+
+        updateBackfillSubmitButtonsState();
+        updateBackfillSharesPreview();
+    }
+
+    window.setBackfillView = setBackfillView;
+
+    function updateBackfillSharesPreview() {
+        const amountInput = document.getElementById('backfillAmount');
+        const feeInput = document.getElementById('backfillFee');
+        const netValueInput = document.getElementById('backfillNetValue');
+        const sharesInput = document.getElementById('backfillShares');
+        const sharesLabel = document.getElementById('backfillSharesLabel');
+        if (!amountInput || !feeInput || !netValueInput || !sharesInput || !sharesLabel) return;
+
+        sharesLabel.textContent = '份额（卖出填写 / 买入参考）';
+
+        const amountText = String(amountInput.value || '').trim();
+        const feeText = String(feeInput.value || '').trim();
+        const netValue = parseFloat(String(netValueInput.value || '').trim());
+        const amount = amountText === '' ? NaN : parseFloat(amountText);
+        const fee = feeText === '' ? 0 : parseFloat(feeText);
+
+        // 合并模式：输入金额时自动折算买入参考份额；未输入金额时允许手工输入卖出份额。
+        if (amountText !== '') {
+            sharesInput.placeholder = '买入金额自动折算，仅供查验';
+            if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(fee) || fee < 0 || !Number.isFinite(netValue) || netValue <= 0) {
+                sharesInput.value = '';
+                return;
+            }
+            const buyBaseAmount = amount - fee;
+            if (buyBaseAmount <= 0) {
+                sharesInput.value = '0.00';
+                return;
+            }
+            sharesInput.value = (buyBaseAmount / netValue).toFixed(2);
+            return;
+        }
+
+        sharesInput.placeholder = '卖出时填写，例如 123.45';
+    }
+
+    window.setBackfillMode = function(_mode = 'buy') {
+        setBackfillView(_mode === 'dividend' ? 'dividend' : 'trade');
+    };
+
+    function getBackfillTradeDateValue() {
+        const dateInput = document.getElementById('backfillTradeDate');
+        return String(dateInput?.value || '').trim();
+    }
+
+    function setBackfillTradeDateValue(dateText) {
+        const dateInput = document.getElementById('backfillTradeDate');
+        const match = String(dateText || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!dateInput) return;
+        if (!match) {
+            dateInput.value = '';
+            return;
+        }
+        dateInput.value = `${match[1]}-${match[2]}-${match[3]}`;
     }
 
     window.openTradeModal = function(action, fundCode) {
@@ -1429,6 +2011,12 @@ document.addEventListener('DOMContentLoaded', function() {
         const nameEl = document.getElementById('transactionModalFundName');
         const hintEl = document.getElementById('transactionModalHint');
         const tbody = document.getElementById('transactionModalTbody');
+        const holdingGainEl = document.getElementById('transactionHoldingGain');
+        const holdingReturnEl = document.getElementById('transactionHoldingReturn');
+        const holdingDaysEl = document.getElementById('transactionHoldingDays');
+        const totalFeeEl = document.getElementById('transactionTotalFee');
+        const totalGainEl = document.getElementById('transactionTotalGain');
+        const totalReturnEl = document.getElementById('transactionTotalReturn');
         if (!modal || !codeEl || !hintEl || !tbody) {
             alert('交易记录弹窗未初始化，请刷新页面后重试');
             return;
@@ -1442,6 +2030,28 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         hintEl.textContent = '正在加载交易记录...';
         hintEl.style.color = 'var(--text-dim)';
+        if (holdingGainEl) {
+            holdingGainEl.textContent = '--';
+            holdingGainEl.style.color = 'var(--text-main)';
+        }
+        if (holdingReturnEl) {
+            holdingReturnEl.textContent = '--';
+            holdingReturnEl.style.color = 'var(--text-main)';
+        }
+        if (holdingDaysEl) {
+            holdingDaysEl.textContent = '--';
+        }
+        if (totalFeeEl) {
+            totalFeeEl.textContent = '--';
+        }
+        if (totalGainEl) {
+            totalGainEl.textContent = '--';
+            totalGainEl.style.color = 'var(--text-main)';
+        }
+        if (totalReturnEl) {
+            totalReturnEl.textContent = '--';
+            totalReturnEl.style.color = 'var(--text-main)';
+        }
         tbody.innerHTML = '<tr><td colspan="8" style="padding:12px;text-align:center;color:var(--text-dim);">加载中...</td></tr>';
 
         modal.classList.add('active');
@@ -1450,10 +2060,18 @@ document.addEventListener('DOMContentLoaded', function() {
 
     window.closeTransactionModal = function() {
         const modal = document.getElementById('transactionModal');
+        const modalBody = document.getElementById('transactionModalBody');
+        const tableWrap = document.getElementById('transactionModalTableWrap');
         const tbody = document.getElementById('transactionModalTbody');
         const hintEl = document.getElementById('transactionModalHint');
         if (modal) {
             modal.classList.remove('active');
+        }
+        if (modalBody) {
+            modalBody.scrollTop = 0;
+        }
+        if (tableWrap) {
+            tableWrap.scrollTop = 0;
         }
         if (tbody) {
             tbody.innerHTML = '';
@@ -1470,7 +2088,115 @@ document.addEventListener('DOMContentLoaded', function() {
         const fundCode = currentTransactionFundCode;
         const hintEl = document.getElementById('transactionModalHint');
         const tbody = document.getElementById('transactionModalTbody');
+        const holdingGainEl = document.getElementById('transactionHoldingGain');
+        const holdingReturnEl = document.getElementById('transactionHoldingReturn');
+        const holdingDaysEl = document.getElementById('transactionHoldingDays');
+        const totalFeeEl = document.getElementById('transactionTotalFee');
+        const totalGainEl = document.getElementById('transactionTotalGain');
+        const totalReturnEl = document.getElementById('transactionTotalReturn');
         if (!hintEl || !tbody) return;
+
+        const parseNumberFromText = (text) => {
+            const raw = String(text || '').replace(/,/g, '').trim();
+            const match = raw.match(/[-+]?\d+(?:\.\d+)?/);
+            return match ? Number(match[0]) : null;
+        };
+
+        const updateTransactionSummary = (rows) => {
+            const safeRows = Array.isArray(rows) ? rows : [];
+
+            // 总手续费：当前基金全部交易记录手续费之和
+            const totalFee = safeRows.reduce((sum, item) => sum + (Number(item?.fee || 0) || 0), 0);
+            if (totalFeeEl) {
+                totalFeeEl.textContent = `¥${totalFee.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            }
+
+            // 现金流口径：买入为资金流出，卖出/分红为资金流入
+            const totalBuy = safeRows.reduce((sum, item) => {
+                if (String(item?.tx_type || '').toLowerCase() !== 'buy') return sum;
+                return sum + (Number(item?.amount || 0) || 0);
+            }, 0);
+            const totalSell = safeRows.reduce((sum, item) => {
+                if (String(item?.tx_type || '').toLowerCase() !== 'sell') return sum;
+                return sum + (Number(item?.amount || 0) || 0);
+            }, 0);
+            const totalDividend = safeRows.reduce((sum, item) => {
+                if (String(item?.tx_type || '').toLowerCase() !== 'dividend') return sum;
+                return sum + (Number(item?.amount || 0) || 0);
+            }, 0);
+
+            const positionNode = document.querySelector(`.fund-position-amount-cell[data-code="${fundCode}"]`);
+            const positionText = positionNode ? positionNode.textContent.trim() : '';
+            const positionValue = parseNumberFromText(positionText) || 0;
+
+            // 总收益 = 累计卖出 + 累计分红 + 当前持仓市值 - 累计买入
+            const totalGain = totalSell + totalDividend + positionValue - totalBuy;
+            // 总收益率 = 总收益 / 累计买入
+            const totalReturn = totalBuy > 0 ? (totalGain / totalBuy * 100) : null;
+
+            if (totalGainEl) {
+                totalGainEl.textContent = `${totalGain >= 0 ? '+' : '-'}¥${Math.abs(totalGain).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                totalGainEl.style.color = totalGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
+            }
+            if (totalReturnEl) {
+                totalReturnEl.textContent = totalReturn == null ? '--' : `${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%`;
+                totalReturnEl.style.color = totalReturn == null ? 'var(--text-main)' : (totalReturn >= 0 ? 'var(--up-color)' : 'var(--down-color)');
+            }
+
+            const ascRows = [...safeRows].reverse();
+            if (holdingDaysEl) {
+                const cycles = [];
+                let prevShares = 0;
+                let openStartDate = null;
+
+                ascRows.forEach((item) => {
+                    const sharesAfter = Number(item?.holding_shares_after || 0);
+                    const txTime = String(item?.tx_time || '');
+                    const txDate = /^\d{4}-\d{2}-\d{2}/.test(txTime) ? txTime.slice(0, 10) : '';
+
+                    if (prevShares <= 1e-6 && sharesAfter > 1e-6 && txDate) {
+                        openStartDate = txDate;
+                    }
+
+                    if (prevShares > 1e-6 && sharesAfter <= 1e-6 && openStartDate && txDate) {
+                        cycles.push({ start: openStartDate, end: txDate });
+                        openStartDate = null;
+                    }
+
+                    prevShares = sharesAfter;
+                });
+
+                if (openStartDate) {
+                    holdingDaysEl.textContent = `${openStartDate} - 当前`;
+                } else if (cycles.length > 0) {
+                    const lastCycle = cycles[cycles.length - 1];
+                    holdingDaysEl.textContent = `${lastCycle.start} - ${lastCycle.end}`;
+                } else {
+                    holdingDaysEl.textContent = '--';
+                }
+            }
+
+            const gainNode = document.querySelector(`.fund-position-gain-cell[data-code="${fundCode}"]`);
+            const gainText = gainNode ? gainNode.textContent.trim() : '';
+            const gainValue = parseNumberFromText(gainText);
+            if (holdingGainEl) {
+                holdingGainEl.textContent = gainValue == null
+                    ? '--'
+                    : `${gainValue >= 0 ? '+' : '-'}¥${Math.abs(gainValue).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                holdingGainEl.style.color = gainValue == null ? 'var(--text-main)' : (gainValue >= 0 ? 'var(--up-color)' : 'var(--down-color)');
+            }
+
+            const rowNode = document.querySelector(`.fund-name-cell[data-code="${fundCode}"]`)?.closest('tr');
+            const holdingRateCellText = rowNode?.cells?.[8]?.textContent || '';
+            const holdingRateLine = String(holdingRateCellText).split('\n').map(s => s.trim()).find(s => s.includes('%')) || '';
+            const holdingRateValue = parseNumberFromText(holdingRateLine);
+            if (holdingReturnEl) {
+                holdingReturnEl.textContent = holdingRateValue == null
+                    ? '--'
+                    : `${holdingRateValue >= 0 ? '+' : ''}${holdingRateValue.toFixed(2)}%`;
+                holdingReturnEl.style.color = holdingRateValue == null ? 'var(--text-main)' : (holdingRateValue >= 0 ? 'var(--up-color)' : 'var(--down-color)');
+            }
+        };
 
         try {
             const response = await fetch(`/api/fund/transactions?code=${encodeURIComponent(fundCode)}`);
@@ -1482,6 +2208,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 hintEl.textContent = result.message || '加载交易记录失败';
                 hintEl.style.color = 'var(--down-color)';
                 tbody.innerHTML = '<tr><td colspan="8" style="padding:12px;text-align:center;color:var(--text-dim);">暂无数据</td></tr>';
+                updateTransactionSummary([]);
                 return;
             }
 
@@ -1490,16 +2217,20 @@ document.addEventListener('DOMContentLoaded', function() {
                 hintEl.textContent = '暂无交易记录';
                 hintEl.style.color = 'var(--text-dim)';
                 tbody.innerHTML = '<tr><td colspan="8" style="padding:12px;text-align:center;color:var(--text-dim);">暂无交易记录</td></tr>';
+                updateTransactionSummary([]);
                 return;
             }
 
             hintEl.textContent = `共 ${rows.length} 条记录（按时间从新到旧）`;
             hintEl.style.color = 'var(--text-dim)';
+            updateTransactionSummary(rows);
             tbody.innerHTML = rows.map((item) => {
                 const txId = Number(item.id || 0);
                 const txType = String(item.tx_type || '').toLowerCase();
-                const txTypeColor = txType === 'buy' ? 'var(--up-color)' : 'var(--down-color)';
-                const txTypeText = txType === 'buy' ? '买入' : '卖出';
+                const txTypeColor = txType === 'buy'
+                    ? 'var(--up-color)'
+                    : (txType === 'sell' ? 'var(--down-color)' : 'var(--text-main)');
+                const txTypeText = txType === 'buy' ? '买入' : (txType === 'sell' ? '卖出' : '分红');
                 const amount = Number(item.amount || 0);
                 const shares = Number(item.shares || 0);
                 const netValue = item.net_value == null ? '-' : Number(item.net_value).toFixed(4);
@@ -1507,6 +2238,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 const avgCostAfter = item.avg_cost_after == null ? '-' : Number(item.avg_cost_after).toFixed(4);
                 const txTime = String(item.tx_time || '');
                 const txDate = /^\d{4}-\d{2}-\d{2}/.test(txTime) ? txTime.slice(0, 10) : txTime;
+                const isDividend = txType === 'dividend';
+                const referenceAmount = !isDividend && netValue !== '-'
+                    ? ((txType === 'sell' ? (shares * Number(netValue) - fee) : (shares * Number(netValue) + fee)))
+                    : null;
+                const referenceText = referenceAmount == null
+                    ? ''
+                    : `${txType === 'sell' ? '到账参考' : '确认金额参考'}：¥${referenceAmount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
                 const escapedTxTime = txTime
                     .replace(/&/g, '&amp;')
                     .replace(/</g, '&lt;')
@@ -1522,16 +2260,19 @@ document.addEventListener('DOMContentLoaded', function() {
                             <span style="font-size: 12px; white-space: nowrap;">${txTypeText}</span>
                         </td>
                         <td style="padding: 8px; border-top: 1px solid var(--border); text-align: right;">
-                            <input id="tx_amount_${txId}" type="number" step="0.01" min="0" value="${amount.toFixed(2)}" oninput="recalculateTransactionShares(${txId})" style="width: 110px; text-align: right; padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); color: var(--text-main);">
+                            <input id="tx_amount_${txId}" type="number" step="0.01" min="0" value="${amount.toFixed(2)}" style="width: 110px; text-align: right; padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); color: var(--text-main);">
+                            ${referenceText ? `<div id="tx_amount_ref_${txId}" style="margin-top:4px; font-size:11px; color:var(--text-dim); white-space:nowrap;">${referenceText}</div>` : ''}
                         </td>
                         <td style="padding: 8px; border-top: 1px solid var(--border); text-align: right;">
-                            <span id="tx_shares_${txId}" style="font-family: var(--font-mono); color: var(--text-main);">${shares.toFixed(4)}</span>
+                            ${isDividend
+                                ? '<span style="font-family: var(--font-mono); color: var(--text-dim);">-</span>'
+                                : `<input id="tx_shares_${txId}" type="number" step="0.01" min="0" value="${shares.toFixed(2)}" oninput="updateTransactionReferenceAmount(${txId})" style="width: 90px; text-align: right; padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); color: var(--text-main);">`}
                         </td>
                         <td style="padding: 8px; border-top: 1px solid var(--border); text-align: right;">
-                            <span id="tx_net_${txId}" style="font-family: var(--font-mono); color: var(--text-main);">${netValue === '-' ? '-' : netValue}</span>
+                            <span id="tx_net_${txId}" style="font-family: var(--font-mono); color: ${isDividend ? 'var(--text-dim)' : 'var(--text-main)'};">${netValue === '-' ? '-' : netValue}</span>
                         </td>
                         <td style="padding: 8px; border-top: 1px solid var(--border); text-align: right;">
-                            <input id="tx_fee_${txId}" type="number" step="0.01" min="0" value="${fee.toFixed(2)}" oninput="recalculateTransactionShares(${txId})" style="width: 90px; text-align: right; padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); color: var(--text-main);">
+                            <input id="tx_fee_${txId}" type="number" step="0.01" min="0" value="${fee.toFixed(2)}" ${isDividend ? 'disabled' : ''} oninput="updateTransactionReferenceAmount(${txId})" style="width: 90px; text-align: right; padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); color: var(--text-main);">
                         </td>
                         <td style="padding: 10px; border-top: 1px solid var(--border); text-align: right;">${avgCostAfter}</td>
                         <td style="padding: 10px; border-top: 1px solid var(--border); text-align: center;">
@@ -1550,33 +2291,31 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     };
 
-    window.recalculateTransactionShares = function(transactionId) {
+    window.updateTransactionReferenceAmount = function(transactionId) {
         const txId = Number(transactionId || 0);
         if (!Number.isFinite(txId) || txId <= 0) return;
 
         const row = document.getElementById(`tx_row_${txId}`);
-        const amountInput = document.getElementById(`tx_amount_${txId}`);
-        const feeInput = document.getElementById(`tx_fee_${txId}`);
         const sharesInput = document.getElementById(`tx_shares_${txId}`);
-        if (!row || !amountInput || !feeInput || !sharesInput) return;
+        const feeInput = document.getElementById(`tx_fee_${txId}`);
+        const refEl = document.getElementById(`tx_amount_ref_${txId}`);
+        if (!row || !refEl || !sharesInput || !feeInput) return;
 
-        const netValue = parseFloat(row.dataset.netValue || '0');
         const txType = String(row.dataset.txType || '').toLowerCase();
-        const amount = parseFloat(amountInput.value || '0');
+        if (txType === 'dividend') return;
+
+        const shares = parseFloat(sharesInput.value || '0');
         const fee = parseFloat(feeInput.value || '0');
-
-        if (!Number.isFinite(netValue) || netValue <= 0 || !Number.isFinite(amount) || !Number.isFinite(fee)) {
-            sharesInput.textContent = '0.0000';
+        const netValue = parseFloat(row.dataset.netValue || '0');
+        if (!Number.isFinite(shares) || shares < 0 || !Number.isFinite(fee) || fee < 0 || !Number.isFinite(netValue) || netValue <= 0) {
+            refEl.textContent = txType === 'sell' ? '到账参考：--' : '确认金额参考：--';
             return;
         }
 
-        const grossAmount = txType === 'sell' ? (amount + fee) : (amount - fee);
-        if (grossAmount <= 0) {
-            sharesInput.textContent = '0.0000';
-            return;
-        }
-
-        sharesInput.textContent = (grossAmount / netValue).toFixed(4);
+        const referenceAmount = txType === 'sell'
+            ? (shares * netValue - fee)
+            : (shares * netValue + fee);
+        refEl.textContent = `${txType === 'sell' ? '到账参考' : '确认金额参考'}：¥${Math.max(referenceAmount, 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     };
 
     window.updateFundTransaction = async function(transactionId) {
@@ -1592,29 +2331,32 @@ document.addEventListener('DOMContentLoaded', function() {
         const txTime = String(txRow?.dataset.txTime || '').trim();
         const txType = String(txRow?.dataset.txType || '').trim();
         const amount = parseFloat(document.getElementById(`tx_amount_${txId}`)?.value || '0');
+        const shares = txType === 'dividend' ? 0 : parseFloat(document.getElementById(`tx_shares_${txId}`)?.value || '0');
         const netValue = parseFloat(txRow?.dataset.netValue || '0');
-        const fee = parseFloat(document.getElementById(`tx_fee_${txId}`)?.value || '0');
-        const grossAmount = txType === 'sell' ? (amount + fee) : (amount - fee);
-        const shares = netValue > 0 ? (grossAmount / netValue) : 0;
+        const fee = txType === 'dividend' ? 0 : parseFloat(document.getElementById(`tx_fee_${txId}`)?.value || '0');
 
         if (!txTime) {
             window.showSimpleMessage('交易时间不能为空', 'error');
             return;
         }
-        if (!['buy', 'sell'].includes(txType)) {
+        if (!['buy', 'sell', 'dividend'].includes(txType)) {
             window.showSimpleMessage('交易类型无效', 'error');
             return;
         }
-        if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(netValue) || netValue <= 0) {
-            window.showSimpleMessage('金额和净值都必须大于0', 'error');
+        if (!Number.isFinite(amount) || amount <= 0) {
+            window.showSimpleMessage('金额必须大于0', 'error');
+            return;
+        }
+        if (txType !== 'dividend' && (!Number.isFinite(netValue) || netValue <= 0)) {
+            window.showSimpleMessage('净值必须大于0', 'error');
             return;
         }
         if (!Number.isFinite(fee) || fee < 0) {
             window.showSimpleMessage('手续费必须大于等于0', 'error');
             return;
         }
-        if (!Number.isFinite(grossAmount) || grossAmount <= 0 || !Number.isFinite(shares) || shares <= 0) {
-            window.showSimpleMessage(txType === 'sell' ? '到账金额与手续费之和必须大于0，且计算份额必须大于0' : '金额需大于手续费，且计算份额必须大于0', 'error');
+        if (txType !== 'dividend' && (!Number.isFinite(shares) || shares <= 0)) {
+            window.showSimpleMessage('份额必须大于0', 'error');
             return;
         }
 
@@ -1628,8 +2370,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     tx_time: txTime,
                     tx_type: txType,
                     amount,
-                    shares,
-                    net_value: netValue,
+                    shares: txType === 'dividend' ? 0 : shares,
+                    net_value: txType === 'dividend' ? null : netValue,
                     fee,
                 })
             });
@@ -1711,6 +2453,103 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     };
 
+    window.clearFundTransactionsByCode = async function(fundCode, fundName = '') {
+        const normalizedCode = String(fundCode || '').trim();
+        if (!/^\d{6}$/.test(normalizedCode)) {
+            window.showSimpleMessage('基金代码格式错误，应为6位数字', 'error');
+            return;
+        }
+
+        try {
+            const txResponse = await fetch(`/api/fund/transactions?code=${encodeURIComponent(normalizedCode)}`);
+            const txResult = await txResponse.json();
+            if (!txResult.success) {
+                window.showSimpleMessage(txResult.message || '读取交易记录失败', 'error');
+                return;
+            }
+
+            const rows = Array.isArray(txResult.transactions) ? txResult.transactions : [];
+            if (rows.length === 0) {
+                window.showSimpleMessage('当前基金没有可清空的交易记录', 'info');
+                return;
+            }
+
+            const backupData = {
+                exported_at: new Date().toISOString(),
+                fund_code: normalizedCode,
+                fund_name: fundName,
+                transaction_count: rows.length,
+                transactions: rows,
+            };
+            const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = `${normalizedCode}_transactions_backup_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            URL.revokeObjectURL(url);
+
+            const confirmText = `清空 ${normalizedCode}`;
+            const inputText = window.prompt(
+                `危险操作：将清空 ${normalizedCode}${fundName ? ' ' + fundName : ''} 的全部交易记录。\n已自动下载备份文件。\n\n请输入“${confirmText}”以确认：`,
+                ''
+            );
+            if (inputText === null) {
+                return;
+            }
+
+            const response = await fetch('/api/fund/transactions/clear', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    code: normalizedCode,
+                    confirm_text: inputText,
+                })
+            });
+            const result = await response.json();
+            if (!result.success) {
+                window.showSimpleMessage(result.message || '清空失败', 'error');
+                return;
+            }
+
+            const updatedShares = parseFloat(result.current_shares || 0);
+            if (!window.fundSharesData) {
+                window.fundSharesData = {};
+            }
+            window.fundSharesData[normalizedCode] = updatedShares;
+
+            const star = document.querySelector(`.fund-hold-star[data-code="${normalizedCode}"]`);
+            if (star) {
+                const isHeld = updatedShares > 0;
+                star.textContent = isHeld ? '⭐' : '☆';
+                star.dataset.hold = isHeld ? '1' : '0';
+            }
+
+            window.showSimpleMessage(result.message || '清空成功', 'success');
+
+            if (currentTransactionFundCode === normalizedCode && typeof window.loadFundTransactions === 'function') {
+                await window.loadFundTransactions();
+            }
+            if (typeof fetchPortfolioData === 'function') {
+                fetchPortfolioData().catch(() => {});
+            }
+        } catch (e) {
+            window.showSimpleMessage('清空失败: ' + (e?.message || e), 'error');
+        }
+    };
+
+    window.clearCurrentFundTransactions = async function() {
+        if (!currentTransactionFundCode) {
+            window.showSimpleMessage('未选择基金', 'error');
+            return;
+        }
+        const fundCode = currentTransactionFundCode;
+        const fundName = document.getElementById('transactionModalFundName')?.textContent?.trim() || '';
+        await window.clearFundTransactionsByCode(fundCode, fundName);
+    };
+
     window.openBackfillModal = function(fundCode) {
         currentBackfillFundCode = fundCode;
         currentBackfillFetchToken += 1;
@@ -1718,18 +2557,14 @@ document.addEventListener('DOMContentLoaded', function() {
         const modal = document.getElementById('backfillModal');
         const titleEl = document.getElementById('backfillModalTitle');
         const codeDisplay = document.getElementById('backfillModalFundCode');
-        const dateInput = document.getElementById('backfillTradeDate');
+        const tradeDateInput = document.getElementById('backfillTradeDate');
         const netValueInput = document.getElementById('backfillNetValue');
         const amountInput = document.getElementById('backfillAmount');
         const sharesInput = document.getElementById('backfillShares');
         const feeInput = document.getElementById('backfillFee');
-        const amountLabel = document.getElementById('backfillAmountLabel');
-        const sharesLabel = document.getElementById('backfillSharesLabel');
-        const buyBtn = document.getElementById('backfillModalBuyBtn');
-        const sellBtn = document.getElementById('backfillModalSellBtn');
         const hint = document.getElementById('backfillNetValueHint');
 
-        if (!modal || !codeDisplay || !dateInput || !netValueInput || !amountInput || !sharesInput || !feeInput || !buyBtn || !sellBtn) {
+        if (!modal || !codeDisplay || !tradeDateInput || !netValueInput || !amountInput || !sharesInput || !feeInput) {
             alert('补录弹窗未初始化，请刷新页面后重试');
             return;
         }
@@ -1740,41 +2575,29 @@ document.addEventListener('DOMContentLoaded', function() {
         const dd = String(today.getDate()).padStart(2, '0');
 
         codeDisplay.textContent = fundCode;
-        if (titleEl) {
-            titleEl.textContent = '补录买入交易';
-        }
-        if (amountLabel) {
-            amountLabel.textContent = '买入金额（元）';
-        }
-        if (sharesLabel) {
-            sharesLabel.textContent = '卖出份额';
-        }
-        dateInput.value = `${yyyy}-${mm}-${dd}`;
+        setBackfillTradeDateValue(`${yyyy}-${mm}-${dd}`);
         netValueInput.value = '';
         amountInput.value = '';
         sharesInput.value = '';
         feeInput.value = '';
-        amountInput.placeholder = '补录买入时填写，例如 100';
-        sharesInput.placeholder = '补录卖出时填写，例如 123.4567';
         if (hint) {
             hint.textContent = '正在尝试自动填充净值...';
             hint.style.color = 'var(--text-dim)';
         }
+        setBackfillView('trade');
         currentBackfillNetValueLoading = true;
         updateBackfillSubmitButtonsState();
-        buyBtn.textContent = '补录买入';
-        sellBtn.textContent = '补录卖出';
+        updateBackfillSharesPreview();
 
         modal.classList.add('active');
-        setTimeout(() => dateInput.focus(), 100);
+        setTimeout(() => tradeDateInput.focus(), 100);
 
         window.tryAutoFillBackfillNetValue();
     };
 
     window.closeBackfillModal = function() {
         const modal = document.getElementById('backfillModal');
-        const buyBtn = document.getElementById('backfillModalBuyBtn');
-        const sellBtn = document.getElementById('backfillModalSellBtn');
+        const { buyBtn, sellBtn, dividendBtn } = getBackfillActionButtons();
         if (modal) {
             modal.classList.remove('active');
         }
@@ -1786,20 +2609,28 @@ document.addEventListener('DOMContentLoaded', function() {
             sellBtn.disabled = false;
             sellBtn.textContent = '补录卖出';
         }
+        if (dividendBtn) {
+            dividendBtn.disabled = false;
+            dividendBtn.textContent = '补录分红';
+        }
+        setBackfillView('trade');
         currentBackfillNetValueLoading = false;
-        currentBackfillFetchToken += 1;
         currentBackfillFundCode = null;
     };
 
     window.tryAutoFillBackfillNetValue = async function() {
         if (!currentBackfillFundCode) return;
+        if (currentBackfillView === 'dividend') {
+            currentBackfillNetValueLoading = false;
+            updateBackfillSubmitButtonsState();
+            return;
+        }
 
-        const dateInput = document.getElementById('backfillTradeDate');
+        const tradeDate = getBackfillTradeDateValue();
         const netValueInput = document.getElementById('backfillNetValue');
         const hint = document.getElementById('backfillNetValueHint');
-        if (!dateInput || !netValueInput || !hint) return;
+        if (!netValueInput || !hint) return;
 
-        const tradeDate = String(dateInput.value || '').trim();
         if (!tradeDate) {
             hint.textContent = '请选择日期后自动填充净值';
             hint.style.color = 'var(--text-dim)';
@@ -1832,6 +2663,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 hint.style.color = 'var(--up-color)';
                 currentBackfillNetValueLoading = false;
                 updateBackfillSubmitButtonsState();
+                updateBackfillSharesPreview();
                 return;
             }
 
@@ -1839,12 +2671,14 @@ document.addEventListener('DOMContentLoaded', function() {
             hint.style.color = 'var(--text-dim)';
             currentBackfillNetValueLoading = false;
             updateBackfillSubmitButtonsState();
+            updateBackfillSharesPreview();
         } catch (e) {
             if (fetchToken !== currentBackfillFetchToken) return;
             hint.textContent = '自动查询净值失败，请手动输入';
             hint.style.color = 'var(--down-color)';
             currentBackfillNetValueLoading = false;
             updateBackfillSubmitButtonsState();
+            updateBackfillSharesPreview();
         }
     };
 
@@ -1854,6 +2688,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const value = Number(amount || 0);
         if (!Number.isFinite(value) || value <= 0) return;
         amountInput.value = String(value);
+        updateBackfillSharesPreview();
         amountInput.focus();
     };
 
@@ -1863,29 +2698,38 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
 
-        const dateInput = document.getElementById('backfillTradeDate');
+        const tradeDateInput = document.getElementById('backfillTradeDate');
         const netValueInput = document.getElementById('backfillNetValue');
         const amountInput = document.getElementById('backfillAmount');
         const sharesInput = document.getElementById('backfillShares');
         const feeInput = document.getElementById('backfillFee');
-        const buyBtn = document.getElementById('backfillModalBuyBtn');
-        const sellBtn = document.getElementById('backfillModalSellBtn');
-        if (!dateInput || !netValueInput || !amountInput || !sharesInput || !feeInput || !buyBtn || !sellBtn) return;
+        const { buyBtn, sellBtn, dividendBtn } = getBackfillActionButtons();
+        const actionBtn = action === 'sell' ? sellBtn : (action === 'dividend' ? dividendBtn : buyBtn);
+        if (!tradeDateInput || !netValueInput || !amountInput || !sharesInput || !feeInput || !actionBtn) return;
 
-        const tradeDate = String(dateInput.value || '').trim();
-        const netValue = parseFloat(netValueInput.value);
+        const tradeDate = getBackfillTradeDateValue();
+        const netValueRaw = String(netValueInput.value || '').trim();
+        const netValue = netValueRaw === '' ? NaN : parseFloat(netValueRaw);
         const amountValue = parseFloat(amountInput.value);
         const sharesValue = parseFloat(sharesInput.value);
         const feeValue = String(feeInput.value || '').trim() === '' ? 0 : parseFloat(feeInput.value);
         const isSellBackfill = action === 'sell';
+        const isDividendBackfill = action === 'dividend';
+
+        if (isDividendBackfill && currentBackfillView !== 'dividend') {
+            setBackfillView('dividend');
+        }
+        if (!isDividendBackfill && currentBackfillView !== 'trade') {
+            setBackfillView('trade');
+        }
 
         if (!tradeDate) {
             window.showSimpleMessage('请选择交易日期', 'error');
-            dateInput.focus();
+            tradeDateInput.focus();
             return;
         }
 
-        if (!isFinite(netValue) || netValue <= 0) {
+        if (!isDividendBackfill && (!isFinite(netValue) || netValue <= 0)) {
             window.showSimpleMessage('请输入大于0的当日净值', 'error');
             netValueInput.focus();
             return;
@@ -1899,19 +2743,19 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         } else {
             if (!isFinite(amountValue) || amountValue <= 0) {
-                window.showSimpleMessage('请输入大于0的买入金额', 'error');
+                window.showSimpleMessage(isDividendBackfill ? '请输入大于0的分红金额' : '请输入大于0的买入金额', 'error');
                 amountInput.focus();
                 return;
             }
         }
 
-        if (!isFinite(feeValue) || feeValue < 0) {
+        if (!isDividendBackfill && (!isFinite(feeValue) || feeValue < 0)) {
             window.showSimpleMessage('请输入大于等于0的手续费', 'error');
             feeInput.focus();
             return;
         }
 
-        if (!isSellBackfill && amountValue <= feeValue) {
+        if (!isSellBackfill && !isDividendBackfill && amountValue <= feeValue) {
             window.showSimpleMessage('买入金额需大于手续费', 'error');
             amountInput.focus();
             return;
@@ -1926,23 +2770,29 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
-        buyBtn.disabled = true;
-        sellBtn.disabled = true;
+        if (buyBtn) buyBtn.disabled = true;
+        if (sellBtn) sellBtn.disabled = true;
+        if (dividendBtn) dividendBtn.disabled = true;
         if (isSellBackfill) {
-            sellBtn.textContent = '补录卖出中...';
+            actionBtn.textContent = '补录卖出中...';
+        } else if (isDividendBackfill) {
+            actionBtn.textContent = '补录分红中...';
         } else {
-            buyBtn.textContent = '补录买入中...';
+            actionBtn.textContent = '补录买入中...';
         }
 
         try {
-            const response = await fetch(isSellBackfill ? '/api/fund/sell-backfill' : '/api/fund/buy-backfill', {
+            const requestUrl = isDividendBackfill
+                ? '/api/fund/dividend-backfill'
+                : (isSellBackfill ? '/api/fund/sell-backfill' : '/api/fund/buy-backfill');
+            const response = await fetch(requestUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     code: currentBackfillFundCode,
                     trade_date: tradeDate,
-                    net_value: netValue,
-                    fee: feeValue,
+                    net_value: isDividendBackfill ? undefined : netValue,
+                    fee: isDividendBackfill ? 0 : feeValue,
                     amount: isSellBackfill ? undefined : amountValue,
                     shares: isSellBackfill ? sharesValue : undefined,
                 })
@@ -1951,10 +2801,13 @@ document.addEventListener('DOMContentLoaded', function() {
             const result = await response.json();
             if (!result.success) {
                 window.showSimpleMessage(result.message || '补录失败', 'error');
-                buyBtn.disabled = false;
-                sellBtn.disabled = false;
-                buyBtn.textContent = '补录买入';
-                sellBtn.textContent = '补录卖出';
+                if (buyBtn) buyBtn.disabled = false;
+                if (sellBtn) sellBtn.disabled = false;
+                if (dividendBtn) dividendBtn.disabled = false;
+                if (buyBtn) buyBtn.textContent = '补录买入';
+                if (sellBtn) sellBtn.textContent = '补录卖出';
+                if (dividendBtn) dividendBtn.textContent = '补录分红';
+                updateBackfillSubmitButtonsState();
                 return;
             }
 
@@ -1975,13 +2828,18 @@ document.addEventListener('DOMContentLoaded', function() {
             sharesInput.value = '';
             if (isSellBackfill) {
                 sharesInput.focus();
+            } else if (isDividendBackfill) {
+                amountInput.focus();
             } else {
                 amountInput.focus();
             }
-            buyBtn.disabled = false;
-            sellBtn.disabled = false;
-            buyBtn.textContent = '补录买入';
-            sellBtn.textContent = '补录卖出';
+            if (buyBtn) buyBtn.disabled = false;
+            if (sellBtn) sellBtn.disabled = false;
+            if (dividendBtn) dividendBtn.disabled = false;
+            if (buyBtn) buyBtn.textContent = '补录买入';
+            if (sellBtn) sellBtn.textContent = '补录卖出';
+            if (dividendBtn) dividendBtn.textContent = '补录分红';
+            updateBackfillSubmitButtonsState();
 
             if (typeof calculatePositionSummary === 'function') {
                 calculatePositionSummary();
@@ -1990,10 +2848,13 @@ document.addEventListener('DOMContentLoaded', function() {
             window.showSimpleMessage(result.message || '补录成功', 'backfill-success');
         } catch (e) {
             window.showSimpleMessage('补录失败: ' + (e?.message || e), 'error');
-            buyBtn.disabled = false;
-            sellBtn.disabled = false;
-            buyBtn.textContent = '补录买入';
-            sellBtn.textContent = '补录卖出';
+            if (buyBtn) buyBtn.disabled = false;
+            if (sellBtn) sellBtn.disabled = false;
+            if (dividendBtn) dividendBtn.disabled = false;
+            if (buyBtn) buyBtn.textContent = '补录买入';
+            if (sellBtn) sellBtn.textContent = '补录卖出';
+            if (dividendBtn) dividendBtn.textContent = '补录分红';
+            updateBackfillSubmitButtonsState();
         }
     };
 
@@ -2145,15 +3006,32 @@ document.addEventListener('DOMContentLoaded', function() {
 
     const backfillAmountInput = document.getElementById('backfillAmount');
     if (backfillAmountInput) {
+        backfillAmountInput.addEventListener('input', function() {
+            updateBackfillSharesPreview();
+        });
         backfillAmountInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
-                confirmBackfillTrade('buy');
+                confirmBackfillTrade(currentBackfillView === 'dividend' ? 'dividend' : 'buy');
+            }
+        });
+    }
+
+    const backfillSharesInput = document.getElementById('backfillShares');
+    if (backfillSharesInput) {
+        backfillSharesInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                confirmBackfillTrade('sell');
             }
         });
     }
 
     const backfillTradeDateInput = document.getElementById('backfillTradeDate');
     if (backfillTradeDateInput) {
+        backfillTradeDateInput.addEventListener('input', function() {
+            if (typeof window.tryAutoFillBackfillNetValue === 'function') {
+                window.tryAutoFillBackfillNetValue();
+            }
+        });
         backfillTradeDateInput.addEventListener('change', function() {
             if (typeof window.tryAutoFillBackfillNetValue === 'function') {
                 window.tryAutoFillBackfillNetValue();
@@ -2164,8 +3042,21 @@ document.addEventListener('DOMContentLoaded', function() {
     const backfillNetValueInput = document.getElementById('backfillNetValue');
     if (backfillNetValueInput) {
         backfillNetValueInput.addEventListener('input', function() {
+            updateBackfillSharesPreview();
             if (!currentBackfillNetValueLoading) {
                 updateBackfillSubmitButtonsState();
+            }
+        });
+    }
+
+    const backfillFeeInput = document.getElementById('backfillFee');
+    if (backfillFeeInput) {
+        backfillFeeInput.addEventListener('input', function() {
+            updateBackfillSharesPreview();
+        });
+        backfillFeeInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                confirmBackfillTrade('buy');
             }
         });
     }
@@ -2902,6 +3793,34 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
+    // Portfolio 首页立即初始化收益文案与点击绑定，并主动拉取一次完整数据
+    if (window.location.pathname === '/portfolio') {
+        applyDailyGainLabels(getPortfolioSummaryDateContext().dayLabel);
+        initSummaryPanelsToggleByToolbarEstimate();
+
+        if (typeof fetchPortfolioData === 'function') {
+            fetchPortfolioData().catch(() => {
+                if (typeof loadSharesData === 'function') {
+                    loadSharesData().catch(() => {
+                        if (typeof calculatePositionSummary === 'function') {
+                            calculatePositionSummary();
+                        }
+                    });
+                } else if (typeof calculatePositionSummary === 'function') {
+                    calculatePositionSummary();
+                }
+            });
+        } else if (typeof loadSharesData === 'function') {
+            loadSharesData().catch(() => {
+                if (typeof calculatePositionSummary === 'function') {
+                    calculatePositionSummary();
+                }
+            });
+        } else if (typeof calculatePositionSummary === 'function') {
+            calculatePositionSummary();
+        }
+    }
+
     // Initialize refresh config and start auto-refresh on page load
     (async function() {
         await initRefreshConfig();
@@ -3064,6 +3983,11 @@ document.addEventListener('DOMContentLoaded', function() {
     // 键盘ESC关闭
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
+            const transactionModal = document.getElementById('transactionModal');
+            if (transactionModal && transactionModal.classList.contains('active') && typeof window.closeTransactionModal === 'function') {
+                window.closeTransactionModal();
+                return;
+            }
             closeShowoffCard();
         }
     });

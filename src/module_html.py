@@ -12,10 +12,19 @@ def enhance_fund_tab_content(content, shares_map=None):
     # 添加文件操作和持仓统计区域
     file_operations = """
         <div class="file-operations" style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-            <button class="btn btn-secondary" onclick="downloadFundMap()" style="padding: 8px 16px;">📥 导出基金列表</button>
-            <input type="file" id="uploadFile" accept=".json" style="display:none" onchange="uploadFundMap(this.files[0])">
-            <button class="btn btn-secondary" onclick="document.getElementById('uploadFile').click()" style="padding: 8px 16px;">📤 导入基金列表</button>
-            <span style="color: #f59e0b; font-size: 13px; margin-left: 10px;">
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <button class="btn btn-secondary fund-io-btn" onclick="downloadFundMap()">📥 导出基金列表</button>
+                <input type="file" id="uploadFile" accept=".json" style="display:none" onchange="uploadFundMap(this.files[0])">
+                <button class="btn btn-secondary fund-io-btn" onclick="document.getElementById('uploadFile').click()">📤 导入基金列表</button>
+                <input type="file" id="uploadTradeFile" accept=".xlsx" style="display:none" onchange="uploadTransactionRecords(this.files[0])">
+                <button class="btn btn-secondary fund-io-btn" onclick="document.getElementById('uploadTradeFile').click()">📑 导入交易记录</button>
+            </div>
+            <div id="toolbarEstimatedGainWrap" style="margin-left:auto; display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background: var(--card-bg); min-height: 38px;">
+                <span id="toolbarEstimatedGainLabel" style="font-size:13px; color: var(--text-dim); white-space:nowrap;">xx日收益估计</span>
+                <span id="toolbarEstimatedGain" style="font-size:14px; font-weight:600; color: var(--text-main); font-family: var(--font-mono); white-space:nowrap;">--</span>
+                <span id="toolbarEstimatedGainPct" style="font-size:12px; color: var(--text-dim); font-family: var(--font-mono); white-space:nowrap;">--</span>
+            </div>
+            <span style="color: #f59e0b; font-size: 13px; width: 100%;">
                 <span style="color: #f59e0b;">⚠️</span> 导入/导出为覆盖性操作，直接应用最新配置（非累加）
             </span>
         </div>
@@ -47,13 +56,13 @@ def enhance_fund_tab_content(content, shares_map=None):
                     </div>
                 </div>
                 <div class="stat-item" style="text-align: center;">
-                    <div style="font-size: 12px; color: var(--text-dim); margin-bottom: 5px;">今日预估涨跌</div>
+                    <div id="estimatedGainLabel" style="font-size: 12px; color: var(--text-dim); margin-bottom: 5px;">xx日预估收益</div>
                     <div id="estimatedGain" style="font-size: 24px; font-weight: bold; white-space: nowrap; color: var(--text-main); text-align: center;">
                         <span class="sensitive-value"><span class="real-value">¥0.00</span><span class="hidden-value">****</span></span><span id="estimatedGainPct"> (+0.00%)</span>
                     </div>
                 </div>
                 <div class="stat-item" style="text-align: center;">
-                    <div style="font-size: 12px; color: var(--text-dim); margin-bottom: 5px;">今日实际涨跌(已结算部分)</div>
+                    <div id="actualGainLabel" style="font-size: 12px; color: var(--text-dim); margin-bottom: 5px;">xx日实际收益</div>
                     <div id="actualGain" style="font-size: 24px; font-weight: bold; white-space: nowrap; color: var(--text-main); text-align: center;">
                         <span class="sensitive-value"><span class="real-value">¥0.00</span><span class="hidden-value">****</span></span><span id="actualGainPct"> (+0.00%)</span>
                     </div>
@@ -189,72 +198,119 @@ def enhance_fund_tab_content(content, shares_map=None):
 
     backfill_modal = """
         <div class="sector-modal" id="backfillModal">
-            <div class="sector-modal-content" style="max-width: 460px;">
-                <div class="sector-modal-header" id="backfillModalTitle">补录买入交易</div>
+            <div class="sector-modal-content" style="width: min(540px, 92vw); max-width: 540px; min-width: 320px;">
+                <div class="sector-modal-header" id="backfillModalTitle">补录交易</div>
                 <div style="padding: 20px;">
                     <div style="margin-bottom: 15px;">
                         <label style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">基金代码</label>
                         <div id="backfillModalFundCode" style="padding: 10px; background: rgba(59, 130, 246, 0.1); border-radius: 6px; color: #3b82f6; font-weight: 600; font-family: monospace;"></div>
                     </div>
-                    <div style="margin-bottom: 12px;">
-                        <label for="backfillTradeDate" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">交易日期</label>
-                        <input type="date" id="backfillTradeDate"
-                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                    <div style="margin-bottom: 12px; display:flex; gap:8px;">
+                        <button type="button" class="btn btn-primary" id="backfillViewTradeBtn" onclick="setBackfillView('trade')">买入/卖出</button>
+                        <button type="button" class="btn btn-secondary" id="backfillViewDividendBtn" onclick="setBackfillView('dividend')">分红</button>
                     </div>
-                    <div style="margin-bottom: 12px;">
-                        <label for="backfillNetValue" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">当日净值</label>
-                        <input type="number" id="backfillNetValue" step="0.0001" min="0" placeholder="例如 1.5803"
-                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
-                        <div id="backfillNetValueHint" style="margin-top: 6px; font-size: 12px; color: var(--text-dim);">选择日期后将尝试自动填充净值（若趋势数据可用）</div>
-                    </div>
-                    <div style="margin-bottom: 8px;">
-                        <label for="backfillAmount" id="backfillAmountLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">金额（元）</label>
-                        <input type="number" id="backfillAmount" step="0.01" min="0" placeholder="例如 100"
-                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
-                        <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
-                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(500)">500</button>
-                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(1000)">1000</button>
-                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(2000)">2000</button>
-                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(4000)">4000</button>
+                    <div id="backfillTopGrid" style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 8px;">
+                        <div>
+                            <label for="backfillTradeDate" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">交易日期</label>
+                            <input type="date" id="backfillTradeDate"
+                                   style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main); font-family: var(--font-mono);">
+                        </div>
+                        <div id="backfillNetValueGroup">
+                            <label for="backfillNetValue" id="backfillNetValueLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">当日净值</label>
+                            <input type="number" id="backfillNetValue" step="0.0001" min="0" placeholder="例如 1.5803"
+                                   style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
                         </div>
                     </div>
-                    <div style="margin-bottom: 8px;">
-                        <label for="backfillShares" id="backfillSharesLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">卖出份额</label>
-                        <input type="number" id="backfillShares" step="0.0001" min="0" placeholder="补录卖出时填写"
-                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                    <div id="backfillNetValueHint" style="margin: -2px 0 12px; font-size: 12px; color: var(--text-dim);">选择日期后将尝试自动填充净值（若趋势数据可用）</div>
+                    <div id="backfillAmountSharesGrid" style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 8px; align-items:start;">
+                        <div id="backfillAmountGroup">
+                            <label for="backfillAmount" id="backfillAmountLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">金额（买入/分红，元）</label>
+                            <input type="number" id="backfillAmount" step="0.01" min="0" placeholder="例如 100"
+                                   style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                            <div id="backfillAmountQuickButtons" style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
+                                <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(500)">500</button>
+                                <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(1000)">1000</button>
+                                <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(2000)">2000</button>
+                                <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(4000)">4000</button>
+                            </div>
+                        </div>
+                        <div id="backfillSharesGroup">
+                            <label for="backfillShares" id="backfillSharesLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">份额（卖出填写 / 买入参考）</label>
+                            <input type="number" id="backfillShares" step="0.01" min="0" placeholder="卖出时填写；买入会自动折算参考值"
+                                   style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                        </div>
                     </div>
-                    <div style="margin-bottom: 8px;">
-                        <label for="backfillFee" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">手续费（元）</label>
+                    <div id="backfillFeeGroup" style="margin-bottom: 8px;">
+                        <label for="backfillFee" id="backfillFeeLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">手续费（元）</label>
                         <input type="number" id="backfillFee" step="0.01" min="0" placeholder="默认 0"
                                style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
                     </div>
                 </div>
                 <div class="sector-modal-footer">
                     <button class="btn btn-secondary" onclick="closeBackfillModal()">取消</button>
-                    <button class="btn btn-primary" id="backfillModalBuyBtn" onclick="confirmBackfillTrade('buy')">补录买入</button>
-                    <button class="btn btn-primary" id="backfillModalSellBtn" onclick="confirmBackfillTrade('sell')" style="background:#10b981;">补录卖出</button>
+                    <div id="backfillTradeActions" style="display:flex; gap:8px;">
+                        <button class="btn btn-primary" id="backfillModalBuyBtn" onclick="confirmBackfillTrade('buy')">补录买入</button>
+                        <button class="btn" id="backfillModalSellBtn" style="background: #10b981; color: #fff;" onclick="confirmBackfillTrade('sell')">补录卖出</button>
+                    </div>
+                    <button class="btn btn-primary" id="backfillModalDividendBtn" style="display:none;" onclick="confirmBackfillTrade('dividend')">补录分红</button>
                 </div>
             </div>
         </div>
     """
 
+    bottom_danger_zone = """
+        <div style="margin-top: 24px; padding: 12px 0 4px; display:flex; justify-content:flex-end; border-top: 1px dashed var(--border);">
+            <button class="btn btn-danger" style="padding:6px 12px; font-size:12px; opacity:0.78;" onclick="clearFundTransactionsDanger()">高级危险操作：清空交易记录</button>
+        </div>
+    """
+
     transaction_modal = """
         <div class="sector-modal" id="transactionModal">
-            <div class="sector-modal-content" style="max-width: 980px;">
-                <div class="sector-modal-header">交易记录</div>
-                <div style="padding: 20px;">
-                    <div style="margin-bottom: 12px; color: var(--text-main); font-weight: 600;">
-                        基金：<span id="transactionModalFundCode" style="font-family: monospace; color: #3b82f6;"></span>
-                        <span id="transactionModalFundName" style="margin-left: 8px; color: var(--text-main);"></span>
+            <div class="sector-modal-content" style="max-width: 1080px; width: min(1080px, 96vw); max-height: 90vh; display:flex; flex-direction:column; overflow:hidden;">
+                <div class="sector-modal-header" style="display:flex; align-items:center; justify-content:center; gap:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                    <span>交易记录</span>
+                    <span style="color: var(--text-dim);">·</span>
+                    <span id="transactionModalFundCode" style="font-family: monospace; color: #3b82f6;"></span>
+                    <span id="transactionModalFundName" style="color: var(--text-main); overflow:hidden; text-overflow:ellipsis;"></span>
+                </div>
+                <div id="transactionModalBody" style="padding: 20px; overflow:auto;">
+                    <div id="transactionModalSummary" style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px;">
+                        <div style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg);">
+                            <div style="font-size: 12px; color: var(--text-dim);">持仓收益</div>
+                            <div id="transactionHoldingGain" style="margin-top: 4px; font-size: 14px; font-weight: 600; color: var(--text-main);">--</div>
+                        </div>
+                        <div style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg);">
+                            <div style="font-size: 12px; color: var(--text-dim);">持仓收益率</div>
+                            <div id="transactionHoldingReturn" style="margin-top: 4px; font-size: 14px; font-weight: 600; color: var(--text-main);">--</div>
+                        </div>
+                        <div style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg);">
+                            <div style="font-size: 12px; color: var(--text-dim);">持有周期(天)</div>
+                            <div id="transactionHoldingDays" style="margin-top: 4px; font-size: 14px; font-weight: 600; color: var(--text-main);">--</div>
+                        </div>
+                        <div style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg);">
+                            <div style="font-size: 12px; color: var(--text-dim);">总手续费</div>
+                            <div id="transactionTotalFee" style="margin-top: 4px; font-size: 14px; font-weight: 600; color: var(--text-main);">--</div>
+                        </div>
+                        <div style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg);">
+                            <div style="font-size: 12px; color: var(--text-dim);">总收益</div>
+                            <div id="transactionTotalGain" style="margin-top: 4px; font-size: 14px; font-weight: 600; color: var(--text-main);">--</div>
+                        </div>
+                        <div style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg);">
+                            <div style="font-size: 12px; color: var(--text-dim);">总收益率</div>
+                            <div id="transactionTotalReturn" style="margin-top: 4px; font-size: 14px; font-weight: 600; color: var(--text-main);">--</div>
+                        </div>
+                    </div>
+                    <div style="margin: -2px 0 10px; font-size: 12px; color: var(--text-dim); line-height: 1.5;">
+                        口径说明：总收益 = 累计卖出 + 累计分红 + 当前持仓市值 - 累计买入；总收益率 = 总收益 / 累计买入。持仓收益/率与主表“持仓/收益、持有/年化”口径一致。
                     </div>
                     <div id="transactionModalHint" style="margin-bottom: 10px; font-size: 12px; color: var(--text-dim);"></div>
-                    <div style="max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 6px;">
+                    <div id="transactionModalTableWrap" style="max-height: 52vh; overflow: auto; border: 1px solid var(--border); border-radius: 6px;">
                         <table style="width: 100%; border-collapse: collapse;">
                             <thead>
                                 <tr style="background: rgba(59, 130, 246, 0.08);">
                                     <th style="padding: 10px; text-align: left; font-size: 13px;">日期</th>
                                     <th style="padding: 10px; text-align: left; font-size: 13px;">类型</th>
-                                    <th style="padding: 10px; text-align: right; font-size: 13px;">金额(元)</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 13px;">确认金额(元)</th>
                                     <th style="padding: 10px; text-align: right; font-size: 13px;">份额</th>
                                     <th style="padding: 10px; text-align: right; font-size: 13px;">净值</th>
                                     <th style="padding: 10px; text-align: right; font-size: 13px;">手续费</th>
@@ -266,7 +322,7 @@ def enhance_fund_tab_content(content, shares_map=None):
                         </table>
                     </div>
                 </div>
-                <div class="sector-modal-footer">
+                <div class="sector-modal-footer" style="flex-shrink:0; border-top: 1px solid var(--border); background: var(--card-bg);">
                     <button class="btn btn-secondary" onclick="closeTransactionModal()">关闭</button>
                 </div>
             </div>
@@ -299,7 +355,7 @@ def enhance_fund_tab_content(content, shares_map=None):
 
     content = re.sub(r'<tr>.*?</tr>', add_operation_to_row, content, flags=re.DOTALL)
 
-    return file_operations + position_summary + operations_panel + add_fund_area + trade_modal + backfill_modal + transaction_modal + content
+    return file_operations + position_summary + operations_panel + add_fund_area + trade_modal + backfill_modal + transaction_modal + content + bottom_danger_zone
 
 
 def get_top_navbar_html(username=None):
@@ -713,7 +769,7 @@ def get_full_page_html_sidebar(tabs_data, username=None):
     </div>
 
     {js_script}
-    <script src="/static/js/main.js?v=20260316"></script>
+    <script src="/static/js/main.js?v=20260323a"></script>
     <script src="/static/js/sidebar-nav.js"></script>
 </body>
 </html>'''
@@ -3689,8 +3745,12 @@ def get_javascript_code():
             });
         }
 
-        // 初始化 - 加载份额数据
-        loadSharesData();
+        // 初始化 - 首屏先渲染，再异步加载份额数据与统计，避免 /portfolio 已返回但页面仍长时间无响应
+        requestAnimationFrame(function() {
+            setTimeout(function() {
+                loadSharesData();
+            }, 0);
+        });
 
         // 份额弹窗 - 点击外部关闭
         const sharesModal = document.getElementById('sharesModal');
@@ -4071,9 +4131,10 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             <div class="page-header">
                 <h1 style="display: flex; align-items: center;">
                     💼 持仓基金
-                    <div style="display: flex; align-items: center; gap: 10px; margin-left: 15px;">
+                    <div style="display: flex; align-items: center; gap: 10px; margin-left: 15px; flex-wrap: wrap;">
                         <button id="refreshBtn-portfolio" onclick="refreshCurrentPage()" class="refresh-button">🔄 刷新</button>
                         <span id="lastRefreshTime-portfolio" style="font-size: 0.85rem; color: #666; min-width: 60px;"></span>
+                        <span style="font-size: 0.8rem; color: var(--text-dim);">⚠️ 预估数据仅供参考，实际以基金公司结算为准</span>
                     </div>
                 </h1>
             </div>
@@ -4109,16 +4170,6 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                     align-items: center;
                 }}
             </style>
-
-            <!-- 免责声明 -->
-            <div style="margin-bottom: 20px; padding: 12px 15px; background: rgba(255, 193, 7, 0.1); border: 1px solid rgba(255, 193, 7, 0.3); border-radius: 8px; font-size: 0.85rem; color: var(--text-dim);">
-                <p style="margin: 0; line-height: 1.5;">
-                    <strong style="color: #ffc107;">⚠️ 免责声明</strong>：
-                    预估收益根据您输入的持仓份额与实时估值计算得出，仅供参考。
-                    实际收益以基金公司最终结算为准，可能因份额确认时间、分红方式、费用扣除等因素存在偏差。
-                    投资有风险，入市需谨慎。
-                </p>
-            </div>
 
             <!-- 基金内容 -->
             <div class="fund-content">
@@ -4185,7 +4236,7 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
         </div>
     </div>
 
-    <script src="/static/js/main.js?v=20260316"></script>
+    <script src="/static/js/main.js?v=20260323a"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {{
             // 自动颜色化
@@ -5439,7 +5490,7 @@ def get_sectors_page_html(sectors_content, select_fund_content, fund_map, userna
         </div>
     </div>
 
-    <script src="/static/js/main.js?v=20260316"></script>
+    <script src="/static/js/main.js?v=20260323a"></script>
     <script src="/static/js/sidebar-nav.js"></script>
     <script>
         function switchTab(tabName) {{
@@ -5522,8 +5573,12 @@ def get_sectors_page_html(sectors_content, select_fund_content, fund_map, userna
                 }}, 10000);
             }}
 
-            // 自动颜色化
-            autoColorize();
+            // 自动颜色化延后到首帧之后，减少首屏阻塞
+            requestAnimationFrame(function() {
+                setTimeout(function() {
+                    autoColorize();
+                }, 0);
+            });
         }});
     </script>
 </body>

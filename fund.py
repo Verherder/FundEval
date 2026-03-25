@@ -1175,6 +1175,9 @@ class LanFund:
             except (TypeError, ValueError):
                 return default
 
+        def has_active_position(fund_code):
+            return safe_float(self.CACHE_MAP.get(fund_code, {}).get('shares', 0), 0.0) > 0
+
         def format_pct_value(value):
             if value is None:
                 return "--"
@@ -1281,6 +1284,7 @@ class LanFund:
 
             tx_remaining_shares = 0.0
             tx_remaining_cost = 0.0
+            cumulative_dividend = 0.0
             cashflows = []
 
             for tx in cycle_transactions:
@@ -1311,11 +1315,14 @@ class LanFund:
                         tx_remaining_cost = 0.0
                     proceeds = tx_amount if tx_amount > 0 else tx_shares * tx_net_value
                     cashflows.append((tx_date, proceeds))
+                elif tx_type == 'dividend' and tx_amount > 0:
+                    cumulative_dividend += tx_amount
+                    cashflows.append((tx_date, tx_amount))
 
             if tx_remaining_shares <= share_eps:
                 return None, None, None, current_shares
 
-            tx_remaining_shares = float(Decimal(str(tx_remaining_shares)).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP))
+            tx_remaining_shares = float(Decimal(str(tx_remaining_shares)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
             effective_shares = current_shares
             if abs(tx_remaining_shares - current_shares) > share_eps:
                 effective_shares = tx_remaining_shares
@@ -1323,13 +1330,16 @@ class LanFund:
             avg_unit_cost = (tx_remaining_cost / tx_remaining_shares) if tx_remaining_shares > share_eps else 0.0
             holding_cost = effective_shares * avg_unit_cost
             current_value = effective_shares * current_net_value
-            holding_gain = current_value - holding_cost
-            holding_return = ((current_value - holding_cost) / holding_cost * 100) if holding_cost > 0 else None
+            holding_gain = (current_value - holding_cost) + cumulative_dividend
+            holding_return = (holding_gain / holding_cost * 100) if holding_cost > 0 else None
 
             cashflows.append((datetime.datetime.now(), current_value))
             annual_rate = solve_xirr(cashflows)
             annual_return = annual_rate * 100 if annual_rate is not None else None
             return holding_return, annual_return, holding_gain, effective_shares
+
+        # 在保留原有“按估值涨跌排序”的前提下，稳定分成两组：持仓基金在前，非持仓在后。
+        result = sorted(result, key=lambda row: 0 if has_active_position(row[0]) else 1)
 
         total = len(result)
         hold_count = sum(1 for r in result if self.CACHE_MAP.get(r[0], {}).get("is_hold", False))
