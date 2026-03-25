@@ -66,6 +66,7 @@ def enhance_fund_tab_content(content, shares_map=None):
                     <div id="actualGain" style="font-size: 24px; font-weight: bold; white-space: nowrap; color: var(--text-main); text-align: center;">
                         <span class="sensitive-value"><span class="real-value">¥0.00</span><span class="hidden-value">****</span></span><span id="actualGainPct"> (+0.00%)</span>
                     </div>
+                    <div id="actualGainNote" style="display:none; margin-top: 6px; font-size: 11px; color: var(--text-dim);"></div>
                 </div>
             </div>
         </div>

@@ -1269,7 +1269,6 @@ document.addEventListener('DOMContentLoaded', function() {
     window.summaryPanelsExpanded = false;
     window.summaryPanelsHasData = false;
     window.summaryPanelsHasDetails = false;
-    const DAILY_GAIN_CACHE_KEY = 'portfolioDailyGainSnapshotV1';
 
     function formatDateKey(date) {
         const y = date.getFullYear();
@@ -1278,55 +1277,40 @@ document.addEventListener('DOMContentLoaded', function() {
         return `${y}-${m}-${d}`;
     }
 
-    function getPortfolioSummaryDateContext() {
-        const now = new Date();
-        const inUpdateWindow = now.getHours() >= 15;
-        const targetDate = new Date(now);
-        if (!inUpdateWindow) {
-            targetDate.setDate(targetDate.getDate() - 1);
-        }
-        const month = targetDate.getMonth() + 1;
-        const day = targetDate.getDate();
-        return {
-            inUpdateWindow,
-            dateKey: formatDateKey(targetDate),
-            dayLabel: `${month}月${day}日`
-        };
-    }
-
-    function readDailyGainSnapshot() {
-        try {
-            const raw = localStorage.getItem(DAILY_GAIN_CACHE_KEY);
-            if (!raw) return null;
-            const parsed = JSON.parse(raw);
-            return parsed && typeof parsed === 'object' ? parsed : null;
-        } catch (_) {
-            return null;
-        }
-    }
-
-    function saveDailyGainSnapshot(snapshot) {
-        try {
-            localStorage.setItem(DAILY_GAIN_CACHE_KEY, JSON.stringify(snapshot));
-        } catch (_) {
-            // ignore storage exceptions
-        }
-    }
-
-    function applyDailyGainLabels(dayLabel) {
+    function applyDailyGainLabels(estimatedDayLabel, actualDayLabel) {
         const estimatedGainLabel = document.getElementById('estimatedGainLabel');
         const actualGainLabel = document.getElementById('actualGainLabel');
         const toolbarEstimatedGainLabel = document.getElementById('toolbarEstimatedGainLabel');
 
         if (estimatedGainLabel) {
-            estimatedGainLabel.textContent = `${dayLabel}预估收益`;
+            estimatedGainLabel.textContent = `${estimatedDayLabel}预估收益`;
         }
         if (actualGainLabel) {
-            actualGainLabel.textContent = `${dayLabel}实际收益`;
+            actualGainLabel.textContent = `${actualDayLabel}实际收益`;
         }
         if (toolbarEstimatedGainLabel) {
-            toolbarEstimatedGainLabel.textContent = `${dayLabel}收益估计`;
+            toolbarEstimatedGainLabel.textContent = `${estimatedDayLabel}收益估计`;
         }
+    }
+
+    function updateActualGainNote(noteText = '') {
+        const actualGainNote = document.getElementById('actualGainNote');
+        if (!actualGainNote) return;
+        if (noteText) {
+            actualGainNote.textContent = noteText;
+            actualGainNote.style.display = 'block';
+        } else {
+            actualGainNote.textContent = '';
+            actualGainNote.style.display = 'none';
+        }
+    }
+
+    function getDayLabelFromDateKey(dateKey) {
+        if (!dateKey || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return '--';
+        const month = Number(dateKey.slice(5, 7));
+        const day = Number(dateKey.slice(8, 10));
+        if (!Number.isFinite(month) || !Number.isFinite(day)) return '--';
+        return `${month}月${day}日`;
     }
 
     function applySummaryPanelsVisibility() {
@@ -1379,9 +1363,6 @@ document.addEventListener('DOMContentLoaded', function() {
         let estimatedGain = 0;
         let actualGain = 0;
         let settledValue = 0;
-        const summaryDateContext = getPortfolioSummaryDateContext();
-        const targetDate = summaryDateContext.dateKey;
-        applyDailyGainLabels(summaryDateContext.dayLabel);
 
         const parseFirstNumber = (text, opts = {}) => {
             const { isPercent = false } = opts;
@@ -1406,6 +1387,7 @@ document.addEventListener('DOMContentLoaded', function() {
             return heldCount;
         };
 
+        const heldFundRowsData = [];
         // 存储每个基金的详细涨跌信息
         const fundDetailsData = [];
 
@@ -1451,25 +1433,17 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 // 解析日涨幅 (第五列，索引4)
                 const dayGrowthText = cells[4].textContent.trim();
-                const dayGrowth = dayGrowthText !== 'N/A' ?
-                    parseFloat(dayGrowthText.replace('%', '')) : 0;
+                const dayGrowth = parseFirstNumber(dayGrowthText, { isPercent: true });
 
                 totalValue += positionValue;
-
-                // 计算预估涨跌（始终计算）
                 const fundEstimatedGain = estimatedGrowth == null ? 0 : (positionValue * estimatedGrowth / 100);
-                estimatedGain += fundEstimatedGain;
-
-                // 计算实际涨跌
-                // 逻辑：只有当净值日期是今天时（今日净值已更新），才计算实际涨跌
-                let fundActualGain = 0;
-                const isSettledToday = netValueDate === targetDate;
-                if (isSettledToday) {
-                    // 今日净值已更新，计算实际收益
-                    fundActualGain = positionValue * dayGrowth / 100;
-                    actualGain += fundActualGain;
-                    settledValue += positionValue;
-                }
+                heldFundRowsData.push({
+                    fundCode,
+                    positionValue,
+                    dayGrowth,
+                    netValueDate,
+                    fundEstimatedGain,
+                });
 
                 // 获取板块数据
                 const sectors = window.fundSectorsData && window.fundSectorsData[fundCode] ? window.fundSectorsData[fundCode] : [];
@@ -1482,8 +1456,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     positionValue: positionValue,
                     estimatedGain: fundEstimatedGain,
                     estimatedGainPct: estimatedGrowth,
-                    actualGain: fundActualGain,
-                    actualGainPct: isSettledToday ? dayGrowth : 0,
+                    actualGain: 0,
+                    actualGainPct: 0,
                     sectors: sectors
                 });
             } catch (e) {
@@ -1491,38 +1465,54 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
 
+        const todayDateKey = formatDateKey(new Date());
+        const todayDayLabel = getDayLabelFromDateKey(todayDateKey);
+        applyDailyGainLabels(todayDayLabel, todayDayLabel);
+
+        const totalHeldFundCount = heldFundRowsData.length;
+        let todayUpdatedFundCount = 0;
+
+        for (const rowItem of heldFundRowsData) {
+            estimatedGain += rowItem.fundEstimatedGain;
+            const isTodayDate = rowItem.netValueDate === todayDateKey;
+            if (isTodayDate && Number.isFinite(rowItem.dayGrowth)) {
+                const rowActualGain = rowItem.positionValue * rowItem.dayGrowth / 100;
+                actualGain += rowActualGain;
+                settledValue += rowItem.positionValue;
+                todayUpdatedFundCount += 1;
+            }
+        }
+
+        for (const fund of fundDetailsData) {
+            const rowData = heldFundRowsData.find(item => item.fundCode === fund.code);
+            const isTodayDate = !!rowData && rowData.netValueDate === todayDateKey;
+            if (isTodayDate && Number.isFinite(rowData.dayGrowth)) {
+                fund.actualGain = fund.positionValue * rowData.dayGrowth / 100;
+                fund.actualGainPct = rowData.dayGrowth;
+            } else {
+                fund.actualGain = 0;
+                fund.actualGainPct = 0;
+            }
+        }
+
+        if (totalHeldFundCount <= 0) {
+            updateActualGainNote('');
+        } else if (todayUpdatedFundCount <= 0) {
+            updateActualGainNote(`实际收益待更新（0/${totalHeldFundCount}）`);
+        } else if (todayUpdatedFundCount < totalHeldFundCount) {
+            updateActualGainNote(`实际收益部分更新（${todayUpdatedFundCount}/${totalHeldFundCount}），按已更新基金统计`);
+        } else {
+            updateActualGainNote('');
+        }
+
         // 保存基金明细数据到全局变量，供炫耀卡片使用
         window.fundDetailsData = fundDetailsData;
         window.summaryPanelsHasData = totalValue > 0;
         window.summaryPanelsHasDetails = fundDetailsData.length > 0;
         applySummaryPanelsVisibility();
         initSummaryPanelsToggleByToolbarEstimate();
-
-        let displayEstimatedGain = estimatedGain;
-        let displayActualGain = actualGain;
-        let displaySettledValue = settledValue;
-        let displayEstimatedGainPct = totalValue > 0 ? (estimatedGain / totalValue * 100) : 0;
-        let displayActualGainPct = settledValue > 0 ? (actualGain / settledValue * 100) : 0;
-
-        if (summaryDateContext.inUpdateWindow) {
-            saveDailyGainSnapshot({
-                dateKey: targetDate,
-                estimatedGain: estimatedGain,
-                estimatedGainPct: displayEstimatedGainPct,
-                actualGain: actualGain,
-                actualGainPct: displayActualGainPct,
-                settledValue: settledValue,
-            });
-        } else {
-            const cached = readDailyGainSnapshot();
-            if (cached && cached.dateKey === targetDate) {
-                displayEstimatedGain = Number(cached.estimatedGain) || 0;
-                displayEstimatedGainPct = Number(cached.estimatedGainPct) || 0;
-                displayActualGain = Number(cached.actualGain) || 0;
-                displayActualGainPct = Number(cached.actualGainPct) || 0;
-                displaySettledValue = Number(cached.settledValue) || 0;
-            }
-        }
+        const estimatedGainPct = totalValue > 0 ? (estimatedGain / totalValue * 100) : 0;
+        const actualGainPct = settledValue > 0 ? (actualGain / settledValue * 100) : 0;
 
         // 更新持仓基金页面的汇总数据 (始终执行)
         // 更新总持仓金额
@@ -1539,30 +1529,30 @@ document.addEventListener('DOMContentLoaded', function() {
         const estimatedGainEl = document.getElementById('estimatedGain');
         const estimatedGainPctEl = document.getElementById('estimatedGainPct');
         if (estimatedGainEl && estimatedGainPctEl) {
-            const estGainPct = displayEstimatedGainPct;
-            const estSign = displayEstimatedGain >= 0 ? '+' : '';
+            const estGainPct = estimatedGainPct;
+            const estSign = estimatedGain >= 0 ? '+' : '';
             const sensitiveSpan = estimatedGainEl.querySelector('.sensitive-value');
             if (sensitiveSpan) {
-                sensitiveSpan.className = displayEstimatedGain >= 0 ? 'sensitive-value positive' : 'sensitive-value negative';
+                sensitiveSpan.className = estimatedGain >= 0 ? 'sensitive-value positive' : 'sensitive-value negative';
             }
             const realValueSpan = estimatedGainEl.querySelector('.real-value');
             if (realValueSpan) {
-                realValueSpan.textContent = `${estSign}¥${Math.abs(displayEstimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                realValueSpan.textContent = `${estSign}¥${Math.abs(estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
             }
             estimatedGainPctEl.textContent = ` (${estSign}${estGainPct.toFixed(2)}%)`;
-            estimatedGainPctEl.style.color = displayEstimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
+            estimatedGainPctEl.style.color = estimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
         }
 
         const toolbarEstimatedGainEl = document.getElementById('toolbarEstimatedGain');
         const toolbarEstimatedGainPctEl = document.getElementById('toolbarEstimatedGainPct');
         if (toolbarEstimatedGainEl && toolbarEstimatedGainPctEl) {
             if (totalValue > 0) {
-                const estGainPct = displayEstimatedGainPct;
-                const estSign = displayEstimatedGain >= 0 ? '+' : '';
-                toolbarEstimatedGainEl.textContent = `${estSign}¥${Math.abs(displayEstimatedGain).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                toolbarEstimatedGainEl.style.color = displayEstimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
+                const estGainPct = estimatedGainPct;
+                const estSign = estimatedGain >= 0 ? '+' : '';
+                toolbarEstimatedGainEl.textContent = `${estSign}¥${Math.abs(estimatedGain).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                toolbarEstimatedGainEl.style.color = estimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
                 toolbarEstimatedGainPctEl.textContent = `${estSign}${estGainPct.toFixed(2)}%`;
-                toolbarEstimatedGainPctEl.style.color = displayEstimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
+                toolbarEstimatedGainPctEl.style.color = estimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
             } else {
                 toolbarEstimatedGainEl.textContent = '--';
                 toolbarEstimatedGainEl.style.color = 'var(--text-main)';
@@ -1571,23 +1561,23 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
-        // 更新今日实际（只有当有基金净值更新至今日时才显示数值）
+        // 更新今日实际（统一按今日更新的数据计算）
         const actualGainEl = document.getElementById('actualGain');
         const actualGainPctEl = document.getElementById('actualGainPct');
         if (actualGainEl && actualGainPctEl) {
-            if (displaySettledValue > 0) {
-                const actGainPct = displayActualGainPct;
-                const actSign = displayActualGain >= 0 ? '+' : '';
+            if (settledValue > 0) {
+                const actGainPct = actualGainPct;
+                const actSign = actualGain >= 0 ? '+' : '';
                 const sensitiveSpan = actualGainEl.querySelector('.sensitive-value');
                 if (sensitiveSpan) {
-                    sensitiveSpan.className = displayActualGain >= 0 ? 'sensitive-value positive' : 'sensitive-value negative';
+                    sensitiveSpan.className = actualGain >= 0 ? 'sensitive-value positive' : 'sensitive-value negative';
                 }
                 const realValueSpan = actualGainEl.querySelector('.real-value');
                 if (realValueSpan) {
-                    realValueSpan.textContent = `${actSign}¥${Math.abs(displayActualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                    realValueSpan.textContent = `${actSign}¥${Math.abs(actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
                 }
                 actualGainPctEl.textContent = ` (${actSign}${actGainPct.toFixed(2)}%)`;
-                actualGainPctEl.style.color = displayActualGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
+                actualGainPctEl.style.color = actualGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
             } else {
                 const sensitiveSpan = actualGainEl.querySelector('.sensitive-value');
                 if (sensitiveSpan) {
@@ -1595,9 +1585,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
                 const realValueSpan = actualGainEl.querySelector('.real-value');
                 if (realValueSpan) {
-                    realValueSpan.textContent = '净值未更新';
+                    realValueSpan.textContent = '¥0.00';
                 }
-                actualGainPctEl.textContent = '';
+                actualGainPctEl.textContent = ' (+0.00%)';
+                actualGainPctEl.style.color = 'var(--text-dim)';
             }
         }
 
@@ -1658,34 +1649,34 @@ document.addEventListener('DOMContentLoaded', function() {
             // Update estimated gain
             const summaryEstGain = document.getElementById('summaryEstGain');
             if (summaryEstGain) {
-                const estSign = displayEstimatedGain >= 0 ? '+' : '';
-                summaryEstGain.textContent = `${estSign}¥${Math.abs(displayEstimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                const estSign = estimatedGain >= 0 ? '+' : '';
+                summaryEstGain.textContent = `${estSign}¥${Math.abs(estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
             }
 
             // Update estimated change
             const summaryEstChange = document.getElementById('summaryEstChange');
             if (summaryEstChange) {
-                const estGainPct = displayEstimatedGainPct;
-                const estSign = displayEstimatedGain >= 0 ? '+' : '';
+                const estGainPct = estimatedGainPct;
+                const estSign = estimatedGain >= 0 ? '+' : '';
                 summaryEstChange.textContent = `${estSign}${estGainPct.toFixed(2)}%`;
-                summaryEstChange.className = 'summary-change ' + (displayEstimatedGain >= 0 ? 'positive' : 'negative');
+                summaryEstChange.className = 'summary-change ' + (estimatedGain >= 0 ? 'positive' : 'negative');
             }
 
             // Update actual gain
             const summaryActualGain = document.getElementById('summaryActualGain');
             if (summaryActualGain) {
-                const actSign = displayActualGain >= 0 ? '+' : '';
-                summaryActualGain.textContent = `${actSign}¥${Math.abs(displayActualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                const actSign = actualGain >= 0 ? '+' : '';
+                summaryActualGain.textContent = `${actSign}¥${Math.abs(actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
             }
 
             // Update actual change
             const summaryActualChange = document.getElementById('summaryActualChange');
             if (summaryActualChange) {
-                if (displaySettledValue > 0) {
-                    const actGainPct = displayActualGainPct;
-                    const actSign = displayActualGain >= 0 ? '+' : '';
+                if (settledValue > 0) {
+                    const actGainPct = actualGainPct;
+                    const actSign = actualGain >= 0 ? '+' : '';
                     summaryActualChange.textContent = `${actSign}${actGainPct.toFixed(2)}%`;
-                    summaryActualChange.className = 'summary-change ' + (displayActualGain >= 0 ? 'positive' : 'negative');
+                    summaryActualChange.className = 'summary-change ' + (actualGain >= 0 ? 'positive' : 'negative');
                 } else {
                     summaryActualChange.textContent = '0.00%';
                     summaryActualChange.className = 'summary-change neutral';
@@ -3201,9 +3192,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Portfolio page data fetch (更新基金表格和持仓统计)
     async function fetchPortfolioData() {
+        const refreshBtn = document.getElementById('refreshBtn-portfolio');
         try {
-            const refreshBtn = document.getElementById('refreshBtn-portfolio');
-            
             // 显示加载状态
             if (refreshBtn) {
                 refreshBtn.disabled = true;
@@ -3278,8 +3268,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 return oldVal !== newVal;
             });
 
-            // 无新数据：不替换表格、不更新时间
+            // 无新数据：仍需刷新份额缓存并重算汇总，确保首屏和日期标签可用
             if (!hasTableChanges && !hasSharesChanges) {
+                window.fundSharesData = latestSharesData;
+                if (typeof calculatePositionSummary === 'function') {
+                    await calculatePositionSummary();
+                }
+                if (typeof autoColorize === 'function') {
+                    autoColorize();
+                }
                 if (refreshBtn) {
                     refreshBtn.innerHTML = 'ℹ️ 无新数据';
                     setTimeout(() => {
@@ -3336,8 +3333,6 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         } catch (e) {
             console.error('Failed to refresh portfolio data:', e);
-
-            const refreshBtn = document.getElementById('refreshBtn-portfolio');
             if (refreshBtn) {
                 refreshBtn.innerHTML = '❌ 更新失败';
 
@@ -3346,6 +3341,17 @@ document.addEventListener('DOMContentLoaded', function() {
                     refreshBtn.disabled = false;
                     refreshBtn.style.background = ''; // 恢复CSS样式
                 }, 2000);
+            }
+        } finally {
+            if (refreshBtn && refreshBtn.disabled) {
+                setTimeout(() => {
+                    if (!refreshBtn.disabled) return;
+                    refreshBtn.disabled = false;
+                    if (refreshBtn.innerHTML === '⏳ 更新中...') {
+                        refreshBtn.innerHTML = '🔄 刷新';
+                    }
+                    refreshBtn.style.background = '';
+                }, 3500);
             }
         }
     }
@@ -3795,7 +3801,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Portfolio 首页立即初始化收益文案与点击绑定，并主动拉取一次完整数据
     if (window.location.pathname === '/portfolio') {
-        applyDailyGainLabels(getPortfolioSummaryDateContext().dayLabel);
+        const todayLabel = getDayLabelFromDateKey(formatDateKey(new Date()));
+        applyDailyGainLabels(todayLabel, todayLabel);
         initSummaryPanelsToggleByToolbarEstimate();
 
         if (typeof fetchPortfolioData === 'function') {
