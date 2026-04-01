@@ -1,6 +1,7 @@
 import datetime
 import io
 import os, sys, time
+import re
 import threading
 import uuid
 
@@ -37,7 +38,7 @@ import fund
 from src.auth import login_required, get_current_user_id, get_current_username, login_user, logout_user
 from src.database import Database
 from src.module_html import enhance_fund_tab_content
-from src.yaml_config import get_page_refresh_config
+from src.yaml_config import get_page_refresh_config, load_yaml_config
 
 PERFORMANCE_CHART_INTERVALS = {
     "ONE_MONTH",
@@ -69,6 +70,141 @@ db = Database()  # 初始化数据库
 IMPORT_JOB_STORE = {}
 IMPORT_JOB_LOCK = threading.Lock()
 IMPORT_DETAIL_LOG_PATH = os.path.join("cache", "logs", "transaction_import.log")
+SERVER_LOG_PATH = os.path.join("cache", "logs", "fund_server.log")
+
+_LOG_CLEANUP_LOCK = threading.Lock()
+_LOG_CLEANUP_THREAD_STARTED = False
+
+
+def _get_log_cleanup_config():
+    """读取日志清理配置，失败时回退默认值。"""
+    default_cfg = {
+        "enabled": True,
+        "retain_days": 14,
+        "interval_hours": 6,
+    }
+    try:
+        cfg = load_yaml_config().get("logging_cleanup", {})
+        if not isinstance(cfg, dict):
+            return default_cfg
+
+        enabled = bool(cfg.get("enabled", default_cfg["enabled"]))
+
+        retain_days = int(cfg.get("retain_days", default_cfg["retain_days"]))
+        if retain_days < 1:
+            retain_days = default_cfg["retain_days"]
+
+        interval_hours = int(cfg.get("interval_hours", default_cfg["interval_hours"]))
+        if interval_hours < 1:
+            interval_hours = default_cfg["interval_hours"]
+
+        return {
+            "enabled": enabled,
+            "retain_days": retain_days,
+            "interval_hours": interval_hours,
+        }
+    except Exception as e:
+        logger.warning(f"读取 logging_cleanup 配置失败，使用默认值: {e}")
+        return default_cfg
+
+
+def _parse_log_line_datetime(line):
+    """尽量从日志行中解析时间戳。支持 `[YYYY-mm-dd HH:MM:SS]` 与 loguru 默认前缀。"""
+    if not line:
+        return None
+
+    bracket_match = re.match(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]", line)
+    if bracket_match:
+        try:
+            return datetime.datetime.strptime(bracket_match.group(1), "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+
+    loguru_match = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)", line)
+    if loguru_match:
+        ts_text = loguru_match.group(1)
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.datetime.strptime(ts_text, fmt)
+            except Exception:
+                continue
+
+    return None
+
+
+def _trim_log_file_keep_recent(file_path, retain_days):
+    """按日志行时间戳裁剪文件内容，仅保留最近 retain_days 天。"""
+    if not os.path.exists(file_path):
+        return
+
+    cutoff = datetime.datetime.now() - datetime.timedelta(days=retain_days)
+
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+
+        kept_lines = []
+        dropped_count = 0
+        for line in lines:
+            dt = _parse_log_line_datetime(line)
+            if dt is None or dt >= cutoff:
+                kept_lines.append(line)
+            else:
+                dropped_count += 1
+
+        if dropped_count <= 0:
+            return
+
+        temp_path = f"{file_path}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.writelines(kept_lines)
+        os.replace(temp_path, file_path)
+
+        logger.info(
+            f"日志清理完成: file={file_path}, removed_lines={dropped_count}, kept_lines={len(kept_lines)}, retain_days={retain_days}"
+        )
+    except Exception as e:
+        logger.error(f"日志清理失败: file={file_path}, error={e}")
+
+
+def _run_log_cleanup_once(retain_days):
+    """执行一次日志裁剪。"""
+    _trim_log_file_keep_recent(SERVER_LOG_PATH, retain_days)
+    _trim_log_file_keep_recent(IMPORT_DETAIL_LOG_PATH, retain_days)
+
+
+def _log_cleanup_worker(interval_hours, retain_days):
+    """后台定时执行日志清理。"""
+    interval_seconds = max(1, int(interval_hours * 3600))
+    while True:
+        _run_log_cleanup_once(retain_days)
+        time.sleep(interval_seconds)
+
+
+def _start_log_cleanup_worker_if_needed():
+    """启动日志清理线程（仅一次）。"""
+    global _LOG_CLEANUP_THREAD_STARTED
+
+    cfg = _get_log_cleanup_config()
+    if not cfg.get("enabled", True):
+        logger.info("日志清理任务已禁用（logging_cleanup.enabled=false）")
+        return
+
+    with _LOG_CLEANUP_LOCK:
+        if _LOG_CLEANUP_THREAD_STARTED:
+            return
+
+        worker = threading.Thread(
+            target=_log_cleanup_worker,
+            args=(cfg["interval_hours"], cfg["retain_days"]),
+            daemon=True,
+            name="log-cleanup-worker",
+        )
+        worker.start()
+        _LOG_CLEANUP_THREAD_STARTED = True
+        logger.info(
+            f"日志清理任务已启动: interval_hours={cfg['interval_hours']}, retain_days={cfg['retain_days']}"
+        )
 
 
 def _append_import_detail_log(level, message, **fields):
@@ -3535,4 +3671,9 @@ if __name__ == '__main__':
     # 用中间件包裹Flask app，过滤静态资源日志
     from werkzeug.serving import run_simple
     app.wsgi_app = FilteredWSGIRequestLogger(app.wsgi_app)
+
+    # 仅在 reloader 子进程启动后台日志清理线程，避免父进程重复启动
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        _start_log_cleanup_worker_if_needed()
+
     run_simple('0.0.0.0', 8311, app, use_reloader=True, use_debugger=False)

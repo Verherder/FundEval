@@ -43,6 +43,12 @@ logging:
   log_response_time: true
   log_file: "logs/fund_eval.log"
 
+# 日志内容定时清理（仅保留最近一段时间）
+logging_cleanup:
+  enabled: true
+  retain_days: 14
+  interval_hours: 24
+
 # HTTP详细请求日志终端输出开关
 http_timing:
   console_log: false
