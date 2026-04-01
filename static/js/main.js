@@ -1461,7 +1461,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (positionValue == null || positionValue <= 0) return;
 
                 // 净值日期从“日涨幅”单元格副文本中提取（格式示例：03-13 或 2026-03-13）
-                const dayGrowthFullText = cells[4].textContent.trim();
+                const dayGrowthNode = row.querySelector(`.fund-daygrowth-cell[data-code="${fundCode}"]`) || cells[5];
+                const dayGrowthFullText = String(dayGrowthNode?.textContent || '').trim();
                 const fullDateMatch = dayGrowthFullText.match(/(\d{4}-\d{2}-\d{2})/);
                 const shortDateMatch = dayGrowthFullText.match(/(\d{2}-\d{2})/);
                 let netValueDate = fullDateMatch ? fullDateMatch[1] : (shortDateMatch ? shortDateMatch[1] : '');
@@ -1474,7 +1475,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
 
                 // 解析日涨幅 (第五列，索引4)
-                const dayGrowthText = cells[4].textContent.trim();
+                const dayGrowthText = String(dayGrowthNode?.textContent || '').trim();
                 const dayGrowth = parseFirstNumber(dayGrowthText, { isPercent: true });
 
                 totalValue += positionValue;

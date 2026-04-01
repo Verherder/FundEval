@@ -542,6 +542,34 @@ class LanFund:
                     timeout=10,
                     verify=False,
                 )
+                estimate2Growth = "N/A"
+                estimate2Time = "N/A"
+                estimate2Date = ""
+                try:
+                    fundgz_url = DATA_SOURCE_URLS['fundgz_js_tpl'].format(fund=fund)
+                    fundgz_resp = timed_http_request(
+                        self.session,
+                        "GET",
+                        fundgz_url,
+                        source="fundgz",
+                        timeout=10,
+                        verify=False,
+                    )
+                    payload_match = re.search(r"jsonpgz\((.*)\);?\s*$", fundgz_resp.text.strip())
+                    if payload_match:
+                        payload = json.loads(payload_match.group(1))
+                        gszzl_raw = payload.get("gszzl")
+                        if gszzl_raw not in (None, "", "N/A"):
+                            estimate2Growth = f"{round(float(gszzl_raw), 2)}%"
+                        gztime_raw = str(payload.get("gztime") or "").strip()
+                        if gztime_raw:
+                            gz_parts = gztime_raw.split()
+                            if len(gz_parts) >= 2:
+                                estimate2Date = gz_parts[0]
+                                estimate2Time = gz_parts[1][:5]
+                except Exception:
+                    pass
+
                 if response.json()["success"]:
                     if not response.json()["list"]:
                         now_time = "N/A"
@@ -576,6 +604,11 @@ class LanFund:
                                 forecastGrowth = "\033[1;32m" + forecastGrowth
                             else:
                                 forecastGrowth = "\033[1;31m" + forecastGrowth
+                            if estimate2Growth != "N/A":
+                                if "-" in estimate2Growth:
+                                    estimate2Growth = "\033[1;32m" + estimate2Growth
+                                else:
+                                    estimate2Growth = "\033[1;31m" + estimate2Growth
                     if not is_return:
                         if "-" in dayOfGrowth:
                             dayOfGrowth = "\033[1;32m" + dayOfGrowth
@@ -606,7 +639,8 @@ class LanFund:
                     else:
                         monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
                     self.result.append([
-                        fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, netValueDate, consecutive_info, monthly_info, estimateDate
+                        fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, netValueDate, consecutive_info,
+                        monthly_info, estimateDate, estimate2Growth, estimate2Time, estimate2Date
                     ])
                 else:
                     logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
@@ -1343,8 +1377,8 @@ class LanFund:
 
         total = len(result)
         hold_count = sum(1 for r in result if self.CACHE_MAP.get(r[0], {}).get("is_hold", False))
-        # 列：标记、基金代码、基金名称(共X个持有Y个)、估值、日涨幅、连涨/跌、近30天、持仓/收益、持有/年化
-        titles = ["标记", "基金代码", f"基金名称 (共{total}个持有{hold_count}个)", "估值", "日涨幅", "连涨/跌", "近30天", "持仓/收益", "持有/年化"]
+        # 列：标记、基金代码、基金名称(共X个持有Y个)、估值1、估值2、日涨幅、连涨/跌、近30天、持仓/收益、持有/年化
+        titles = ["标记", "基金代码", f"基金名称 (共{total}个持有{hold_count}个)", "估值1", "估值2", "日涨幅", "连涨/跌", "近30天", "持仓/收益", "持有/年化"]
         rows = []
         for row in result:
             code = row[0]
@@ -1391,10 +1425,19 @@ class LanFund:
             consecutive_info = row[7]
             monthly_info = row[8]
             estimate_date = row[9] if len(row) > 9 else ""
-            estimate_cell = (
+            estimate2_growth = row[10] if len(row) > 10 else "N/A"
+            estimate2_time = row[11] if len(row) > 11 else "N/A"
+            estimate2_date = row[12] if len(row) > 12 else ""
+
+            estimate1_cell = (
                 f"<span class='fund-estimate-cell' data-code='{code}' data-estimate-date='{estimate_date}' "
                 f"style='cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看估值曲线'>{forecast_growth}</span>"
                 f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{now_time}</span>"
+            )
+            estimate2_cell = (
+                f"<span class='fund-estimate2-cell' data-code='{code}' data-estimate2-date='{estimate2_date}' "
+                f"style='font-weight:500;'>{estimate2_growth}</span>"
+                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{estimate2_time}</span>"
             )
 
             day_growth_val = parse_growth_percent(day_growth)
@@ -1427,10 +1470,21 @@ class LanFund:
                 date_extra = f", {format_diff_value(growth_diff)}"
 
             daygrowth_cell = (
-                f"{day_growth}"
+                f"<span class='fund-daygrowth-cell' data-code='{code}'>{day_growth}</span>"
                 f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{display_net_value_date}{date_extra}</span>"
             )
-            rows.append([star_html, code_cell, name_cell, estimate_cell, daygrowth_cell, consecutive_info, monthly_info, position_amount_display, performance_display])
+            rows.append([
+                star_html,
+                code_cell,
+                name_cell,
+                estimate1_cell,
+                estimate2_cell,
+                daygrowth_cell,
+                consecutive_info,
+                monthly_info,
+                position_amount_display,
+                performance_display
+            ])
         return get_table_html(
             titles,
             rows,

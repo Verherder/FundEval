@@ -5073,12 +5073,11 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 const normalizedInterval = (normalizedType === 'performance' || normalizedType === 'profit') ? (interval || defaultInterval) : null;
                 const currentState = window.currentFundChartState;
 
-                // 如果当前已展开的是同一只基金、同一类型、同一区间，则收起
+                // 如果当前已展开的是同一只基金、同一类型，则收起（estimate/performance/profit统一规则；区间切换不影响展开/收起状态）
                 if (!options.forceOpen &&
                     currentState &&
                     currentState.code === fundCode &&
-                    currentState.type === normalizedType &&
-                    currentState.interval === normalizedInterval) {{
+                    currentState.type === normalizedType) {{
                     const existingRow = tableBody.querySelector('tr.fund-chart-row');
                     if (existingRow) existingRow.remove();
                     window.currentFundChartState = null;

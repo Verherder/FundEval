@@ -35,6 +35,9 @@ data_sources:
     jijinhao_history_api: "https://api.jijinhao.com/quoteCenter/history.htm"
     jijinhao_realtime_api: "https://api.jijinhao.com/quoteCenter/realTime.htm"
 
+    # fundgz
+    fundgz_js_tpl: "https://fundgz.1234567.com.cn/js/{fund}.js"
+
 logging:
   level: "INFO"
   log_response_time: true
