@@ -546,16 +546,16 @@ class LanFund:
                     if not response.json()["list"]:
                         now_time = "N/A"
                         forecastGrowth = "N/A"
+                        estimateDate = ""
                     else:
                         fund_info = response.json()["list"][-1]
-                        now_time = datetime.datetime.fromtimestamp(fund_info["time"] / 1000).strftime(
-                            "%H:%M"
-                        )
+                        quote_dt = datetime.datetime.fromtimestamp(fund_info["time"] / 1000)
+                        now_time = quote_dt.strftime("%H:%M")
+                        estimateDate = quote_dt.strftime("%Y-%m-%d")
                         forecastGrowth = str(round(float(fund_info["forecastGrowth"]) * 100, 2)) + "%"
 
                         # 记录“当日估值涨幅”历史（仅当估值更新时间为15:00时入库），用于后续与对应净值日的实际涨幅比较
                         try:
-                            quote_dt = datetime.datetime.fromtimestamp(fund_info["time"] / 1000)
                             is_final_quote = (quote_dt.hour == 15 and quote_dt.minute == 0)
 
                             if is_final_quote:
@@ -606,7 +606,7 @@ class LanFund:
                     else:
                         monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
                     self.result.append([
-                        fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, netValueDate, consecutive_info, monthly_info
+                        fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, netValueDate, consecutive_info, monthly_info, estimateDate
                     ])
                 else:
                     logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
@@ -1390,8 +1390,9 @@ class LanFund:
             net_value_date = row[6]
             consecutive_info = row[7]
             monthly_info = row[8]
+            estimate_date = row[9] if len(row) > 9 else ""
             estimate_cell = (
-                f"<span class='fund-estimate-cell' data-code='{code}' "
+                f"<span class='fund-estimate-cell' data-code='{code}' data-estimate-date='{estimate_date}' "
                 f"style='cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看估值曲线'>{forecast_growth}</span>"
                 f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{now_time}</span>"
             )

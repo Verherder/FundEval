@@ -60,6 +60,7 @@ def enhance_fund_tab_content(content, shares_map=None):
                     <div id="estimatedGain" style="font-size: 24px; font-weight: bold; white-space: nowrap; color: var(--text-main); text-align: center;">
                         <span class="sensitive-value"><span class="real-value">¥0.00</span><span class="hidden-value">****</span></span><span id="estimatedGainPct"> (+0.00%)</span>
                     </div>
+                    <div id="estimatedGainNote" style="display:none; margin-top: 6px; font-size: 11px; color: var(--text-dim);"></div>
                 </div>
                 <div class="stat-item" style="text-align: center;">
                     <div id="actualGainLabel" style="font-size: 12px; color: var(--text-dim); margin-bottom: 5px;">xx日实际收益</div>
