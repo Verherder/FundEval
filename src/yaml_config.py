@@ -12,6 +12,7 @@ REQUIRED_DATA_SOURCE_URL_KEYS = [
     'fund123_curves_api',
     'fund123_intraday_api',
     'fund123_history_net_value_api',
+    'fundgz_js_tpl',
     # baidu
     'gushitong_origin',
     'gushitong_referer',

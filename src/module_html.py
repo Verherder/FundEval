@@ -12,10 +12,19 @@ def enhance_fund_tab_content(content, shares_map=None):
     # 添加文件操作和持仓统计区域
     file_operations = """
         <div class="file-operations" style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-            <button class="btn btn-secondary" onclick="downloadFundMap()" style="padding: 8px 16px;">📥 导出基金列表</button>
-            <input type="file" id="uploadFile" accept=".json" style="display:none" onchange="uploadFundMap(this.files[0])">
-            <button class="btn btn-secondary" onclick="document.getElementById('uploadFile').click()" style="padding: 8px 16px;">📤 导入基金列表</button>
-            <span style="color: #f59e0b; font-size: 13px; margin-left: 10px;">
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <button class="btn btn-secondary fund-io-btn" onclick="downloadFundMap()">📥 导出基金列表</button>
+                <input type="file" id="uploadFile" accept=".json" style="display:none" onchange="uploadFundMap(this.files[0])">
+                <button class="btn btn-secondary fund-io-btn" onclick="document.getElementById('uploadFile').click()">📤 导入基金列表</button>
+                <input type="file" id="uploadTradeFile" accept=".xlsx" style="display:none" onchange="uploadTransactionRecords(this.files[0])">
+                <button class="btn btn-secondary fund-io-btn" onclick="document.getElementById('uploadTradeFile').click()">📑 导入交易记录</button>
+            </div>
+            <div id="toolbarEstimatedGainWrap" style="margin-left:auto; display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background: var(--card-bg); min-height: 38px;">
+                <span id="toolbarEstimatedGainLabel" style="font-size:13px; color: var(--text-dim); white-space:nowrap;">xx日收益估计</span>
+                <span id="toolbarEstimatedGain" style="font-size:14px; font-weight:600; color: var(--text-main); font-family: var(--font-mono); white-space:nowrap;">--</span>
+                <span id="toolbarEstimatedGainPct" style="font-size:12px; color: var(--text-dim); font-family: var(--font-mono); white-space:nowrap;">--</span>
+            </div>
+            <span style="color: #f59e0b; font-size: 13px; width: 100%;">
                 <span style="color: #f59e0b;">⚠️</span> 导入/导出为覆盖性操作，直接应用最新配置（非累加）
             </span>
         </div>
@@ -47,16 +56,18 @@ def enhance_fund_tab_content(content, shares_map=None):
                     </div>
                 </div>
                 <div class="stat-item" style="text-align: center;">
-                    <div style="font-size: 12px; color: var(--text-dim); margin-bottom: 5px;">今日预估涨跌</div>
+                    <div id="estimatedGainLabel" style="font-size: 12px; color: var(--text-dim); margin-bottom: 5px;">xx日预估收益</div>
                     <div id="estimatedGain" style="font-size: 24px; font-weight: bold; white-space: nowrap; color: var(--text-main); text-align: center;">
                         <span class="sensitive-value"><span class="real-value">¥0.00</span><span class="hidden-value">****</span></span><span id="estimatedGainPct"> (+0.00%)</span>
                     </div>
+                    <div id="estimatedGainNote" style="display:none; margin-top: 6px; font-size: 11px; color: var(--text-dim);"></div>
                 </div>
                 <div class="stat-item" style="text-align: center;">
-                    <div style="font-size: 12px; color: var(--text-dim); margin-bottom: 5px;">今日实际涨跌(已结算部分)</div>
+                    <div id="actualGainLabel" style="font-size: 12px; color: var(--text-dim); margin-bottom: 5px;">xx日实际收益</div>
                     <div id="actualGain" style="font-size: 24px; font-weight: bold; white-space: nowrap; color: var(--text-main); text-align: center;">
                         <span class="sensitive-value"><span class="real-value">¥0.00</span><span class="hidden-value">****</span></span><span id="actualGainPct"> (+0.00%)</span>
                     </div>
+                    <div id="actualGainNote" style="display:none; margin-top: 6px; font-size: 11px; color: var(--text-dim);"></div>
                 </div>
             </div>
         </div>
@@ -189,67 +200,119 @@ def enhance_fund_tab_content(content, shares_map=None):
 
     backfill_modal = """
         <div class="sector-modal" id="backfillModal">
-            <div class="sector-modal-content" style="max-width: 460px;">
-                <div class="sector-modal-header" id="backfillModalTitle">补录买入交易</div>
+            <div class="sector-modal-content" style="width: min(540px, 92vw); max-width: 540px; min-width: 320px;">
+                <div class="sector-modal-header" id="backfillModalTitle">补录交易</div>
                 <div style="padding: 20px;">
                     <div style="margin-bottom: 15px;">
                         <label style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">基金代码</label>
                         <div id="backfillModalFundCode" style="padding: 10px; background: rgba(59, 130, 246, 0.1); border-radius: 6px; color: #3b82f6; font-weight: 600; font-family: monospace;"></div>
                     </div>
-                    <div style="margin-bottom: 12px;">
-                        <label for="backfillTradeDate" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">买入日期</label>
-                        <input type="date" id="backfillTradeDate"
-                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                    <div style="margin-bottom: 12px; display:flex; gap:8px;">
+                        <button type="button" class="btn btn-primary" id="backfillViewTradeBtn" onclick="setBackfillView('trade')">买入/卖出</button>
+                        <button type="button" class="btn btn-secondary" id="backfillViewDividendBtn" onclick="setBackfillView('dividend')">分红</button>
                     </div>
-                    <div style="margin-bottom: 12px;">
-                        <label for="backfillNetValue" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">当日净值</label>
-                        <input type="number" id="backfillNetValue" step="0.0001" min="0" placeholder="例如 1.5803"
-                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
-                        <div id="backfillNetValueHint" style="margin-top: 6px; font-size: 12px; color: var(--text-dim);">选择日期后将尝试自动填充净值（若趋势数据可用）</div>
-                    </div>
-                    <div style="margin-bottom: 8px;">
-                        <label for="backfillAmount" id="backfillAmountLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">金额（元）</label>
-                        <input type="number" id="backfillAmount" step="0.01" min="0" placeholder="例如 100"
-                               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
-                        <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
-                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(500)">500</button>
-                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(1000)">1000</button>
-                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(2000)">2000</button>
-                            <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(4000)">4000</button>
+                    <div id="backfillTopGrid" style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 8px;">
+                        <div>
+                            <label for="backfillTradeDate" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">交易日期</label>
+                            <input type="date" id="backfillTradeDate"
+                                   style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main); font-family: var(--font-mono);">
+                        </div>
+                        <div id="backfillNetValueGroup">
+                            <label for="backfillNetValue" id="backfillNetValueLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">当日净值</label>
+                            <input type="number" id="backfillNetValue" step="0.0001" min="0" placeholder="例如 1.5803"
+                                   style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
                         </div>
                     </div>
-                    <div style="margin-bottom: 8px;">
-                        <label for="backfillFee" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">手续费（元）</label>
+                    <div id="backfillNetValueHint" style="margin: -2px 0 12px; font-size: 12px; color: var(--text-dim);">选择日期后将尝试自动填充净值（若趋势数据可用）</div>
+                    <div id="backfillAmountSharesGrid" style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 8px; align-items:start;">
+                        <div id="backfillAmountGroup">
+                            <label for="backfillAmount" id="backfillAmountLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">金额（买入/分红，元）</label>
+                            <input type="number" id="backfillAmount" step="0.01" min="0" placeholder="例如 100"
+                                   style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                            <div id="backfillAmountQuickButtons" style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
+                                <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(500)">500</button>
+                                <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(1000)">1000</button>
+                                <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(2000)">2000</button>
+                                <button type="button" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="setBackfillAmountQuick(4000)">4000</button>
+                            </div>
+                        </div>
+                        <div id="backfillSharesGroup">
+                            <label for="backfillShares" id="backfillSharesLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">份额（卖出填写 / 买入参考）</label>
+                            <input type="number" id="backfillShares" step="0.01" min="0" placeholder="卖出时填写；买入会自动折算参考值"
+                                   style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
+                        </div>
+                    </div>
+                    <div id="backfillFeeGroup" style="margin-bottom: 8px;">
+                        <label for="backfillFee" id="backfillFeeLabel" style="display: block; margin-bottom: 8px; color: var(--text-main); font-weight: 500;">手续费（元）</label>
                         <input type="number" id="backfillFee" step="0.01" min="0" placeholder="默认 0"
                                style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: var(--card-bg); color: var(--text-main);">
                     </div>
                 </div>
                 <div class="sector-modal-footer">
                     <button class="btn btn-secondary" onclick="closeBackfillModal()">取消</button>
-                    <button class="btn btn-primary" id="backfillModalBuyBtn" onclick="confirmBackfillTrade('buy')">补录买入</button>
-                    <button class="btn btn-primary" id="backfillModalSellBtn" onclick="confirmBackfillTrade('sell')" style="background:#10b981;">补录卖出</button>
+                    <div id="backfillTradeActions" style="display:flex; gap:8px;">
+                        <button class="btn btn-primary" id="backfillModalBuyBtn" onclick="confirmBackfillTrade('buy')">补录买入</button>
+                        <button class="btn" id="backfillModalSellBtn" style="background: #10b981; color: #fff;" onclick="confirmBackfillTrade('sell')">补录卖出</button>
+                    </div>
+                    <button class="btn btn-primary" id="backfillModalDividendBtn" style="display:none;" onclick="confirmBackfillTrade('dividend')">补录分红</button>
                 </div>
             </div>
         </div>
     """
 
+    bottom_danger_zone = """
+        <div style="margin-top: 24px; padding: 12px 0 4px; display:flex; justify-content:flex-end; border-top: 1px dashed var(--border);">
+            <button class="btn btn-danger" style="padding:6px 12px; font-size:12px; opacity:0.78;" onclick="clearFundTransactionsDanger()">高级危险操作：清空交易记录</button>
+        </div>
+    """
+
     transaction_modal = """
         <div class="sector-modal" id="transactionModal">
-            <div class="sector-modal-content" style="max-width: 980px;">
-                <div class="sector-modal-header">交易记录</div>
-                <div style="padding: 20px;">
-                    <div style="margin-bottom: 12px; color: var(--text-main); font-weight: 600;">
-                        基金：<span id="transactionModalFundCode" style="font-family: monospace; color: #3b82f6;"></span>
-                        <span id="transactionModalFundName" style="margin-left: 8px; color: var(--text-main);"></span>
+            <div class="sector-modal-content" style="max-width: 1080px; width: min(1080px, 96vw); max-height: 90vh; display:flex; flex-direction:column; overflow:hidden;">
+                <div class="sector-modal-header" style="display:flex; align-items:center; justify-content:center; gap:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                    <span>交易记录</span>
+                    <span style="color: var(--text-dim);">·</span>
+                    <span id="transactionModalFundCode" style="font-family: monospace; color: #3b82f6;"></span>
+                    <span id="transactionModalFundName" style="color: var(--text-main); overflow:hidden; text-overflow:ellipsis;"></span>
+                </div>
+                <div id="transactionModalBody" style="padding: 20px; overflow:auto;">
+                    <div id="transactionModalSummary" style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px;">
+                        <div style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg);">
+                            <div style="font-size: 12px; color: var(--text-dim);">持仓收益</div>
+                            <div id="transactionHoldingGain" style="margin-top: 4px; font-size: 14px; font-weight: 600; color: var(--text-main);">--</div>
+                        </div>
+                        <div style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg);">
+                            <div style="font-size: 12px; color: var(--text-dim);">持仓收益率</div>
+                            <div id="transactionHoldingReturn" style="margin-top: 4px; font-size: 14px; font-weight: 600; color: var(--text-main);">--</div>
+                        </div>
+                        <div style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg);">
+                            <div style="font-size: 12px; color: var(--text-dim);">持有周期(天)</div>
+                            <div id="transactionHoldingDays" style="margin-top: 4px; font-size: 14px; font-weight: 600; color: var(--text-main);">--</div>
+                        </div>
+                        <div style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg);">
+                            <div style="font-size: 12px; color: var(--text-dim);">总手续费</div>
+                            <div id="transactionTotalFee" style="margin-top: 4px; font-size: 14px; font-weight: 600; color: var(--text-main);">--</div>
+                        </div>
+                        <div style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg);">
+                            <div style="font-size: 12px; color: var(--text-dim);">总收益</div>
+                            <div id="transactionTotalGain" style="margin-top: 4px; font-size: 14px; font-weight: 600; color: var(--text-main);">--</div>
+                        </div>
+                        <div style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg);">
+                            <div style="font-size: 12px; color: var(--text-dim);">总收益率</div>
+                            <div id="transactionTotalReturn" style="margin-top: 4px; font-size: 14px; font-weight: 600; color: var(--text-main);">--</div>
+                        </div>
+                    </div>
+                    <div style="margin: -2px 0 10px; font-size: 12px; color: var(--text-dim); line-height: 1.5;">
+                        口径说明：总收益 = 累计卖出 + 累计分红 + 当前持仓市值 - 累计买入；总收益率 = 总收益 / 累计买入。持仓收益/率与主表“持仓/收益、持有/年化”口径一致。
                     </div>
                     <div id="transactionModalHint" style="margin-bottom: 10px; font-size: 12px; color: var(--text-dim);"></div>
-                    <div style="max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 6px;">
+                    <div id="transactionModalTableWrap" style="max-height: 52vh; overflow: auto; border: 1px solid var(--border); border-radius: 6px;">
                         <table style="width: 100%; border-collapse: collapse;">
                             <thead>
                                 <tr style="background: rgba(59, 130, 246, 0.08);">
                                     <th style="padding: 10px; text-align: left; font-size: 13px;">日期</th>
                                     <th style="padding: 10px; text-align: left; font-size: 13px;">类型</th>
-                                    <th style="padding: 10px; text-align: right; font-size: 13px;">金额(元)</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 13px;">确认金额(元)</th>
                                     <th style="padding: 10px; text-align: right; font-size: 13px;">份额</th>
                                     <th style="padding: 10px; text-align: right; font-size: 13px;">净值</th>
                                     <th style="padding: 10px; text-align: right; font-size: 13px;">手续费</th>
@@ -261,7 +324,7 @@ def enhance_fund_tab_content(content, shares_map=None):
                         </table>
                     </div>
                 </div>
-                <div class="sector-modal-footer">
+                <div class="sector-modal-footer" style="flex-shrink:0; border-top: 1px solid var(--border); background: var(--card-bg);">
                     <button class="btn btn-secondary" onclick="closeTransactionModal()">关闭</button>
                 </div>
             </div>
@@ -294,7 +357,7 @@ def enhance_fund_tab_content(content, shares_map=None):
 
     content = re.sub(r'<tr>.*?</tr>', add_operation_to_row, content, flags=re.DOTALL)
 
-    return file_operations + position_summary + operations_panel + add_fund_area + trade_modal + backfill_modal + transaction_modal + content
+    return file_operations + position_summary + operations_panel + add_fund_area + trade_modal + backfill_modal + transaction_modal + content + bottom_danger_zone
 
 
 def get_top_navbar_html(username=None):
@@ -708,7 +771,7 @@ def get_full_page_html_sidebar(tabs_data, username=None):
     </div>
 
     {js_script}
-    <script src="/static/js/main.js?v=20260316"></script>
+    <script src="/static/js/main.js?v=20260323a"></script>
     <script src="/static/js/sidebar-nav.js"></script>
 </body>
 </html>'''
@@ -3684,8 +3747,12 @@ def get_javascript_code():
             });
         }
 
-        // 初始化 - 加载份额数据
-        loadSharesData();
+        // 初始化 - 首屏先渲染，再异步加载份额数据与统计，避免 /portfolio 已返回但页面仍长时间无响应
+        requestAnimationFrame(function() {
+            setTimeout(function() {
+                loadSharesData();
+            }, 0);
+        });
 
         // 份额弹窗 - 点击外部关闭
         const sharesModal = document.getElementById('sharesModal');
@@ -4066,9 +4133,10 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             <div class="page-header">
                 <h1 style="display: flex; align-items: center;">
                     💼 持仓基金
-                    <div style="display: flex; align-items: center; gap: 10px; margin-left: 15px;">
+                    <div style="display: flex; align-items: center; gap: 10px; margin-left: 15px; flex-wrap: wrap;">
                         <button id="refreshBtn-portfolio" onclick="refreshCurrentPage()" class="refresh-button">🔄 刷新</button>
                         <span id="lastRefreshTime-portfolio" style="font-size: 0.85rem; color: #666; min-width: 60px;"></span>
+                        <span style="font-size: 0.8rem; color: var(--text-dim);">⚠️ 预估数据仅供参考，实际以基金公司结算为准</span>
                     </div>
                 </h1>
             </div>
@@ -4104,16 +4172,6 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                     align-items: center;
                 }}
             </style>
-
-            <!-- 免责声明 -->
-            <div style="margin-bottom: 20px; padding: 12px 15px; background: rgba(255, 193, 7, 0.1); border: 1px solid rgba(255, 193, 7, 0.3); border-radius: 8px; font-size: 0.85rem; color: var(--text-dim);">
-                <p style="margin: 0; line-height: 1.5;">
-                    <strong style="color: #ffc107;">⚠️ 免责声明</strong>：
-                    预估收益根据您输入的持仓份额与实时估值计算得出，仅供参考。
-                    实际收益以基金公司最终结算为准，可能因份额确认时间、分红方式、费用扣除等因素存在偏差。
-                    投资有风险，入市需谨慎。
-                </p>
-            </div>
 
             <!-- 基金内容 -->
             <div class="fund-content">
@@ -4180,7 +4238,7 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
         </div>
     </div>
 
-    <script src="/static/js/main.js?v=20260316"></script>
+    <script src="/static/js/main.js?v=20260323a"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {{
             // 自动颜色化
@@ -4522,6 +4580,12 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 throw new Error('Failed to fetch chart data');
             }}
             const data = await response.json();
+            if (!data || typeof data !== 'object') {{
+                return {{ labels: [], growth: [], net_values: [] }};
+            }}
+            if (!data.chart_data || typeof data.chart_data !== 'object') {{
+                return {{ labels: [], growth: [], net_values: [] }};
+            }}
             return data.chart_data;
         }}
 
@@ -4588,6 +4652,14 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
         }}
 
         function renderFundRowChart(canvas, chartData, chartType = 'estimate') {{
+            if (!canvas) return;
+            if (!chartData || typeof chartData !== 'object') {{
+                const wrapper = canvas.closest('.inline-fund-chart');
+                if (wrapper) {{
+                    wrapper.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:13px;">图表数据异常，请重试</div>`;
+                }}
+                return;
+            }}
             const growthData = chartData.growth || [];
             const netValues = chartData.net_values || [];
             const isPerformanceChart = chartType === 'performance';
@@ -4597,14 +4669,16 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             const cumulativeBuyValues = chartData.cumulative_buy_values || [];
             const cumulativeSellValues = chartData.cumulative_sell_values || [];
             const benchmarkGrowthData = chartData.benchmark_growth || [];
+            const holdingReturnPctData = chartData.holding_return_pct || [];
             const benchmarkLabel = chartData.benchmark_label || '沪深300';
             const latestNetValue = chartData.latest_net_value;
             const latestNetValueDate = chartData.latest_net_value_date;
             const tradeMarkers = chartData.trade_markers || [];
             const fundCurveColor = '#3b82f6';
             const benchmarkColor = '#9ca3af';
-            const buyMarkerColor = '#ef4444';
-            const sellMarkerColor = '#3b82f6';
+            const buyMarkerColor = '#2563eb';
+            const sellMarkerColor = '#ef4444';
+            const clearMarkerColor = '#7f1d1d';
 
             if (isPerformanceChart) {{
                 const wrapper = canvas.closest('.inline-fund-chart');
@@ -4632,6 +4706,9 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                         </span>
                         <span style="display:inline-flex;align-items:center;gap:6px;color:${{sellMarkerColor}};">
                             <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${{sellMarkerColor}};"></span>卖出
+                        </span>
+                        <span style="display:inline-flex;align-items:center;gap:6px;color:${{clearMarkerColor}};">
+                            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${{clearMarkerColor}};"></span>清仓
                         </span>
                     `;
                 }}
@@ -4716,8 +4793,9 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             }}
 
             if (isPerformanceChart && tradeMarkers.length > 0) {{
-                const buyMarkers = tradeMarkers.filter(item => item.type === 'buy');
-                const sellMarkers = tradeMarkers.filter(item => item.type === 'sell');
+                const buyMarkers = tradeMarkers.filter(item => (item.marker_type || item.type) === 'buy');
+                const sellMarkers = tradeMarkers.filter(item => (item.marker_type || item.type) === 'sell');
+                const clearMarkers = tradeMarkers.filter(item => (item.marker_type || item.type) === 'clear');
 
                 if (buyMarkers.length > 0) {{
                     datasets.push({{
@@ -4728,11 +4806,12 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                         showLine: false,
                         pointRadius: 3,
                         pointHoverRadius: 4,
+                        pointHitRadius: 10,
                         pointBackgroundColor: buyMarkerColor,
                         pointBorderColor: buyMarkerColor,
                         pointBorderWidth: 0,
                         borderColor: buyMarkerColor,
-                        parsing: false
+                        parsing: {{ xAxisKey: 'x', yAxisKey: 'y' }}
                     }});
                 }}
 
@@ -4745,17 +4824,85 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                         showLine: false,
                         pointRadius: 3,
                         pointHoverRadius: 4,
+                        pointHitRadius: 10,
                         pointBackgroundColor: sellMarkerColor,
                         pointBorderColor: sellMarkerColor,
                         pointBorderWidth: 0,
                         borderColor: sellMarkerColor,
-                        parsing: false
+                        parsing: {{ xAxisKey: 'x', yAxisKey: 'y' }}
+                    }});
+                }}
+
+                if (clearMarkers.length > 0) {{
+                    datasets.push({{
+                        label: '清仓',
+                        data: clearMarkers,
+                        type: 'line',
+                        order: 0,
+                        showLine: false,
+                        pointRadius: 4,
+                        pointHoverRadius: 5,
+                        pointHitRadius: 10,
+                        pointBackgroundColor: clearMarkerColor,
+                        pointBorderColor: clearMarkerColor,
+                        pointBorderWidth: 0,
+                        borderColor: clearMarkerColor,
+                        parsing: {{ xAxisKey: 'x', yAxisKey: 'y' }}
                     }});
                 }}
             }}
 
-            window.fundRowChartInstance = new Chart(canvas.getContext('2d'), {{
+            const clearCycleLabelPlugin = {{
+                id: 'clearCycleLabelPlugin',
+                afterDatasetsDraw(chart) {{
+                    if (!isPerformanceChart || !tradeMarkers.length) return;
+                    const clearDatasetIndex = chart.data.datasets.findIndex(ds => ds.label === '清仓');
+                    if (clearDatasetIndex < 0) return;
+                    const meta = chart.getDatasetMeta(clearDatasetIndex);
+                    if (!meta || !meta.data || !meta.data.length) return;
+                    const ctx = chart.ctx;
+                    ctx.save();
+                    ctx.font = '11px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'bottom';
+                    ctx.fillStyle = clearMarkerColor;
+
+                    const formatMoney = (value) => {{
+                        const num = Number(value || 0);
+                        return '¥' + num.toFixed(2);
+                    }};
+                    const formatPct = (value) => {{
+                        if (value === null || value === undefined || Number.isNaN(Number(value))) return '--';
+                        const num = Number(value);
+                        return (num >= 0 ? '+' : '') + num.toFixed(2) + '%';
+                    }};
+
+                    meta.data.forEach((pointElement, index) => {{
+                        const raw = chart.data.datasets[clearDatasetIndex].data[index] || {{}};
+                        if (!raw.period_start || !raw.period_end) return;
+                        const y = pointElement.y;
+                        const x = pointElement.x;
+                        const lines = [
+                            `${{raw.period_start}} ~ ${{raw.period_end}}`,
+                            `收益 ${{formatMoney(raw.cycle_profit)}}`,
+                            `收益率 ${{formatPct(raw.cycle_return_pct)}}`,
+                            `年化 ${{formatPct(raw.annual_return_pct)}}`
+                        ];
+                        const lineHeight = 13;
+                        let textY = y - 10 - (lines.length - 1) * lineHeight;
+                        const minTop = chart.chartArea.top + 4;
+                        if (textY < minTop) textY = minTop;
+                        lines.forEach((line, lineIndex) => {{
+                            ctx.fillText(line, x, textY + lineIndex * lineHeight);
+                        }});
+                    }});
+                    ctx.restore();
+                }}
+            }};
+
+            const chartConfig = {{
                 type: 'line',
+                plugins: [clearCycleLabelPlugin],
                 data: {{
                     labels: chartData.labels || [],
                     datasets: datasets
@@ -4764,8 +4911,8 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                     responsive: true,
                     maintainAspectRatio: false,
                     interaction: {{
-                        mode: 'index',
-                        intersect: false,
+                        mode: isPerformanceChart ? 'nearest' : 'index',
+                        intersect: isPerformanceChart,
                     }},
                     plugins: {{
                         legend: {{ display: false }},
@@ -4780,13 +4927,32 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                                     const dataValue = context.parsed.y;
                                     const raw = context.raw || {{}};
                                     if (isPerformanceChart) {{
-                                        if ((datasetLabel === '买入' || datasetLabel === '卖出') && raw.tx_time) {{
-                                            return [
+                                        if ((datasetLabel === '买入' || datasetLabel === '卖出' || datasetLabel === '清仓') && raw.tx_time) {{
+                                            const txDate = raw.x || String(raw.tx_time).split(' ')[0] || context.label;
+                                            const dateIndex = (chartData.labels || []).indexOf(txDate);
+                                            const fundPerf = dateIndex >= 0 ? Number(growthData[dateIndex]) : Number(dataValue);
+                                            const benchmarkPerf = dateIndex >= 0 ? Number(benchmarkGrowthData[dateIndex]) : null;
+                                            const holdingReturnPct = dateIndex >= 0 ? Number(holdingReturnPctData[dateIndex]) : null;
+                                            const formatPct = function(value) {{
+                                                if (value === null || value === undefined || !Number.isFinite(value)) return '--';
+                                                return (value >= 0 ? '+' : '') + value.toFixed(2) + '%';
+                                            }};
+                                            const baseLines = [
                                                 datasetLabel + '：' + raw.tx_time,
                                                 '金额：¥' + Number(raw.amount || 0).toFixed(2),
                                                 '份额：' + Number(raw.shares || 0).toFixed(2),
-                                                '净值：' + Number(raw.net_value || 0).toFixed(4)
+                                                '净值：' + Number(raw.net_value || 0).toFixed(4),
+                                                '基金业绩：' + formatPct(fundPerf),
+                                                benchmarkLabel + '：' + formatPct(benchmarkPerf),
+                                                '持有收益率：' + formatPct(holdingReturnPct)
                                             ];
+                                            if (datasetLabel === '清仓') {{
+                                                baseLines.push('周期：' + (raw.period_start || '--') + ' ~ ' + (raw.period_end || '--'));
+                                                baseLines.push('周期收益：¥' + Number(raw.cycle_profit || 0).toFixed(2));
+                                                baseLines.push('周期收益率：' + ((raw.cycle_return_pct === null || raw.cycle_return_pct === undefined) ? '--' : ((Number(raw.cycle_return_pct) >= 0 ? '+' : '') + Number(raw.cycle_return_pct).toFixed(2) + '%')));
+                                                baseLines.push('年化收益率：' + ((raw.annual_return_pct === null || raw.annual_return_pct === undefined) ? '--' : ((Number(raw.annual_return_pct) >= 0 ? '+' : '') + Number(raw.annual_return_pct).toFixed(2) + '%')));
+                                            }}
+                                            return baseLines;
                                         }}
                                         if (dataValue === null || dataValue === undefined) {{
                                             return datasetLabel + ': --';
@@ -4868,7 +5034,15 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                         }}
                     }}
                 }}
-            }});
+            }};
+
+            try {{
+                window.fundRowChartInstance = new Chart(canvas.getContext('2d'), chartConfig);
+            }} catch (chartErr) {{
+                console.warn('fund row chart init failed, retrying without custom plugin', chartErr);
+                chartConfig.plugins = [];
+                window.fundRowChartInstance = new Chart(canvas.getContext('2d'), chartConfig);
+            }}
         }}
 
         function bindChartRangeButtons(chartRow, fundCode) {{
@@ -4899,12 +5073,11 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 const normalizedInterval = (normalizedType === 'performance' || normalizedType === 'profit') ? (interval || defaultInterval) : null;
                 const currentState = window.currentFundChartState;
 
-                // 如果当前已展开的是同一只基金、同一类型、同一区间，则收起
+                // 如果当前已展开的是同一只基金、同一类型，则收起（estimate/performance/profit统一规则；区间切换不影响展开/收起状态）
                 if (!options.forceOpen &&
                     currentState &&
                     currentState.code === fundCode &&
-                    currentState.type === normalizedType &&
-                    currentState.interval === normalizedInterval) {{
+                    currentState.type === normalizedType) {{
                     const existingRow = tableBody.querySelector('tr.fund-chart-row');
                     if (existingRow) existingRow.remove();
                     window.currentFundChartState = null;
@@ -4921,8 +5094,9 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
 
                 const codeCell = tableBody.querySelector(`.fund-code-cell[data-code="${{fundCode}}"]`);
                 const nameCell = tableBody.querySelector(`.fund-name-cell[data-code="${{fundCode}}"]`);
+                const estimateCell = tableBody.querySelector(`.fund-estimate-cell[data-code="${{fundCode}}"]`);
                 const gainCell = tableBody.querySelector(`.fund-position-gain-cell[data-code="${{fundCode}}"]`);
-                const targetAnchor = normalizedType === 'performance' ? codeCell : (normalizedType === 'profit' ? gainCell : (nameCell || codeCell));
+                const targetAnchor = normalizedType === 'performance' ? (nameCell || codeCell) : (normalizedType === 'profit' ? gainCell : (estimateCell || nameCell || codeCell));
                 const targetRow = targetAnchor ? targetAnchor.closest('tr') : null;
                 if (!targetRow) return;
 
@@ -4941,13 +5115,20 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
 
                 const canvas = chartCell.querySelector('canvas');
                 const chartData = await loadFundChartDataInline(fundCode, normalizedType, normalizedInterval || (normalizedType === 'profit' ? 'THREE_MONTH' : 'ONE_YEAR'));
-                renderFundRowChart(canvas, chartData, normalizedType);
-
                 window.currentFundChartState = {{
                     code: fundCode,
                     type: normalizedType,
                     interval: normalizedInterval
                 }};
+
+                try {{
+                    renderFundRowChart(canvas, chartData, normalizedType);
+                }} catch (renderErr) {{
+                    console.error('renderFundRowChart error:', renderErr);
+                    if (chartCell) {{
+                        chartCell.innerHTML = `<div style="padding:18px;color:var(--down-color);font-size:12px;">图表渲染失败，请稍后重试</div>`;
+                    }}
+                }}
             }} catch (e) {{
                 console.error('toggleFundRowChart error:', e);
             }}
@@ -5310,7 +5491,7 @@ def get_sectors_page_html(sectors_content, select_fund_content, fund_map, userna
         </div>
     </div>
 
-    <script src="/static/js/main.js?v=20260316"></script>
+    <script src="/static/js/main.js?v=20260323a"></script>
     <script src="/static/js/sidebar-nav.js"></script>
     <script>
         function switchTab(tabName) {{
@@ -5393,8 +5574,12 @@ def get_sectors_page_html(sectors_content, select_fund_content, fund_map, userna
                 }}, 10000);
             }}
 
-            // 自动颜色化
-            autoColorize();
+            // 自动颜色化延后到首帧之后，减少首屏阻塞
+            requestAnimationFrame(function() {
+                setTimeout(function() {
+                    autoColorize();
+                }, 0);
+            });
         }});
     </script>
 </body>

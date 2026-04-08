@@ -102,6 +102,21 @@
     min-width: 120px;
 }
 
+.fund-io-btn {
+    padding: 8px 16px;
+    background: #dbeafe !important;
+    border-color: #bfdbfe !important;
+    color: #1d4ed8 !important;
+}
+
+.fund-io-btn:hover {
+    background: #bfdbfe !important;
+}
+
+.fund-io-btn-right {
+    margin-left: auto;
+}
+
 /* Enhanced Add Fund Input */
 .add-fund-input {
     display: flex;
