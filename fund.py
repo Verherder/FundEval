@@ -12,6 +12,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 import requests
 import urllib3
+import tabulate as tabulate_module
 from curl_cffi import requests as curl_requests
 from dotenv import load_dotenv
 from loguru import logger
@@ -38,18 +39,24 @@ PERFORMANCE_CHART_INTERVALS = {
 sem = threading.Semaphore(5)
 
 urllib3.disable_warnings()
-urllib3.util.ssl_.DEFAULT_CIPHERS = ":".join(
-    [
-        "ECDHE+AESGCM",
-        "ECDHE+CHACHA20",
-        'ECDHE-RSA-AES128-SHA',
-        'ECDHE-RSA-AES256-SHA',
-        "RSA+AESGCM",
-        'AES128-SHA',
-        'AES256-SHA',
-    ]
-)
-tabulate.PRESERVE_WHITESPACE = True
+try:
+    _ssl_module = getattr(getattr(urllib3, "util", None), "ssl_", None)
+    if _ssl_module is not None and hasattr(_ssl_module, "DEFAULT_CIPHERS"):
+        _ssl_module.DEFAULT_CIPHERS = ":".join(
+            [
+                "ECDHE+AESGCM",
+                "ECDHE+CHACHA20",
+                'ECDHE-RSA-AES128-SHA',
+                'ECDHE-RSA-AES256-SHA',
+                "RSA+AESGCM",
+                'AES128-SHA',
+                'AES256-SHA',
+            ]
+        )
+except Exception:
+    pass
+
+tabulate_module.PRESERVE_WHITESPACE = True
 
 
 def format_table_msg(table, tablefmt="pretty"):
@@ -89,7 +96,7 @@ class LanFund:
                  "国家安防", "安全主题", "农牧主题", "农林牧渔", "养殖业", "猪肉", "高端装备"]
     }
 
-    def __init__(self, user_id=None, db=None):
+    def __init__(self, user_id=None, db=None, initialize_remote=True):
         self.user_id = user_id  # 用户ID，如果为None则使用文件模式
         self.db = db  # 数据库实例，从外部传入
 
@@ -117,13 +124,16 @@ class LanFund:
         self.report_dir = None  # 默认不输出报告文件（需通过 -o 参数指定）
         self.result = []
         self._cache_dirty = False
+        self._remote_initialized = False
         
         # 加载缓存数据，外部接口失败时不影响基础功能
         self.load_cache()
-        try:
-            self.init()
-        except Exception as e:
-            logger.error(f"初始化失败(网络或接口问题，不影响登录等基础功能): {e}")
+        if initialize_remote:
+            try:
+                self.init()
+                self._remote_initialized = True
+            except Exception as e:
+                logger.error(f"初始化失败(网络或接口问题，不影响登录等基础功能): {e}")
 
     def load_cache(self):
         """
@@ -800,9 +810,78 @@ class LanFund:
             return raw_label
         return raw_label
 
-    def get_fund_performance_chart_data(self, fund_code, fund_data, date_interval="ONE_YEAR"):
+    def get_fund_performance_chart_data(self, fund_code, fund_data, date_interval="THREE_YEAR"):
         """获取基金业绩曲线数据。"""
         fund_key = fund_data["fund_key"]
+
+        if date_interval not in PERFORMANCE_CHART_INTERVALS:
+            date_interval = "THREE_YEAR"
+
+        # 本地优先：命中缓存则直接返回，避免重复请求远端
+        cached_chart_data = None
+        if self.db is not None and hasattr(self.db, 'get_fund_performance_curve_cache'):
+            try:
+                cached_rows = self.db.get_fund_performance_curve_cache(fund_code, date_interval)
+                if cached_rows:
+                    labels = []
+                    growth = []
+                    net_values = []
+                    benchmark_growth = []
+
+                    def safe_float(value, digits=None):
+                        try:
+                            number = float(value)
+                            if digits is not None:
+                                return round(number, digits)
+                            return number
+                        except (TypeError, ValueError):
+                            return None
+
+                    for row in cached_rows:
+                        label_text = str(row.get('curve_date') or '').strip()
+                        if not label_text:
+                            continue
+                        labels.append(label_text)
+                        growth.append(safe_float(row.get('growth_rate'), 2))
+                        net_values.append(safe_float(row.get('nav_value'), 4))
+                        benchmark_growth.append(safe_float(row.get('benchmark_growth_rate'), 2))
+
+                    if labels:
+                        latest_net_value = None
+                        latest_net_value_date = None
+                        for index in range(len(net_values) - 1, -1, -1):
+                            if net_values[index] is None:
+                                continue
+                            latest_net_value = net_values[index]
+                            latest_net_value_date = labels[index] if index < len(labels) else None
+                            break
+
+                        cached_chart_data = {
+                            'labels': labels,
+                            'growth': growth,
+                            'net_values': net_values,
+                            'benchmark_label': '沪深300',
+                            'benchmark_growth': benchmark_growth,
+                            'latest_net_value': latest_net_value,
+                            'latest_net_value_date': latest_net_value_date,
+                            'from_cache': True,
+                            'date_interval': date_interval,
+                            'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
+                        }
+                        logger.debug(f"业绩曲线本地缓存命中【{fund_code} {date_interval}】: {len(labels)} points")
+            except Exception as e:
+                logger.warning(f"读取本地业绩曲线缓存失败【{fund_code} {date_interval}】: {e}")
+
+        if cached_chart_data is not None:
+            return cached_chart_data
+
+        # 仅在需要远端请求时再初始化远端上下文，避免本地命中也触发网络开销
+        if not self._remote_initialized:
+            try:
+                self.init()
+                self._remote_initialized = True
+            except Exception as e:
+                logger.warning(f"远端初始化失败，业绩曲线请求可能失败【{fund_code} {date_interval}】: {e}")
 
         headers = {
             "Accept-Language": "zh-CN,zh;q=0.9",
@@ -814,9 +893,6 @@ class LanFund:
             "X-API-Key": "foobar",
             "accept": "json"
         }
-
-        if date_interval not in PERFORMANCE_CHART_INTERVALS:
-            date_interval = "ONE_YEAR"
 
         try:
             response = timed_http_request(
@@ -839,6 +915,7 @@ class LanFund:
                 return {
                     'labels': [],
                     'growth': [],
+                    'from_cache': False,
                     'date_interval': date_interval,
                     'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
                 }
@@ -884,6 +961,29 @@ class LanFund:
 
             benchmark_growth = [benchmark_growth_map.get(label) for label in labels]
 
+            # 云端回填：批量写入本地曲线缓存，供后续本地直接读取
+            if self.db is not None and hasattr(self.db, 'bulk_upsert_fund_performance_curve_cache'):
+                try:
+                    cache_points = []
+                    max_len = len(labels)
+                    for idx in range(max_len):
+                        cache_points.append({
+                            'curve_date': labels[idx],
+                            'growth_rate': growth[idx] if idx < len(growth) else None,
+                            'benchmark_growth_rate': benchmark_growth[idx] if idx < len(benchmark_growth) else None,
+                            'nav_value': net_values[idx] if idx < len(net_values) else None,
+                        })
+                    write_count = self.db.bulk_upsert_fund_performance_curve_cache(
+                        fund_code,
+                        date_interval,
+                        cache_points,
+                        source='fund123_curves_api'
+                    )
+                    if write_count > 0:
+                        logger.debug(f"业绩曲线云端回填本地缓存完成【{fund_code} {date_interval}】: {write_count} points")
+                except Exception as e:
+                    logger.warning(f"回填本地业绩曲线缓存失败【{fund_code} {date_interval}】: {e}")
+
             latest_net_value = None
             latest_net_value_date = None
             for index in range(len(net_values) - 1, -1, -1):
@@ -901,6 +1001,7 @@ class LanFund:
                 'benchmark_growth': benchmark_growth,
                 'latest_net_value': latest_net_value,
                 'latest_net_value_date': latest_net_value_date,
+                'from_cache': False,
                 'date_interval': date_interval,
                 'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
             }
@@ -914,6 +1015,7 @@ class LanFund:
                 'benchmark_growth': [],
                 'latest_net_value': None,
                 'latest_net_value_date': None,
+                'from_cache': False,
                 'date_interval': date_interval,
                 'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
             }

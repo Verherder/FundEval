@@ -215,6 +215,36 @@ class Database:
         except Exception as e:
             logger.warning(f"Failed to create indexes for fund_nav_history: {e}")
 
+        # 基金业绩曲线缓存（本地优先读取，降低远端请求频率）
+        cursor.execute('''
+                       CREATE TABLE IF NOT EXISTS fund_performance_curve_cache
+                       (
+                           id INTEGER PRIMARY KEY AUTOINCREMENT,
+                           fund_code TEXT NOT NULL,
+                           date_interval TEXT NOT NULL,
+                           curve_date TEXT NOT NULL,
+                           growth_rate REAL,
+                           benchmark_growth_rate REAL,
+                           nav_value REAL,
+                           source TEXT,
+                           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           UNIQUE(fund_code, date_interval, curve_date)
+                       )
+                       ''')
+
+        try:
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_curve_cache_code_interval_date
+                ON fund_performance_curve_cache(fund_code, date_interval, curve_date)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_curve_cache_code_date
+                ON fund_performance_curve_cache(fund_code, curve_date)
+            ''')
+        except Exception as e:
+            logger.warning(f"Failed to create indexes for fund_performance_curve_cache: {e}")
+
         # 检查并添加chart_default字段
         cursor.execute("PRAGMA table_info(user_funds)")
         columns = [col[1] for col in cursor.fetchall()]
@@ -839,6 +869,158 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to upsert fund nav history: {e}")
             return False
+
+    def get_fund_nav_history_range(self, fund_code, start_date=None, end_date=None):
+        """按日期区间读取基金净值缓存，返回 {nav_date: nav_value}。"""
+        try:
+            code = str(fund_code or '').strip()
+            if not code:
+                return {}
+
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            sql = '''
+                SELECT nav_date, nav_value
+                FROM fund_nav_history
+                WHERE fund_code = ?
+            '''
+            params = [code]
+
+            if start_date:
+                sql += ' AND nav_date >= ?'
+                params.append(str(start_date).strip())
+
+            if end_date:
+                sql += ' AND nav_date <= ?'
+                params.append(str(end_date).strip())
+
+            sql += ' ORDER BY nav_date ASC'
+
+            cursor.execute(sql, tuple(params))
+            rows = cursor.fetchall()
+            conn.close()
+
+            result = {}
+            for row in rows:
+                nav_date = str(row['nav_date'] or '').strip()
+                if not nav_date:
+                    continue
+                try:
+                    nav_value = float(row['nav_value'])
+                except Exception:
+                    continue
+                if nav_value > 0:
+                    result[nav_date] = round(nav_value, 4)
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get fund nav history range: {e}")
+            return {}
+
+    def get_fund_performance_curve_cache(self, fund_code, date_interval, start_date=None, end_date=None):
+        """读取基金业绩曲线缓存（按日期正序）。"""
+        try:
+            code = str(fund_code or '').strip()
+            interval = str(date_interval or '').strip().upper()
+            if not code or not interval:
+                return []
+
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            sql = '''
+                SELECT curve_date, growth_rate, benchmark_growth_rate, nav_value
+                FROM fund_performance_curve_cache
+                WHERE fund_code = ? AND date_interval = ?
+            '''
+            params = [code, interval]
+
+            if start_date:
+                sql += ' AND curve_date >= ?'
+                params.append(str(start_date).strip())
+
+            if end_date:
+                sql += ' AND curve_date <= ?'
+                params.append(str(end_date).strip())
+
+            sql += ' ORDER BY curve_date ASC'
+
+            cursor.execute(sql, tuple(params))
+            rows = cursor.fetchall()
+            conn.close()
+
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Failed to get fund performance curve cache: {e}")
+            return []
+
+    def bulk_upsert_fund_performance_curve_cache(self, fund_code, date_interval, curve_points, source=None):
+        """批量写入/更新基金业绩曲线缓存。"""
+        try:
+            code = str(fund_code or '').strip()
+            interval = str(date_interval or '').strip().upper()
+            if not code or not interval or not curve_points:
+                return 0
+
+            source_text = str(source or '').strip() if source is not None else None
+            rows = []
+            for point in curve_points:
+                curve_date = str(point.get('curve_date') or '').strip()
+                if not curve_date:
+                    continue
+
+                growth_rate = point.get('growth_rate')
+                benchmark_growth_rate = point.get('benchmark_growth_rate')
+                nav_value = point.get('nav_value')
+
+                try:
+                    growth_rate = float(growth_rate) if growth_rate is not None else None
+                except Exception:
+                    growth_rate = None
+
+                try:
+                    benchmark_growth_rate = float(benchmark_growth_rate) if benchmark_growth_rate is not None else None
+                except Exception:
+                    benchmark_growth_rate = None
+
+                try:
+                    nav_value = float(nav_value) if nav_value is not None else None
+                except Exception:
+                    nav_value = None
+
+                rows.append((
+                    code,
+                    interval,
+                    curve_date,
+                    growth_rate,
+                    benchmark_growth_rate,
+                    nav_value,
+                    source_text,
+                ))
+
+            if not rows:
+                return 0
+
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.executemany('''
+                INSERT INTO fund_performance_curve_cache
+                (fund_code, date_interval, curve_date, growth_rate, benchmark_growth_rate, nav_value, source, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(fund_code, date_interval, curve_date)
+                DO UPDATE SET
+                    growth_rate = excluded.growth_rate,
+                    benchmark_growth_rate = excluded.benchmark_growth_rate,
+                    nav_value = excluded.nav_value,
+                    source = excluded.source,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', rows)
+            conn.commit()
+            conn.close()
+            return len(rows)
+        except Exception as e:
+            logger.error(f"Failed to bulk upsert fund performance curve cache: {e}")
+            return 0
 
     def update_fund_transaction_and_recalculate(self, user_id, fund_code, tx_id, tx_type, amount, shares, net_value, tx_time, fee=0.0):
         """更新交易并按剩余交易重算该基金份额。"""

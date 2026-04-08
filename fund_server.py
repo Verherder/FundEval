@@ -11,6 +11,7 @@ os.makedirs(os.path.join("cache", "logs"), exist_ok=True)
 import importlib
 import json
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Any, Optional
 
 try:
     from openpyxl import load_workbook
@@ -52,17 +53,22 @@ PERFORMANCE_CHART_INTERVALS = {
 load_dotenv()
 
 urllib3.disable_warnings()
-urllib3.util.ssl_.DEFAULT_CIPHERS = ":".join(
-    [
-        "ECDHE+AESGCM",
-        "ECDHE+CHACHA20",
-        'ECDHE-RSA-AES128-SHA',
-        'ECDHE-RSA-AES256-SHA',
-        "RSA+AESGCM",
-        'AES128-SHA',
-        'AES256-SHA',
-    ]
-)
+try:
+    _ssl_module = getattr(getattr(urllib3, "util", None), "ssl_", None)
+    if _ssl_module is not None and hasattr(_ssl_module, "DEFAULT_CIPHERS"):
+        _ssl_module.DEFAULT_CIPHERS = ":".join(
+            [
+                "ECDHE+AESGCM",
+                "ECDHE+CHACHA20",
+                'ECDHE-RSA-AES128-SHA',
+                'ECDHE-RSA-AES256-SHA',
+                "RSA+AESGCM",
+                'AES128-SHA',
+                'AES256-SHA',
+            ]
+        )
+except Exception:
+    pass
 
 app = Flask(__name__)
 app.secret_key = "luobobo"
@@ -71,6 +77,7 @@ IMPORT_JOB_STORE = {}
 IMPORT_JOB_LOCK = threading.Lock()
 IMPORT_DETAIL_LOG_PATH = os.path.join("cache", "logs", "transaction_import.log")
 SERVER_LOG_PATH = os.path.join("cache", "logs", "fund_server.log")
+LOG_CLEANUP_STATE_PATH = os.path.join("cache", "logs", ".log_cleanup_state")
 
 _LOG_CLEANUP_LOCK = threading.Lock()
 _LOG_CLEANUP_THREAD_STARTED = False
@@ -173,11 +180,36 @@ def _run_log_cleanup_once(retain_days):
     _trim_log_file_keep_recent(IMPORT_DETAIL_LOG_PATH, retain_days)
 
 
+def _should_run_log_cleanup(interval_hours):
+    """基于持久化状态判断是否需要执行清理，避免重启后频繁触发。"""
+    try:
+        if not os.path.exists(LOG_CLEANUP_STATE_PATH):
+            return True
+        last_run_ts = os.path.getmtime(LOG_CLEANUP_STATE_PATH)
+        elapsed_seconds = max(0, time.time() - last_run_ts)
+        return elapsed_seconds >= max(1, int(interval_hours * 3600))
+    except Exception:
+        return True
+
+
+def _mark_log_cleanup_ran():
+    """记录最近一次清理时间。"""
+    try:
+        os.makedirs(os.path.dirname(LOG_CLEANUP_STATE_PATH), exist_ok=True)
+        with open(LOG_CLEANUP_STATE_PATH, "w", encoding="utf-8") as state_file:
+            state_file.write(datetime.datetime.now().isoformat())
+    except Exception as e:
+        logger.warning(f"写入日志清理状态失败: {e}")
+
+
 def _log_cleanup_worker(interval_hours, retain_days):
     """后台定时执行日志清理。"""
     interval_seconds = max(1, int(interval_hours * 3600))
+    time.sleep(interval_seconds)
     while True:
-        _run_log_cleanup_once(retain_days)
+        if _should_run_log_cleanup(interval_hours):
+            _run_log_cleanup_once(retain_days)
+            _mark_log_cleanup_ran()
         time.sleep(interval_seconds)
 
 
@@ -299,6 +331,8 @@ def login():
         if remember_me:
             import hashlib
             user = db.get_user_by_username(username)
+            if not user:
+                return response
             token_hash = hashlib.sha256(f"{username}:{user['password_hash']}".encode()).hexdigest()
             remember_token = f"{username}:{token_hash}"
             response.set_cookie('remember_token', remember_token, max_age=7 * 24 * 60 * 60, httponly=True,
@@ -515,10 +549,11 @@ def api_fund_upload():
             return {'success': False, 'message': '未找到上传文件'}
 
         file = request.files['file']
-        if file.filename == '':
+        filename = str(file.filename or '').strip()
+        if filename == '':
             return {'success': False, 'message': '未选择文件'}
 
-        if not file.filename.endswith('.json'):
+        if not filename.endswith('.json'):
             return {'success': False, 'message': '只支持JSON文件'}
 
         # 读取并解析JSON
@@ -867,6 +902,94 @@ def _find_net_value_by_date_from_history_api(user_id, fund_code, target_date):
     return None
 
 
+def _fetch_history_nav_map_by_date_range(user_id, fund_code, start_date, end_date):
+    """通过历史净值接口批量获取区间净值，返回 {YYYY-MM-DD: nav}。"""
+    result = {}
+    try:
+        start_text = datetime.date.fromisoformat(str(start_date)).strftime("%Y%m%d")
+        end_text = datetime.date.fromisoformat(str(end_date)).strftime("%Y%m%d")
+    except Exception:
+        return result
+
+    user_funds = db.get_user_funds(user_id)
+    fund_data = user_funds.get(fund_code)
+    if not fund_data:
+        return result
+
+    fund_key = fund_data.get('fund_key')
+    if not fund_key:
+        return result
+
+    api_url = fund.DATA_SOURCE_URLS.get('fund123_history_net_value_api')
+    if not api_url:
+        return result
+
+    importlib.reload(fund)
+    my_fund = fund.LanFund(user_id=user_id, db=db)
+
+    headers = {
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+        "Origin": fund.DATA_SOURCE_URLS['fund123_origin'],
+        "Referer": fund.DATA_SOURCE_URLS['fund123_fund_page'],
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+        "X-API-Key": "foobar",
+        "accept": "json"
+    }
+
+    page_num = 1
+    page_size = 500
+    max_pages = 20
+
+    while page_num <= max_pages:
+        payload = {
+            "productId": fund_key,
+            "startDate": start_text,
+            "endDate": end_text,
+            "pageNum": page_num,
+            "pageSize": page_size,
+        }
+        try:
+            response = my_fund.session.post(
+                api_url,
+                params={"_csrf": my_fund._csrf},
+                json=payload,
+                headers=headers,
+                timeout=10,
+                verify=False,
+            )
+            response_json = response.json()
+        except Exception as e:
+            logger.warning(f"区间历史净值接口请求失败【{fund_code} {start_date}~{end_date} page={page_num}】: {e}")
+            break
+
+        if not response_json.get("success"):
+            break
+
+        value_list = response_json.get("list", []) or []
+        if not value_list:
+            break
+
+        for item in value_list:
+            nav_date = str(item.get("netValueDate", "")).strip()
+            if not nav_date:
+                continue
+            try:
+                nav_value = float(item.get("netValue"))
+            except (TypeError, ValueError):
+                continue
+            if nav_value <= 0:
+                continue
+            result[nav_date] = round(nav_value, 4)
+
+        if len(value_list) < page_size:
+            break
+        page_num += 1
+
+    return result
+
+
 def _normalize_import_tx_type(tx_type_raw):
     tx_type_text = str(tx_type_raw or '').strip().lower()
     if not tx_type_text:
@@ -1004,6 +1127,8 @@ def _read_excel_rows_for_transaction_import(file_storage):
         return None, f'Excel解析失败: {e}'
 
     sheet = workbook.active
+    if sheet is None:
+        return None, 'Excel解析失败: 未找到可用工作表'
     rows = list(sheet.iter_rows(values_only=False))
     if not rows:
         return None, 'Excel内容为空'
@@ -1034,7 +1159,7 @@ def _read_excel_rows_for_transaction_import(file_storage):
 
     parsed_rows = []
     for row_num, row_cells in enumerate(rows[1:], start=2):
-        row_dict = {'row_num': row_num}
+        row_dict: dict[str, Any] = {'row_num': row_num}
         for field_name, idx in col_index.items():
             cell = row_cells[idx] if idx < len(row_cells) else None
             raw_value = getattr(cell, 'value', None) if cell is not None else None
@@ -1156,7 +1281,7 @@ def _calculate_holding_shares_by_time(user_id, fund_code, up_to_dt=None, fallbac
     return holding
 
 
-def _safe_float(value, default=0.0):
+def _safe_float(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -1255,10 +1380,10 @@ def _build_clear_cycles(transactions):
 
     for tx in transactions:
         tx_type = str(tx.get('tx_type', '')).strip().lower()
-        tx_shares = _safe_float(tx.get('shares', 0), 0.0)
-        tx_amount = _safe_float(tx.get('amount', 0), 0.0)
-        tx_net_value = _safe_float(tx.get('net_value', 0), 0.0)
-        tx_fee = _safe_float(tx.get('fee', 0), 0.0)
+        tx_shares = _safe_float(tx.get('shares', 0), 0.0) or 0.0
+        tx_amount = _safe_float(tx.get('amount', 0), 0.0) or 0.0
+        tx_net_value = _safe_float(tx.get('net_value', 0), 0.0) or 0.0
+        tx_fee = _safe_float(tx.get('fee', 0), 0.0) or 0.0
         tx_dt = _parse_tx_datetime(tx.get('tx_time'))
         if tx_dt is None:
             continue
@@ -2651,14 +2776,18 @@ def api_timing_data():
 
         # 使用现有的 get_timing_chart_data 方法
         data = my_fund.get_timing_chart_data()
+        response_data: dict[str, Any] = dict(data)
 
         # 添加当前价格和涨跌幅信息（使用原始数据中的正确涨跌幅）
-        if data['prices']:
-            data['current_price'] = data['prices'][-1]
-            data['change'] = data['change_amounts'][-1] if data.get('change_amounts') else 0
-            data['change_pct'] = data['change_pcts'][-1] if data.get('change_pcts') else 0
+        prices = response_data.get('prices') or []
+        if prices:
+            response_data['current_price'] = prices[-1]
+            change_amounts = response_data.get('change_amounts') or []
+            change_pcts = response_data.get('change_pcts') or []
+            response_data['change'] = change_amounts[-1] if change_amounts else 0
+            response_data['change_pct'] = change_pcts[-1] if change_pcts else 0
 
-        return jsonify({'success': True, 'data': data})
+        return jsonify({'success': True, 'data': response_data})
     except Exception as e:
         logger.error(f"获取上证分时数据失败: {e}")
         return jsonify({'success': False, 'message': f'数据加载失败: {str(e)}'}), 500
@@ -2997,8 +3126,12 @@ def get_precious_metals():
     except Exception as e:
         precious_metals_data['history'] = f"<p style='color:#f44336;'>加载失败: {str(e)}</p>"
 
-    from src.module_html import get_precious_metals_page_html
-    html = get_precious_metals_page_html(precious_metals_data, username=get_current_username())
+    import src.module_html as module_html
+    render_page = getattr(module_html, 'get_precious_metals_page_html', None)
+    if callable(render_page):
+        html = str(render_page(precious_metals_data, username=get_current_username()))
+    else:
+        html = str(precious_metals_data.get('real_time', '')) + str(precious_metals_data.get('history', ''))
     return html
 
 
@@ -3151,7 +3284,7 @@ def api_fund_chart_data():
 def api_fund_performance_chart_data():
     """获取基金业绩曲线数据。"""
     fund_code = request.args.get('code')
-    date_interval = request.args.get('interval', 'ONE_YEAR').strip().upper()
+    date_interval = request.args.get('interval', 'THREE_YEAR').strip().upper()
     if not fund_code:
         return jsonify({'error': 'Missing fund code'}), 400
 
@@ -3170,16 +3303,17 @@ def api_fund_performance_chart_data():
     }
 
     importlib.reload(fund)
-    my_fund = fund.LanFund(user_id=user_id, db=db)
+    my_fund = fund.LanFund(user_id=user_id, db=db, initialize_remote=False)
     chart_data = my_fund.get_fund_performance_chart_data(fund_code, fund_data, date_interval)
 
     # 业绩曲线查看时顺便回填本地净值缓存，提升后续导入/计算速度
-    _cache_nav_history_from_curve_data(
-        fund_code,
-        chart_data.get('labels', []) or [],
-        chart_data.get('net_values', []) or [],
-        source=f'performance_curve:{date_interval.lower()}'
-    )
+    if not bool(chart_data.get('from_cache', False)):
+        _cache_nav_history_from_curve_data(
+            fund_code,
+            chart_data.get('labels', []) or [],
+            chart_data.get('net_values', []) or [],
+            source=f'performance_curve:{date_interval.lower()}'
+        )
 
     transactions = db.get_fund_transactions(user_id, fund_code)
     chart_labels = chart_data.get('labels', []) or []
@@ -3294,11 +3428,13 @@ def api_fund_performance_chart_data():
 
     chart_data['holding_return_pct'] = holding_return_pct
 
-    latest_net_value, latest_nav_date, _latest_fund_data = _get_latest_fund_quote(user_id, fund_code)
-    if latest_net_value and latest_net_value > 0:
-        chart_data['latest_net_value'] = round(float(latest_net_value), 4)
-    if latest_nav_date:
-        chart_data['latest_net_value_date'] = latest_nav_date
+    # 本地缓存命中时不再触发额外远端行情请求，提升重复查看性能
+    if not bool(chart_data.get('from_cache', False)):
+        latest_net_value, latest_nav_date, _latest_fund_data = _get_latest_fund_quote(user_id, fund_code)
+        if latest_net_value and latest_net_value > 0:
+            chart_data['latest_net_value'] = round(float(latest_net_value), 4)
+        if latest_nav_date:
+            chart_data['latest_net_value_date'] = latest_nav_date
 
     return jsonify({
         'chart_data': chart_data,
@@ -3312,9 +3448,9 @@ def api_fund_performance_chart_data():
 @app.route('/api/fund/profit-chart-data')
 @login_required
 def api_fund_profit_chart_data():
-    """获取基金累计收益曲线数据。"""
+    """获取基金累计收益曲线数据（重写版：交易与净值按日对齐，提供更完整指标序列）。"""
     fund_code = request.args.get('code')
-    date_interval = request.args.get('interval', 'ONE_YEAR').strip().upper()
+    date_interval = request.args.get('interval', 'THREE_YEAR').strip().upper()
     if not fund_code:
         return jsonify({'error': 'Missing fund code'}), 400
 
@@ -3332,16 +3468,17 @@ def api_fund_profit_chart_data():
     }
 
     importlib.reload(fund)
-    my_fund = fund.LanFund(user_id=user_id, db=db)
+    my_fund = fund.LanFund(user_id=user_id, db=db, initialize_remote=False)
     perf_data = my_fund.get_fund_performance_chart_data(fund_code, fund_data, date_interval)
+    from_cache = bool(perf_data.get('from_cache', False))
 
-    # 与业绩曲线同源数据，顺便回填净值缓存
-    _cache_nav_history_from_curve_data(
-        fund_code,
-        perf_data.get('labels', []) or [],
-        perf_data.get('net_values', []) or [],
-        source=f'profit_curve:{date_interval.lower()}'
-    )
+    if not from_cache:
+        _cache_nav_history_from_curve_data(
+            fund_code,
+            perf_data.get('labels', []) or [],
+            perf_data.get('net_values', []) or [],
+            source=f'profit_curve:{date_interval.lower()}'
+        )
 
     labels = perf_data.get('labels', []) or []
     net_values = perf_data.get('net_values', []) or []
@@ -3372,83 +3509,6 @@ def api_fund_profit_chart_data():
             pass
         return None
 
-    # 业绩曲线接口在部分场景仅返回涨幅，不返回净值；
-    # 为避免累计收益曲线全空，按“净值 = 基准净值 * (1 + 涨幅%)”回推净值序列。
-    has_valid_nav = any(_safe_float(value) not in (None, 0.0) for value in net_values)
-    if labels and not has_valid_nav:
-        latest_net_value, latest_nav_date, _latest_fund_data = _get_latest_fund_quote(user_id, fund_code)
-        latest_nav_num = _safe_float(latest_net_value)
-
-        reference_index = None
-        if latest_nav_date:
-            for idx, label in enumerate(labels):
-                if str(label) == str(latest_nav_date) or str(label).endswith(str(latest_nav_date)[5:]):
-                    reference_index = idx
-                    break
-
-        if reference_index is None:
-            for idx in range(len(growth_values) - 1, -1, -1):
-                if _safe_float(growth_values[idx]) is not None:
-                    reference_index = idx
-                    break
-
-        if latest_nav_num and latest_nav_num > 0 and reference_index is not None:
-            ref_growth = _safe_float(growth_values[reference_index])
-            if ref_growth is None:
-                ref_growth = 0.0
-
-            denominator = 1 + ref_growth / 100.0
-            if abs(denominator) > 1e-8:
-                base_nav = latest_nav_num / denominator
-                rebuilt_nav_values = []
-                for growth in growth_values:
-                    growth_num = _safe_float(growth)
-                    if growth_num is None:
-                        rebuilt_nav_values.append(None)
-                    else:
-                        rebuilt_nav_values.append(round(base_nav * (1 + growth_num / 100.0), 4))
-                net_values = rebuilt_nav_values
-
-    parsed_label_dates = [_parse_label_date(label) for label in labels]
-    valid_dates = [date for date in parsed_label_dates if date is not None]
-
-    expanded_labels = labels
-    expanded_net_values = net_values
-    if valid_dates:
-        start_date = min(valid_dates)
-        end_date = max(valid_dates)
-
-        nav_by_date = {}
-        for idx, point_date in enumerate(parsed_label_dates):
-            if point_date is None:
-                continue
-            nav_value = _safe_float(net_values[idx]) if idx < len(net_values) else None
-            if nav_value is not None and nav_value > 0:
-                nav_by_date[point_date] = round(nav_value, 4)
-
-        expanded_dates = []
-        cursor = start_date
-        while cursor <= end_date:
-            expanded_dates.append(cursor)
-            cursor += datetime.timedelta(days=1)
-
-        expanded_labels = [date.isoformat() for date in expanded_dates]
-        expanded_net_values = []
-        last_known_nav = None
-        for point_date in expanded_dates:
-            today_nav = nav_by_date.get(point_date)
-            if today_nav is not None:
-                last_known_nav = today_nav
-            expanded_net_values.append(last_known_nav)
-
-        first_known_nav = next((value for value in expanded_net_values if value is not None), None)
-        if first_known_nav is not None:
-            for idx, value in enumerate(expanded_net_values):
-                if value is None:
-                    expanded_net_values[idx] = first_known_nav
-                else:
-                    break
-
     transactions = db.get_fund_transactions(user_id, fund_code)
     sorted_txs = []
     for tx in transactions:
@@ -3471,44 +3531,202 @@ def api_fund_profit_chart_data():
         if tx_type not in ('buy', 'sell', 'dividend'):
             continue
 
-        try:
-            tx_amount = float(tx.get('amount', 0) or 0)
-        except (TypeError, ValueError):
-            tx_amount = 0.0
-        try:
-            tx_shares = float(tx.get('shares', 0) or 0)
-        except (TypeError, ValueError):
-            tx_shares = 0.0
-        try:
-            tx_fee = float(tx.get('fee', 0) or 0)
-        except (TypeError, ValueError):
-            tx_fee = 0.0
+        tx_amount = _safe_float(tx.get('amount'))
+        tx_shares = _safe_float(tx.get('shares'))
+        tx_fee = _safe_float(tx.get('fee'))
+        tx_nav = _safe_float(tx.get('net_value'))
 
         sorted_txs.append({
             'datetime': tx_dt,
             'date': tx_dt.date(),
             'type': tx_type,
-            'amount': max(tx_amount, 0.0),
-            'shares': max(tx_shares, 0.0),
-            'fee': max(tx_fee, 0.0),
+            'amount': max(tx_amount or 0.0, 0.0),
+            'shares': max(tx_shares or 0.0, 0.0),
+            'fee': max(tx_fee or 0.0, 0.0),
+            'net_value': tx_nav if tx_nav and tx_nav > 0 else None,
         })
 
     sorted_txs.sort(key=lambda item: item['datetime'])
 
+    parsed_label_dates = [_parse_label_date(label) for label in labels]
+    valid_dates = [date for date in parsed_label_dates if date is not None]
+
+    local_nav_map = {}
+    if valid_dates:
+        local_nav_map = db.get_fund_nav_history_range(
+            fund_code,
+            min(valid_dates).isoformat(),
+            max(valid_dates).isoformat()
+        ) or {}
+
+    if valid_dates:
+        min_date = min(valid_dates).isoformat()
+        max_date = max(valid_dates).isoformat()
+        local_count = len(local_nav_map)
+        expected_count = max(1, len(valid_dates))
+        # 本地净值过稀疏时，按区间批量补齐历史净值并回写本地
+        if local_count < max(10, int(expected_count * 0.3)):
+            history_nav_map = _fetch_history_nav_map_by_date_range(user_id, fund_code, min_date, max_date)
+            if history_nav_map:
+                wrote_count = 0
+                for nav_date, nav_value in history_nav_map.items():
+                    if db.upsert_fund_nav_history(fund_code, nav_date, nav_value, source='history_api_bulk'):
+                        wrote_count += 1
+                if wrote_count > 0:
+                    logger.info(
+                        f"收益曲线净值批量回填完成【{fund_code} {date_interval}】: range={min_date}~{max_date}, wrote={wrote_count}"
+                    )
+                # 重新读取一次本地区间净值，供后续收益计算使用
+                local_nav_map = db.get_fund_nav_history_range(
+                    fund_code,
+                    min_date,
+                    max_date
+                ) or local_nav_map
+
+    if valid_dates and any(_safe_float(value) in (None, 0.0) for value in net_values):
+        for idx, point_date in enumerate(parsed_label_dates):
+            if idx >= len(net_values) or point_date is None:
+                continue
+            if _safe_float(net_values[idx]) not in (None, 0.0):
+                continue
+            nav_value = _safe_float(local_nav_map.get(point_date.isoformat()))
+            if nav_value is not None and nav_value > 0:
+                net_values[idx] = round(nav_value, 4)
+
+    has_valid_nav = any(_safe_float(value) not in (None, 0.0) for value in net_values)
+    if labels:
+        anchor_nav = None
+        anchor_date = None
+
+        # 优先使用当前区间内“最后一个真实净值点”作为锚点
+        for idx in range(len(labels) - 1, -1, -1):
+            nav_num = _safe_float(net_values[idx]) if idx < len(net_values) else None
+            if nav_num is not None and nav_num > 0:
+                anchor_nav = nav_num
+                anchor_date = labels[idx]
+                break
+
+        # 其次使用交易净值锚点
+        if anchor_nav is None or anchor_nav <= 0:
+            for tx_item in reversed(sorted_txs):
+                if tx_item['net_value'] is not None:
+                    anchor_nav = tx_item['net_value']
+                    anchor_date = tx_item['date'].isoformat()
+                    break
+
+        # 再其次使用本地净值历史锚点
+        if (anchor_nav is None or anchor_nav <= 0) and local_nav_map:
+            last_date = sorted(local_nav_map.keys())[-1]
+            local_anchor = _safe_float(local_nav_map.get(last_date))
+            if local_anchor is not None and local_anchor > 0:
+                anchor_nav = local_anchor
+                anchor_date = last_date
+
+        # 最后回退到最新行情净值锚点
+        if anchor_nav is None or anchor_nav <= 0:
+            latest_nav, latest_nav_date, _ = _get_latest_fund_quote(user_id, fund_code)
+            latest_nav_num = _safe_float(latest_nav)
+            if latest_nav_num is not None and latest_nav_num > 0:
+                anchor_nav = latest_nav_num
+                anchor_date = latest_nav_date
+
+        reference_index = None
+        if anchor_date:
+            anchor_date_text = str(anchor_date)
+            anchor_suffix = anchor_date_text[5:] if len(anchor_date_text) >= 10 else anchor_date_text
+            for idx, label in enumerate(labels):
+                label_text = str(label)
+                if label_text == anchor_date_text or label_text.endswith(anchor_suffix):
+                    reference_index = idx
+                    break
+
+        if reference_index is None:
+            for idx in range(len(growth_values) - 1, -1, -1):
+                if _safe_float(growth_values[idx]) is not None:
+                    reference_index = idx
+                    break
+
+        # 使用“锚点净值 + 同区间涨幅”补齐缺失净值点（非插值，不跨日平铺）
+        if anchor_nav and anchor_nav > 0 and reference_index is not None:
+            reference_growth = _safe_float(growth_values[reference_index]) or 0.0
+            denominator = 1 + reference_growth / 100.0
+            if abs(denominator) > 1e-8:
+                base_nav = anchor_nav / denominator
+                rebuilt_nav_values = []
+                for idx, growth in enumerate(growth_values):
+                    growth_num = _safe_float(growth)
+                    if growth_num is None:
+                        rebuilt_nav_values.append(None)
+                    else:
+                        rebuilt_nav_values.append(round(base_nav * (1 + growth_num / 100.0), 4))
+
+                # 真实净值优先；仅在缺失时用重建值补齐
+                max_len = max(len(net_values), len(rebuilt_nav_values))
+                merged_nav_values = []
+                for idx in range(max_len):
+                    real_nav = _safe_float(net_values[idx]) if idx < len(net_values) else None
+                    rebuilt_nav = _safe_float(rebuilt_nav_values[idx]) if idx < len(rebuilt_nav_values) else None
+                    if real_nav is not None and real_nav > 0:
+                        merged_nav_values.append(round(real_nav, 4))
+                    elif rebuilt_nav is not None and rebuilt_nav > 0:
+                        merged_nav_values.append(round(rebuilt_nav, 4))
+                    else:
+                        merged_nav_values.append(None)
+                net_values = merged_nav_values
+
+    nav_by_date = {}
+    for idx, point_date in enumerate(parsed_label_dates):
+        if point_date is None:
+            continue
+        nav_value = _safe_float(net_values[idx]) if idx < len(net_values) else None
+        if nav_value is not None and nav_value > 0:
+            nav_by_date[point_date] = round(nav_value, 4)
+
+    if not nav_by_date and sorted_txs:
+        for tx in sorted_txs:
+            if tx['net_value'] is not None:
+                nav_by_date[tx['date']] = round(tx['net_value'], 4)
+
+    sorted_nav_dates = sorted([date.isoformat() if isinstance(date, datetime.date) else str(date) 
+                                for date in nav_by_date.keys()]) if nav_by_date else []
+    
+    if sorted_nav_dates:
+        expanded_labels = sorted_nav_dates
+        expanded_net_values = []
+        for date_str in sorted_nav_dates:
+            for orig_date, nav_val in nav_by_date.items():
+                orig_date_str = orig_date.isoformat() if isinstance(orig_date, datetime.date) else str(orig_date)
+                if orig_date_str == date_str:
+                    expanded_net_values.append(nav_val)
+                    break
+    elif valid_dates:
+        expanded_labels = [date.isoformat() for date in sorted(valid_dates)]
+        expanded_net_values = [nav_by_date.get(datetime.date.fromisoformat(label)) for label in expanded_labels]
+    else:
+        expanded_labels = []
+        expanded_net_values = []
+
     tx_index = 0
     cumulative_buy = 0.0
     cumulative_sell = 0.0
+    cumulative_dividend = 0.0
     realized_gain = 0.0
     holding_shares = 0.0
     remaining_cost = 0.0
 
     profit_values = []
     holding_gain_values = []
+    realized_gain_values = []
+    position_value_values = []
+    remaining_cost_values = []
     cumulative_buy_values = []
     cumulative_sell_values = []
+    cumulative_dividend_values = []
+    profit_rate_values = []
 
-    for idx, label in enumerate(expanded_labels):
-        point_date = _parse_label_date(label)
+    for idx, label_str in enumerate(expanded_labels):
+        point_date = _parse_label_date(label_str)
+        
         while tx_index < len(sorted_txs) and point_date and sorted_txs[tx_index]['date'] <= point_date:
             tx = sorted_txs[tx_index]
             tx_type = tx['type']
@@ -3517,68 +3735,76 @@ def api_fund_profit_chart_data():
             tx_fee = tx['fee']
 
             if tx_type == 'buy' and tx_shares > 0:
-                cumulative_buy += tx_amount
-                unit_cost = (tx_amount / tx_shares) if tx_shares > 0 else 0.0
+                total_cost = tx_amount + tx_fee
+                cumulative_buy += total_cost
                 holding_shares += tx_shares
-                remaining_cost += tx_shares * unit_cost
-            elif tx_type == 'sell' and tx_shares > 0:
-                if holding_shares > 1e-8:
-                    sold_shares = min(tx_shares, holding_shares)
-                    avg_cost = (remaining_cost / holding_shares) if holding_shares > 1e-8 else 0.0
-                    sold_cost = sold_shares * avg_cost
-                    proceeds = tx_amount
-                    if tx_fee > 0:
-                        proceeds = max(tx_amount - tx_fee, 0.0)
+                remaining_cost += total_cost
+            elif tx_type == 'sell' and tx_shares > 0 and holding_shares > 1e-8:
+                sold_shares = min(tx_shares, holding_shares)
+                avg_cost = (remaining_cost / holding_shares) if holding_shares > 1e-8 else 0.0
+                sold_cost = sold_shares * avg_cost
+                proceeds = max(tx_amount - tx_fee, 0.0)
 
-                    # 若交易份额被截断，按比例截断卖出金额，避免超卖时收益畸高
-                    if tx_shares > sold_shares and tx_shares > 0:
-                        ratio = sold_shares / tx_shares
-                        proceeds = proceeds * ratio
+                if tx_shares > sold_shares and tx_shares > 0:
+                    proceeds *= (sold_shares / tx_shares)
 
-                    cumulative_sell += proceeds
-                    realized_gain += (proceeds - sold_cost)
-                    remaining_cost = max(remaining_cost - sold_cost, 0.0)
-                    holding_shares = max(holding_shares - sold_shares, 0.0)
+                cumulative_sell += proceeds
+                realized_gain += (proceeds - sold_cost)
+                remaining_cost = max(remaining_cost - sold_cost, 0.0)
+                holding_shares = max(holding_shares - sold_shares, 0.0)
             elif tx_type == 'dividend':
+                cumulative_dividend += tx_amount
                 cumulative_sell += tx_amount
                 realized_gain += tx_amount
 
             tx_index += 1
 
         net_value = expanded_net_values[idx] if idx < len(expanded_net_values) else None
-        if net_value is None:
-            profit_values.append(None)
-            holding_gain_values.append(None)
-            cumulative_buy_values.append(round(cumulative_buy, 2))
-            cumulative_sell_values.append(round(cumulative_sell, 2))
-            continue
+        net_value_num = _safe_float(net_value)
 
-        try:
-            net_value_num = float(net_value)
-        except (TypeError, ValueError):
-            profit_values.append(None)
-            holding_gain_values.append(None)
-            cumulative_buy_values.append(round(cumulative_buy, 2))
-            cumulative_sell_values.append(round(cumulative_sell, 2))
-            continue
+        if net_value_num is None and holding_shares > 1e-8:
+            position_value = None
+            holding_gain = None
+            total_profit = None
+        else:
+            position_value = (holding_shares * (net_value_num or 0.0))
+            holding_gain = position_value - remaining_cost
+            total_profit = realized_gain + holding_gain
 
-        current_value = holding_shares * net_value_num
-        holding_gain = current_value - remaining_cost
-        cumulative_profit = realized_gain + holding_gain
+        invested_base = cumulative_buy if cumulative_buy > 1e-8 else 0.0
+        if total_profit is None or invested_base <= 0:
+            profit_rate = None
+        else:
+            profit_rate = total_profit / invested_base * 100.0
 
-        profit_values.append(round(cumulative_profit, 2))
-        holding_gain_values.append(round(holding_gain, 2))
+        profit_values.append(round(total_profit, 2) if total_profit is not None else None)
+        holding_gain_values.append(round(holding_gain, 2) if holding_gain is not None else None)
+        realized_gain_values.append(round(realized_gain, 2))
+        position_value_values.append(round(position_value, 2) if position_value is not None else None)
+        remaining_cost_values.append(round(remaining_cost, 2))
         cumulative_buy_values.append(round(cumulative_buy, 2))
         cumulative_sell_values.append(round(cumulative_sell, 2))
+        cumulative_dividend_values.append(round(cumulative_dividend, 2))
+        profit_rate_values.append(round(profit_rate, 4) if profit_rate is not None else None)
+
+    latest_profit = next((value for value in reversed(profit_values) if value is not None), None)
+    latest_profit_rate = next((value for value in reversed(profit_rate_values) if value is not None), None)
 
     chart_data = {
         'labels': expanded_labels,
         'profit_values': profit_values,
         'holding_gain_values': holding_gain_values,
+        'realized_gain_values': realized_gain_values,
+        'position_value_values': position_value_values,
+        'remaining_cost_values': remaining_cost_values,
         'cumulative_buy_values': cumulative_buy_values,
         'cumulative_sell_values': cumulative_sell_values,
+        'cumulative_dividend_values': cumulative_dividend_values,
+        'profit_rate_values': profit_rate_values,
         'date_interval': date_interval,
         'interval_label': perf_data.get('interval_label', date_interval),
+        'latest_profit': latest_profit,
+        'latest_profit_rate': latest_profit_rate,
     }
 
     return jsonify({

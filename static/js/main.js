@@ -177,7 +177,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // 基金名称点击：展开/收起当前行的基金趋势曲线（业绩）
             if (nameCell && window.toggleFundRowChart) {
                 const code = nameCell.dataset.code;
-                window.toggleFundRowChart(code, 'performance', 'ONE_YEAR');
+                window.toggleFundRowChart(code, 'performance', 'THREE_YEAR');
                 return;
             }
 
@@ -198,7 +198,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // 收益数值点击：展开累计收益曲线
             if (positionGainCell && window.toggleFundRowChart) {
                 const code = positionGainCell.dataset.code;
-                window.toggleFundRowChart(code, 'profit', 'THREE_MONTH');
+                window.toggleFundRowChart(code, 'profit', 'THREE_YEAR');
             }
         });
     }
@@ -3923,33 +3923,11 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    // Portfolio 首页立即初始化收益文案与点击绑定，并主动拉取一次完整数据
+    // Portfolio 首页仅做轻量初始化，不在首屏强制触发完整刷新
     if (window.location.pathname === '/portfolio') {
         const todayLabel = getDayLabelFromDateKey(formatDateKey(new Date()));
         applyDailyGainLabels(todayLabel, todayLabel);
         initSummaryPanelsToggleByToolbarEstimate();
-
-        if (typeof fetchPortfolioData === 'function') {
-            fetchPortfolioData().catch(() => {
-                if (typeof loadSharesData === 'function') {
-                    loadSharesData().catch(() => {
-                        if (typeof calculatePositionSummary === 'function') {
-                            calculatePositionSummary();
-                        }
-                    });
-                } else if (typeof calculatePositionSummary === 'function') {
-                    calculatePositionSummary();
-                }
-            });
-        } else if (typeof loadSharesData === 'function') {
-            loadSharesData().catch(() => {
-                if (typeof calculatePositionSummary === 'function') {
-                    calculatePositionSummary();
-                }
-            });
-        } else if (typeof calculatePositionSummary === 'function') {
-            calculatePositionSummary();
-        }
     }
 
     // Initialize refresh config and start auto-refresh on page load

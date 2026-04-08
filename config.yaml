@@ -2,6 +2,8 @@
 
 data_sources:
   urls:
+    # 中证指数-沪深300
+    csindex_origin: "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode={000300}}"
     # fund123，蚂蚁基金
     fund123_origin: "https://www.fund123.cn"
     fund123_fund_page: "https://www.fund123.cn/fund"
