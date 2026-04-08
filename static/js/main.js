@@ -1460,9 +1460,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 const estimateDate = String(estimateNode?.dataset?.estimateDate || '').trim();
                 if (positionValue == null || positionValue <= 0) return;
 
-                // 净值日期从“日涨幅”单元格副文本中提取（格式示例：03-13 或 2026-03-13）
-                const dayGrowthNode = row.querySelector(`.fund-daygrowth-cell[data-code="${fundCode}"]`) || cells[5];
-                const dayGrowthFullText = String(dayGrowthNode?.textContent || '').trim();
+                // 日涨幅节点仅包含涨幅值，净值日期在同一td副文本中；
+                // 因此日期需从整格文本提取，避免实际收益无法按当日净值更新。
+                const dayGrowthNode = row.querySelector(`.fund-daygrowth-cell[data-code="${fundCode}"]`);
+                const dayGrowthCell = dayGrowthNode?.closest('td') || cells[5];
+                const dayGrowthFullText = String(dayGrowthCell?.textContent || dayGrowthNode?.textContent || '').trim();
                 const fullDateMatch = dayGrowthFullText.match(/(\d{4}-\d{2}-\d{2})/);
                 const shortDateMatch = dayGrowthFullText.match(/(\d{2}-\d{2})/);
                 let netValueDate = fullDateMatch ? fullDateMatch[1] : (shortDateMatch ? shortDateMatch[1] : '');
@@ -1475,7 +1477,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
 
                 // 解析日涨幅 (第五列，索引4)
-                const dayGrowthText = String(dayGrowthNode?.textContent || '').trim();
+                const dayGrowthText = String(dayGrowthNode?.textContent || dayGrowthCell?.textContent || '').trim();
                 const dayGrowth = parseFirstNumber(dayGrowthText, { isPercent: true });
 
                 totalValue += positionValue;
