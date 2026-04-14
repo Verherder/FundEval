@@ -1,5 +1,6 @@
 # 基金估值项目配置
 
+# 数据源 URL 配置
 data_sources:
   urls:
     # 中证指数-沪深300
@@ -40,6 +41,60 @@ data_sources:
     # fundgz
     fundgz_js_tpl: "https://fundgz.1234567.com.cn/js/{fund}.js"
 
+# 页面刷新配置
+page_refresh:
+  # 自动刷新间隔时长（毫秒）
+  auto_refresh_interval: 300000  # 5 分钟
+
+# 服务器配置
+server:
+  secret_key: "luobobo"  # Flask session 密钥
+
+# 历史净值同步配置
+nav_sync:
+  # 单次请求的页大小
+  request_page_size: 300
+  # 历史补齐的月数窗口（每次请求覆盖的月份跨度）
+  backfill_months: 12
+  # 当日 20:00 前不请求当天净值（等待当日净值披露）
+  include_today_after: "20:00"
+
+# 业绩图表配置
+performance_chart:
+  # 时间区间标签
+  interval_labels:
+    ONE_MONTH: "近1月"
+    THREE_MONTH: "近3月"
+    SIX_MONTH: "近6月"
+    ONE_YEAR: "近1年"
+    THREE_YEAR: "近3年"
+    FIVE_YEAR: "近5年"
+    SINCE_ESTABLISHMENT: "成立以来"
+
+  # 时间区间对应的天数
+  interval_days:
+    ONE_MONTH: 31
+    THREE_MONTH: 93
+    SIX_MONTH: 186
+    ONE_YEAR: 365
+    THREE_YEAR: 1095
+    FIVE_YEAR: 1825
+
+  # 时间区间显示顺序
+  interval_order:
+    - ONE_MONTH
+    - THREE_MONTH
+    - SIX_MONTH
+    - ONE_YEAR
+    - THREE_YEAR
+    - FIVE_YEAR
+    - SINCE_ESTABLISHMENT
+
+  # 默认业绩图表时间区间
+  default_interval: "SINCE_ESTABLISHMENT"
+  # 默认收益图表时间区间
+  default_profit_interval: "THREE_MONTH"
+
 logging:
   level: "INFO"
   log_response_time: true
@@ -56,8 +111,3 @@ http_timing:
   console_log: false
 
 update_interval: 300  # 单位：秒
-
-# 页面刷新配置
-page_refresh:
-  # 自动刷新间隔时长（毫秒）
-  auto_refresh_interval: 300000  # 5 分钟

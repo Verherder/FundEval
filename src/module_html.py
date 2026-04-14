@@ -165,6 +165,8 @@ def enhance_fund_tab_content(content, shares_map=None):
             <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                 <button class="btn btn-primary" onclick="addFunds()">添加</button>
                 <span style="opacity:0.6; user-select:none;">|</span>
+                <button class="btn btn-secondary" onclick="backfillEstablishmentDates()">🗓️ 回填成立日期</button>
+                <span style="opacity:0.6; user-select:none;">|</span>
                 <button class="btn btn-info" onclick="openFundSelectionModal('sector')">🏷️ 标注板块</button>
                 <span style="opacity:0.6; user-select:none;">|</span>
                 <button class="btn btn-warning" onclick="openFundSelectionModal('unsector')">🏷️ 删除板块</button>
@@ -4561,13 +4563,15 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             ["THREE_MONTH", "近3月"],
             ["SIX_MONTH", "近6月"],
             ["ONE_YEAR", "近1年"],
-            ["THREE_YEAR", "近3年"]
+            ["THREE_YEAR", "近3年"],
+            ["FIVE_YEAR", "近5年"],
+            ["SINCE_ESTABLISHMENT", "成立以来"]
         ];
 
         window.currentFundChartState = null;
         window.fundRowChartInstance = null;
 
-        async function loadFundChartDataInline(fundCode, chartType = 'estimate', interval = 'THREE_YEAR') {{
+        async function loadFundChartDataInline(fundCode, chartType = 'estimate', interval = 'SINCE_ESTABLISHMENT') {{
             let url = '/api/fund/chart-data?code=' + encodeURIComponent(fundCode);
             if (chartType === 'performance') {{
                 url = '/api/fund/performance-chart-data?code=' + encodeURIComponent(fundCode) + '&interval=' + encodeURIComponent(interval);
@@ -4589,7 +4593,18 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             return data.chart_data;
         }}
 
-        function buildFundChartRowContent(chartType, fundCode, interval) {{
+        function resolveIntervalOptions(rawOptions) {{
+            if (!Array.isArray(rawOptions) || rawOptions.length === 0) {{
+                return FUND_PERFORMANCE_INTERVAL_OPTIONS;
+            }}
+            const cleaned = rawOptions
+                .filter(item => Array.isArray(item) && item.length >= 2)
+                .map(item => [String(item[0] || '').trim(), String(item[1] || '').trim()])
+                .filter(item => item[0] && item[1]);
+            return cleaned.length > 0 ? cleaned : FUND_PERFORMANCE_INTERVAL_OPTIONS;
+        }}
+
+        function buildFundChartRowContent(chartType, fundCode, interval, intervalOptions = null) {{
             if (chartType === 'estimate') {{
                 return `
                     <div class="inline-fund-chart" style="height:260px; padding: 10px 20px;">
@@ -4598,8 +4613,10 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 `;
             }}
 
+            const buttonOptions = resolveIntervalOptions(intervalOptions);
+
             if (chartType === 'profit') {{
-                const buttonsHtml = FUND_PERFORMANCE_INTERVAL_OPTIONS.map(([value, label]) => `
+                const buttonsHtml = buttonOptions.map(([value, label]) => `
                     <button
                         type="button"
                         class="fund-performance-range-btn${{value === interval ? ' active' : ''}}"
@@ -4626,7 +4643,7 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 `;
             }}
 
-            const buttonsHtml = FUND_PERFORMANCE_INTERVAL_OPTIONS.map(([value, label]) => `
+            const buttonsHtml = buttonOptions.map(([value, label]) => `
                 <button
                     type="button"
                     class="fund-performance-range-btn${{value === interval ? ' active' : ''}}"
@@ -4680,26 +4697,29 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             const benchmarkLabel = chartData.benchmark_label || '沪深300';
             const latestNetValue = chartData.latest_net_value;
             const latestNetValueDate = chartData.latest_net_value_date;
+            const establishmentDate = chartData.establishment_date || null;
             const latestProfit = chartData.latest_profit;
             const latestProfitRate = chartData.latest_profit_rate;
             const tradeMarkers = chartData.trade_markers || [];
-            const fundCurveColor = '#3b82f6';
+            const fundCurveColor = '#60a5fa';  // 浅蓝色曲线
             const benchmarkColor = '#9ca3af';
-            const buyMarkerColor = '#2563eb';
+            const buyMarkerColor = '#A3E635';  // 黄绿色买入点
+            const buyMarkerBorderColor = '#9333ea';  // 紫色边框
             const sellMarkerColor = '#ef4444';
-            const clearMarkerColor = '#7f1d1d';
+            const clearMarkerColor = '#DC2626';
 
             if (isPerformanceChart) {{
                 const wrapper = canvas.closest('.inline-fund-chart');
                 const latestNavEl = wrapper ? wrapper.querySelector('.fund-performance-latest-nav') : null;
                 const legendEl = wrapper ? wrapper.querySelector('.fund-performance-legend') : null;
                 if (latestNavEl) {{
+                    const estText = establishmentDate ? `<br><span style="font-size:11px;">成立时间：${{establishmentDate}}</span>` : '';
                     if (latestNetValue !== null && latestNetValue !== undefined && latestNetValue !== '') {{
                         const navValue = Number(latestNetValue);
                         const navDate = latestNetValueDate || '--';
-                        latestNavEl.innerHTML = `最新净值：<span style="color:var(--text-main);font-weight:600;">${{Number.isFinite(navValue) ? navValue.toFixed(4) : latestNetValue}}</span><br><span style="font-size:11px;">净值日期：${{navDate}}</span>`;
+                        latestNavEl.innerHTML = `最新净值：<span style="color:var(--text-main);font-weight:600;">${{Number.isFinite(navValue) ? navValue.toFixed(4) : latestNetValue}}</span><br><span style="font-size:11px;">净值日期：${{navDate}}</span>${{estText}}`;
                     }} else {{
-                        latestNavEl.innerHTML = `<span style="font-size:11px;">最新净值：--<br>净值日期：--</span>`;
+                        latestNavEl.innerHTML = `<span style="font-size:11px;">最新净值：--<br>净值日期：--</span>${{estText}}`;
                     }}
                 }}
                 if (legendEl) {{
@@ -4890,8 +4910,8 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                         pointHoverRadius: 4,
                         pointHitRadius: 10,
                         pointBackgroundColor: buyMarkerColor,
-                        pointBorderColor: buyMarkerColor,
-                        pointBorderWidth: 0,
+                        pointBorderColor: buyMarkerBorderColor,
+                        pointBorderWidth: 2,
                         borderColor: buyMarkerColor,
                         parsing: {{ xAxisKey: 'x', yAxisKey: 'y' }}
                     }});
@@ -5148,7 +5168,7 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 button.addEventListener('click', function(e) {{
                     e.preventDefault();
                     e.stopPropagation();
-                    const nextInterval = button.dataset.interval || 'THREE_YEAR';
+                    const nextInterval = button.dataset.interval || 'THREE_MONTH';
                     const nextType = button.dataset.chartType || 'performance';
                     if (window.currentFundChartState &&
                         window.currentFundChartState.code === fundCode &&
@@ -5161,23 +5181,30 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
             }});
         }}
 
-        window.toggleFundRowChart = async function(fundCode, chartType = 'estimate', interval = 'THREE_YEAR', options = {{}}) {{
+        window.toggleFundRowChart = async function(fundCode, chartType = 'estimate', interval = 'SINCE_ESTABLISHMENT', options = {{}}) {{
+            // 防止并发：快速多次点击只处理第一次，其余静默丢弃
+            if (window._fundChartToggling) return;
+            window._fundChartToggling = true;
             try {{
                 const tableBody = document.querySelector('.style-table tbody');
                 if (!tableBody) return;
 
                 const normalizedType = chartType === 'performance' ? 'performance' : (chartType === 'profit' ? 'profit' : 'estimate');
-                const defaultInterval = normalizedType === 'profit' ? 'THREE_YEAR' : 'THREE_YEAR';
+                const defaultInterval =
+                    normalizedType === 'performance' ? 'SINCE_ESTABLISHMENT' :
+                    (normalizedType === 'profit' ? 'THREE_MONTH' : null);
                 const normalizedInterval = (normalizedType === 'performance' || normalizedType === 'profit') ? (interval || defaultInterval) : null;
+                let resolvedInterval = normalizedInterval;
+                let resolvedIntervalOptions = null;
+                let chartData = null;
                 const currentState = window.currentFundChartState;
 
-                // 如果当前已展开的是同一只基金、同一类型，则收起（estimate/performance/profit统一规则；区间切换不影响展开/收起状态）
+                // 同一只基金同一图表类型再次点击 → 收起
                 if (!options.forceOpen &&
                     currentState &&
                     currentState.code === fundCode &&
                     currentState.type === normalizedType) {{
-                    const existingRow = tableBody.querySelector('tr.fund-chart-row');
-                    if (existingRow) existingRow.remove();
+                    tableBody.querySelectorAll('tr.fund-chart-row').forEach(r => r.remove());
                     window.currentFundChartState = null;
                     if (window.fundRowChartInstance) {{
                         window.fundRowChartInstance.destroy();
@@ -5186,9 +5213,12 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                     return;
                 }}
 
-                // 收起之前的行
-                const oldRow = tableBody.querySelector('tr.fund-chart-row');
-                if (oldRow) oldRow.remove();
+                // 移除所有已存在的图表行（避免快速点击产生多行堆叠）
+                tableBody.querySelectorAll('tr.fund-chart-row').forEach(r => r.remove());
+                if (window.fundRowChartInstance) {{
+                    window.fundRowChartInstance.destroy();
+                    window.fundRowChartInstance = null;
+                }}
 
                 const codeCell = tableBody.querySelector(`.fund-code-cell[data-code="${{fundCode}}"]`);
                 const nameCell = tableBody.querySelector(`.fund-name-cell[data-code="${{fundCode}}"]`);
@@ -5198,26 +5228,65 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 const targetRow = targetAnchor ? targetAnchor.closest('tr') : null;
                 if (!targetRow) return;
 
+                // ① 立即插入占位行，给用户即时视觉反馈，不等待网络请求
+                // 记录锚点位置，避免插入/渲染导致页面跳动看不到基金名
+                const anchorTopBefore = targetAnchor.getBoundingClientRect().top;
                 const colCount = targetRow.cells.length;
                 const chartRow = document.createElement('tr');
                 chartRow.className = 'fund-chart-row';
+                chartRow.style.overflowAnchor = 'none';
                 const chartCell = document.createElement('td');
                 chartCell.colSpan = colCount;
-                chartCell.innerHTML = buildFundChartRowContent(normalizedType, fundCode, normalizedInterval);
+                chartCell.style.padding = '0';
+                chartCell.innerHTML = `<div style="padding:28px;text-align:center;color:var(--text-dim);font-size:13px;">⏳ 加载中...</div>`;
                 chartRow.appendChild(chartCell);
                 targetRow.parentNode.insertBefore(chartRow, targetRow.nextSibling);
+                const anchorTopAfterInsert = targetAnchor.getBoundingClientRect().top;
+                window.scrollBy(0, anchorTopAfterInsert - anchorTopBefore);
+
+                // ② 提前标记状态，防止等待期间再次点击重复插入
+                window.currentFundChartState = {{
+                    code: fundCode,
+                    type: normalizedType,
+                    interval: resolvedInterval
+                }};
+
+                // ③ 异步获取数据
+                if (normalizedType === 'performance' || normalizedType === 'profit') {{
+                    chartData = await loadFundChartDataInline(
+                        fundCode,
+                        normalizedType,
+                        resolvedInterval || defaultInterval
+                    );
+                    resolvedIntervalOptions = resolveIntervalOptions(chartData && chartData.available_intervals);
+                    const intervalKeys = new Set(resolvedIntervalOptions.map(item => item[0]));
+                    if (!intervalKeys.has(resolvedInterval) && resolvedIntervalOptions.length > 0) {{
+                        resolvedInterval = resolvedIntervalOptions[0][0];
+                        chartData = await loadFundChartDataInline(fundCode, normalizedType, resolvedInterval);
+                    }}
+                    window.currentFundChartState.interval = resolvedInterval;
+                }}
+
+                // 若行在等待期间已被移除（用户再次点击收起），则退出
+                if (!tableBody.contains(chartRow)) return;
+
+                // ④ 数据就绪后替换占位内容为真实图表区域
+                chartCell.innerHTML = buildFundChartRowContent(normalizedType, fundCode, resolvedInterval, resolvedIntervalOptions);
+                const anchorTopAfterRender = targetAnchor.getBoundingClientRect().top;
+                window.scrollBy(0, anchorTopAfterRender - anchorTopBefore);
 
                 if (normalizedType === 'performance' || normalizedType === 'profit') {{
                     bindChartRangeButtons(chartRow, fundCode);
                 }}
 
                 const canvas = chartCell.querySelector('canvas');
-                const chartData = await loadFundChartDataInline(fundCode, normalizedType, normalizedInterval || (normalizedType === 'profit' ? 'THREE_YEAR' : 'THREE_YEAR'));
-                window.currentFundChartState = {{
-                    code: fundCode,
-                    type: normalizedType,
-                    interval: normalizedInterval
-                }};
+                if (!chartData) {{
+                    chartData = await loadFundChartDataInline(
+                        fundCode,
+                        normalizedType,
+                        resolvedInterval || defaultInterval
+                    );
+                }}
 
                 try {{
                     renderFundRowChart(canvas, chartData, normalizedType);
@@ -5229,6 +5298,8 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                 }}
             }} catch (e) {{
                 console.error('toggleFundRowChart error:', e);
+            }} finally {{
+                window._fundChartToggling = false;
             }}
         }};
     </script>

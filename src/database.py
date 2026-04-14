@@ -91,6 +91,8 @@ class Database:
                            0,
                            sectors
                            TEXT,
+                           establishment_date
+                           TEXT,
                            estimate_history
                            TEXT
                            DEFAULT
@@ -265,6 +267,15 @@ class Database:
                 if "duplicate column" not in str(e).lower():
                     logger.warning(f"Failed to add estimate_history column: {e}")
 
+        # 检查并添加establishment_date字段
+        if 'establishment_date' not in columns:
+            try:
+                cursor.execute("ALTER TABLE user_funds ADD COLUMN establishment_date TEXT")
+                logger.debug("Added establishment_date column to user_funds table")
+            except Exception as e:
+                if "duplicate column" not in str(e).lower():
+                    logger.warning(f"Failed to add establishment_date column: {e}")
+
         conn.commit()
         conn.close()
         logger.debug("Database initialized successfully")
@@ -378,6 +389,7 @@ class Database:
                     'is_hold': bool(row['is_hold']),
                     'shares': float(row['shares']) if row['shares'] else 0,
                     'sectors': sectors,  # 始终包含 sectors 字段
+                    'establishment_date': row['establishment_date'],
                     'estimate_history': estimate_history,
                 }
 
@@ -408,8 +420,8 @@ class Database:
 
                 cursor.execute('''
                                INSERT INTO user_funds
-                                   (user_id, fund_code, fund_key, fund_name, is_hold, shares, sectors, estimate_history)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                   (user_id, fund_code, fund_key, fund_name, is_hold, shares, sectors, establishment_date, estimate_history)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                                ''', (
                                    user_id,
                                    fund_code,
@@ -418,6 +430,7 @@ class Database:
                                    1 if fund_data.get('is_hold', False) else 0,
                                    fund_data.get('shares', 0),
                                    sectors_json,
+                                   fund_data.get('establishment_date'),
                                    estimate_history_json
                                ))
 
@@ -479,8 +492,8 @@ class Database:
 
             cursor.execute('''
                 INSERT OR REPLACE INTO user_funds
-                (user_id, fund_code, fund_key, fund_name, is_hold, shares, sectors, estimate_history)
-                VALUES (?, ?, ?, ?, 0, 0, '[]', '{}')
+                (user_id, fund_code, fund_key, fund_name, is_hold, shares, sectors, establishment_date, estimate_history)
+                VALUES (?, ?, ?, ?, 0, 0, '[]', NULL, '{}')
             ''', (user_id, fund_code, fund_key, fund_name))
 
             conn.commit()
@@ -599,6 +612,29 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to update shares delta: {e}")
             return None
+
+    def update_fund_establishment_date(self, user_id, fund_code, establishment_date):
+        """更新用户基金成立日期（YYYY-MM-DD）。"""
+        try:
+            value = str(establishment_date or '').strip()
+            if not value:
+                return False
+
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE user_funds
+                SET establishment_date = ?
+                WHERE user_id = ? AND fund_code = ?
+            ''', (value, user_id, fund_code))
+
+            conn.commit()
+            affected_rows = cursor.rowcount
+            conn.close()
+            return affected_rows > 0
+        except Exception as e:
+            logger.error(f"Failed to update fund establishment date: {e}")
+            return False
 
     def recalculate_fund_shares_from_transactions(self, user_id, fund_code):
         """按交易流水重算单只基金当前持仓并回写 user_funds。"""

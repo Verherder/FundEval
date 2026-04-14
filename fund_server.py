@@ -1,3 +1,4 @@
+import calendar
 import datetime
 import io
 import os, sys, time
@@ -11,7 +12,7 @@ os.makedirs(os.path.join("cache", "logs"), exist_ok=True)
 import importlib
 import json
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Optional
+from typing import Any, Optional, List, Tuple
 
 try:
     from openpyxl import load_workbook
@@ -39,15 +40,97 @@ import fund
 from src.auth import login_required, get_current_user_id, get_current_username, login_user, logout_user
 from src.database import Database
 from src.module_html import enhance_fund_tab_content
-from src.yaml_config import get_page_refresh_config, load_yaml_config
+from src.trading_calendar import is_cn_sse_trading_day, iter_cn_sse_trading_days
+from src.yaml_config import get_page_refresh_config, load_yaml_config, get_performance_chart_config, get_nav_sync_config, get_server_config
 
-PERFORMANCE_CHART_INTERVALS = {
+# 从配置加载业绩图表相关常量
+_perf_config = get_performance_chart_config()
+PERFORMANCE_CHART_INTERVAL_LABELS = _perf_config.get('interval_labels', {
+    "ONE_MONTH": "近1月",
+    "THREE_MONTH": "近3月",
+    "SIX_MONTH": "近6月",
+    "ONE_YEAR": "近1年",
+    "THREE_YEAR": "近3年",
+    "FIVE_YEAR": "近5年",
+    "SINCE_ESTABLISHMENT": "成立以来",
+})
+
+PERFORMANCE_CHART_INTERVAL_DAYS = _perf_config.get('interval_days', {
+    "ONE_MONTH": 31,
+    "THREE_MONTH": 93,
+    "SIX_MONTH": 186,
+    "ONE_YEAR": 365,
+    "THREE_YEAR": 365 * 3,
+    "FIVE_YEAR": 365 * 5,
+})
+
+PERFORMANCE_CHART_INTERVAL_ORDER = _perf_config.get('interval_order', [
     "ONE_MONTH",
     "THREE_MONTH",
     "SIX_MONTH",
     "ONE_YEAR",
     "THREE_YEAR",
-}
+    "FIVE_YEAR",
+    "SINCE_ESTABLISHMENT",
+])
+
+PERFORMANCE_CHART_INTERVALS = set(PERFORMANCE_CHART_INTERVAL_ORDER)
+DEFAULT_PERFORMANCE_CHART_INTERVAL = _perf_config.get('default_interval', 'SINCE_ESTABLISHMENT')
+DEFAULT_PROFIT_CHART_INTERVAL = _perf_config.get('default_profit_interval', 'THREE_MONTH')
+
+# 从配置加载净值同步相关常量
+_nav_config = get_nav_sync_config()
+HISTORY_NAV_REQUEST_PAGE_SIZE = _nav_config.get('request_page_size', 300)
+NAV_BACKFILL_REQUEST_MONTHS = _nav_config.get('backfill_months', 12)
+
+# 解析当日时间点配置：当日 20:00 前不请求当天净值
+_include_today_after_str = _nav_config.get('include_today_after', '20:00')
+_nav_include_hour, _nav_include_min = map(int, _include_today_after_str.split(':'))
+_NAV_BACKFILL_INCLUDE_TODAY_AFTER = datetime.time(_nav_include_hour, _nav_include_min)
+
+
+def _nav_backfill_effective_end_date(now: Optional[datetime.datetime] = None) -> datetime.date:
+    """历史净值自动补齐所覆盖的最后一日（不含「今天」直至 20:00）。"""
+    now = now or datetime.datetime.now()
+    today = now.date()
+    if now.time() < _NAV_BACKFILL_INCLUDE_TODAY_AFTER:
+        return today - datetime.timedelta(days=1)
+    return today
+
+
+def _add_months_keep_day(base_date: datetime.date, months: int) -> datetime.date:
+    """为日期加减月份，并尽量保持日数不变。"""
+    total_months = (base_date.year * 12 + (base_date.month - 1)) + int(months)
+    year = total_months // 12
+    month = total_months % 12 + 1
+    day = min(base_date.day, calendar.monthrange(year, month)[1])
+    return datetime.date(year, month, day)
+
+
+def _build_backfill_request_segments(
+    missing_dates: List[datetime.date],
+    max_end_date: datetime.date,
+    months: int = NAV_BACKFILL_REQUEST_MONTHS,
+) -> List[Tuple[datetime.date, datetime.date]]:
+    """按固定月数窗口构造补齐请求片段，窗口长度不受假期缺口影响。"""
+    normalized_dates = sorted({
+        item for item in missing_dates
+        if isinstance(item, datetime.date) and item <= max_end_date
+    })
+    if not normalized_dates:
+        return []
+
+    segments: List[Tuple[datetime.date, datetime.date]] = []
+    covered_until: Optional[datetime.date] = None
+    for missing_day in normalized_dates:
+        if covered_until is not None and missing_day <= covered_until:
+            continue
+        seg_start = missing_day
+        seg_end = min(_add_months_keep_day(seg_start, months) - datetime.timedelta(days=1), max_end_date)
+        segments.append((seg_start, seg_end))
+        covered_until = seg_end
+    return segments
+
 
 # 加载环境变量
 load_dotenv()
@@ -71,7 +154,8 @@ except Exception:
     pass
 
 app = Flask(__name__)
-app.secret_key = "luobobo"
+_server_cfg = get_server_config()
+app.secret_key = _server_cfg.get('secret_key', 'luobobo')
 db = Database()  # 初始化数据库
 IMPORT_JOB_STORE = {}
 IMPORT_JOB_LOCK = threading.Lock()
@@ -233,10 +317,11 @@ def _start_log_cleanup_worker_if_needed():
             name="log-cleanup-worker",
         )
         worker.start()
-        _LOG_CLEANUP_THREAD_STARTED = True
         logger.info(
             f"日志清理任务已启动: interval_hours={cfg['interval_hours']}, retain_days={cfg['retain_days']}"
         )
+        # 必须最后设置，避免竞态条件
+        _LOG_CLEANUP_THREAD_STARTED = True
 
 
 def _append_import_detail_log(level, message, **fields):
@@ -421,6 +506,75 @@ def api_fund_add():
     finally:
         elapsed = (time.perf_counter() - start) * 1000
         logger.info(f"[API] /api/fund/add elapsed_ms={elapsed:.1f}")
+
+
+@app.route('/api/fund/backfill-establishment-dates', methods=['POST'])
+@login_required
+def api_backfill_establishment_dates():
+    """批量补齐当前用户基金成立日期（仅处理 establishment_date 缺失的数据）。"""
+    start = time.perf_counter()
+    try:
+        user_id = get_current_user_id()
+        importlib.reload(fund)
+        my_fund = fund.LanFund(user_id=user_id, db=db)
+
+        fund_map = my_fund.CACHE_MAP if isinstance(my_fund.CACHE_MAP, dict) else {}
+        if not fund_map:
+            return {
+                'success': True,
+                'message': '暂无基金可回填',
+                'total': 0,
+                'missing': 0,
+                'updated': 0,
+                'failed': 0,
+                'failed_codes': [],
+            }
+
+        total_count = len(fund_map)
+        missing_codes = []
+        updated_count = 0
+        failed_codes = []
+
+        for fund_code, fund_data in fund_map.items():
+            existing_text = my_fund._normalize_establishment_date_text(
+                (fund_data or {}).get('establishment_date') if isinstance(fund_data, dict) else ''
+            )
+            if existing_text:
+                continue
+
+            missing_codes.append(fund_code)
+            established = my_fund._ensure_fund_establishment_date(fund_code)
+            if isinstance(established, datetime.date):
+                updated_count += 1
+            else:
+                failed_codes.append(fund_code)
+
+        missing_count = len(missing_codes)
+        failed_count = len(failed_codes)
+        result = {
+            'success': True,
+            'message': f'成立日回填完成：缺失{missing_count}，补齐{updated_count}，失败{failed_count}',
+            'total': total_count,
+            'missing': missing_count,
+            'updated': updated_count,
+            'failed': failed_count,
+            'failed_codes': failed_codes,
+        }
+        return result
+    except Exception as e:
+        logger.error(f"批量回填成立日期失败: {e}")
+        return {
+            'success': False,
+            'message': f'回填失败: {str(e)}',
+            'total': 0,
+            'missing': 0,
+            'updated': 0,
+            'failed': 0,
+            'failed_codes': [],
+        }
+    finally:
+        elapsed = (time.perf_counter() - start) * 1000
+        logger.info(f"[API] /api/fund/backfill-establishment-dates elapsed_ms={elapsed:.1f}")
 
 
 @app.route('/api/fund/delete', methods=['POST'])
@@ -802,7 +956,7 @@ def _find_net_value_by_date_from_trend(user_id, fund_code, target_date):
 
     importlib.reload(fund)
     my_fund = fund.LanFund(user_id=user_id, db=db)
-    chart_data = my_fund.get_fund_performance_chart_data(fund_code, fund_data, "THREE_YEAR")
+    chart_data = my_fund.get_fund_performance_chart_data(fund_code, fund_data, "SINCE_ESTABLISHMENT")
 
     labels = chart_data.get('labels', []) or []
     net_values = chart_data.get('net_values', []) or []
@@ -902,13 +1056,374 @@ def _find_net_value_by_date_from_history_api(user_id, fund_code, target_date):
     return None
 
 
+def _get_fund_establishment_date(user_id, fund_code):
+    """从 fund123_matiaria 接口读取基金成立日期。"""
+    try:
+        api_tpl = fund.DATA_SOURCE_URLS.get('fund123_matiaria_tpl')
+        if not api_tpl:
+            return None
+
+        importlib.reload(fund)
+        my_fund = fund.LanFund(user_id=user_id, db=db)
+        api_url = api_tpl.format(fund=fund_code)
+        response = my_fund.session.get(api_url, timeout=10, verify=False)
+
+        date_text = None
+        try:
+            payload = response.json()
+            date_text = (
+                payload.get('titleInfo', {})
+                .get('establishmentDate')
+            )
+        except Exception:
+            pass
+
+        if not date_text:
+            match = re.search(r'"establishmentDate"\s*:\s*"(\d{4}-\d{2}-\d{2}|\d{8})"', response.text)
+            if match:
+                date_text = match.group(1)
+
+        if not date_text:
+            return None
+
+        date_text = str(date_text).strip()
+        if re.fullmatch(r'\d{8}', date_text):
+            return datetime.datetime.strptime(date_text, '%Y%m%d').date()
+        return datetime.date.fromisoformat(date_text)
+    except Exception:
+        return None
+
+
+def _resolve_curve_label_dates(labels: List[str]) -> List[Optional[datetime.date]]:
+    """将业绩曲线标签解析为日期；兼容 MM-DD（按时间序列回推年份）。"""
+    resolved: List[Optional[datetime.date]] = []
+    if not labels:
+        return resolved
+
+    has_full_date = any(re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(item or '').strip()) for item in labels)
+    if has_full_date:
+        for label in labels:
+            try:
+                resolved.append(datetime.date.fromisoformat(str(label).strip()))
+            except Exception:
+                resolved.append(None)
+        return resolved
+
+    # 仅有 MM-DD 时：从尾部向前回推年份，避免全部落到当年
+    current_year = datetime.date.today().year
+    reverse_dates: List[Optional[datetime.date]] = []
+    prev_date: Optional[datetime.date] = None
+    for label in reversed(labels):
+        text = str(label or '').strip()
+        if not re.fullmatch(r'\d{2}-\d{2}', text):
+            reverse_dates.append(None)
+            continue
+        month = int(text[:2])
+        day = int(text[3:5])
+        candidate_year = current_year if prev_date is None else prev_date.year
+        candidate = None
+        for year in range(candidate_year, candidate_year - 6, -1):
+            try:
+                temp = datetime.date(year, month, day)
+            except Exception:
+                continue
+            if prev_date is None or temp <= prev_date:
+                candidate = temp
+                break
+        reverse_dates.append(candidate)
+        if candidate is not None:
+            prev_date = candidate
+
+    reverse_dates.reverse()
+    return reverse_dates
+
+
+def _parse_iso_date(date_text):
+    try:
+        text = str(date_text or '').strip()
+        if not text:
+            return None
+        return datetime.date.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def _get_local_fund_establishment_date(user_id, fund_code, user_funds=None):
+    """优先从 user_funds 读取成立日，其次用本地净值最早日期推导。"""
+    if user_funds is None:
+        user_funds = db.get_user_funds(user_id)
+
+    fund_data = user_funds.get(fund_code, {}) if isinstance(user_funds, dict) else {}
+    established = _parse_iso_date(fund_data.get('establishment_date'))
+    if established:
+        return established
+
+    # 成立日缺失时尝试远端补齐，避免误判可用区间（例如成立超 1 年但“近1年”按钮缺失）。
+    remote_established = _get_fund_establishment_date(user_id, fund_code)
+    if isinstance(remote_established, datetime.date):
+        try:
+            db.update_fund_establishment_date(user_id, fund_code, remote_established.isoformat())
+        except Exception:
+            pass
+        return remote_established
+
+    nav_map = db.get_fund_nav_history_range(fund_code) or {}
+    first_nav_date = None
+    for day in sorted(nav_map.keys()):
+        day_obj = _parse_iso_date(day)
+        if day_obj is not None:
+            first_nav_date = day_obj
+            break
+
+    # 注意：此处刻意不写入 DB，仅作运行时回退值使用。
+    # 若将本地净值最早日误写入 establishment_date，后续调用会把它当成真实成立日，
+    # 导致跳过远端 API 获取，区间按钮和净值补齐均会出错。
+    return first_nav_date
+
+
+def _get_available_performance_intervals(establishment_date, end_date):
+    available_keys = []
+    if not isinstance(end_date, datetime.date):
+        end_date = datetime.date.today()
+
+    if isinstance(establishment_date, datetime.date):
+        age_days = max((end_date - establishment_date).days, 0)
+        for interval_key in PERFORMANCE_CHART_INTERVAL_ORDER:
+            if interval_key == 'SINCE_ESTABLISHMENT':
+                available_keys.append(interval_key)
+                continue
+            threshold = PERFORMANCE_CHART_INTERVAL_DAYS.get(interval_key)
+            if threshold is not None and age_days >= threshold:
+                available_keys.append(interval_key)
+        if not available_keys:
+            available_keys = ['SINCE_ESTABLISHMENT']
+    else:
+        available_keys = [
+            key for key in PERFORMANCE_CHART_INTERVAL_ORDER
+            if key != 'SINCE_ESTABLISHMENT'
+        ]
+
+    # 无论是否拿到成立日，统一提供“成立以来”：
+    # - 有成立日：从成立日开始
+    # - 无成立日：回退到本地最早净值日（保证默认区间可用且数据尽量完整）
+    if 'SINCE_ESTABLISHMENT' not in available_keys:
+        available_keys.append('SINCE_ESTABLISHMENT')
+
+    return [[key, PERFORMANCE_CHART_INTERVAL_LABELS.get(key, key)] for key in available_keys]
+
+
+def _get_interval_start_date(interval_key, end_date, establishment_date=None, fallback_start=None):
+    if not isinstance(end_date, datetime.date):
+        return fallback_start
+
+    if interval_key == 'SINCE_ESTABLISHMENT':
+        return establishment_date or fallback_start
+
+    interval_days = PERFORMANCE_CHART_INTERVAL_DAYS.get(interval_key)
+    if interval_days is None:
+        return fallback_start
+
+    start_date = end_date - datetime.timedelta(days=max(interval_days - 1, 0))
+    if isinstance(establishment_date, datetime.date) and start_date < establishment_date:
+        start_date = establishment_date
+    return start_date
+
+
+def _ensure_nav_history_from_establishment(user_id, fund_code, establishment_date):
+    """确保本地净值覆盖「成立日 -> 有效截止日」区间（增量补齐）；当日 20:00 前不补今天。"""
+    if not isinstance(establishment_date, datetime.date):
+        return db.get_fund_nav_history_range(fund_code) or {}
+
+    today = datetime.date.today()
+    if establishment_date > today:
+        return db.get_fund_nav_history_range(fund_code) or {}
+
+    backfill_end = _nav_backfill_effective_end_date()
+    if establishment_date > backfill_end:
+        return db.get_fund_nav_history_range(
+            fund_code,
+            establishment_date.isoformat(),
+            today.isoformat(),
+        ) or {}
+
+    local_nav_map = db.get_fund_nav_history_range(
+        fund_code,
+        establishment_date.isoformat(),
+        today.isoformat(),
+    ) or {}
+
+    # 获取本地最新净值的日期，作为增量补齐的起点
+    sorted_dates = sorted(local_nav_map.keys())
+    local_max_date = sorted_dates[-1] if sorted_dates else None
+
+    # 判断是否需要完整补齐
+    # 规则：如果本地数据覆盖范围 < 成立日到 backfill_end 的 80%，认为是首次或数据严重缺失，需要全量补齐
+    establishment_to_end_days = len(iter_cn_sse_trading_days(establishment_date, backfill_end))
+    local_data_days = len(sorted_dates)
+
+    need_full_backfill = not local_max_date or local_data_days < establishment_to_end_days * 0.8
+
+    logger.info(
+        f"净值补齐检查【{fund_code}】: establishment_date={establishment_date}, backfill_end={backfill_end}, "
+        f"establishment_to_end_days={establishment_to_end_days}, local_data_days={local_data_days}, "
+        f"local_max_date={local_max_date}, threshold_80%={int(establishment_to_end_days * 0.8)}, "
+        f"need_full_backfill={need_full_backfill}"
+    )
+
+    # 确定检查范围并找出缺失交易日
+    # 首次请求 或 本地数据不完整：从成立日开始检查完整缺失
+    if need_full_backfill:
+        # 首次请求：检查从成立日到 backfill_end 是否有缺失
+        check_start = establishment_date
+        all_days = iter_cn_sse_trading_days(establishment_date, backfill_end)
+        missing_days = [d for d in all_days if d.isoformat() not in local_nav_map]
+    else:
+        # 数据已完整：增量检查本地最新日期的下一个自然日之后是否有缺失交易日
+        local_max_date_obj = datetime.date.fromisoformat(local_max_date)
+        check_start = local_max_date_obj + datetime.timedelta(days=1)
+        all_days = iter_cn_sse_trading_days(check_start, backfill_end)
+        missing_days = [d for d in all_days if d.isoformat() not in local_nav_map]
+
+    if not missing_days:
+        # 没有缺失交易日，无需请求
+        logger.debug(f"净值补齐跳过【{fund_code}】: 本地已有 {len(sorted_dates)} 天数据，从 {local_max_date or establishment_date} 起无缺失交易日")
+        return local_nav_map
+
+    # 构建请求分段
+    request_segments = _build_backfill_request_segments(missing_days, backfill_end)
+    segment_count = len(request_segments)
+
+    if segment_count == 0:
+        return local_nav_map
+
+    # 调试日志：显示为什么需要补齐
+    logger.info(
+        f"净值补齐【{fund_code}】: start={establishment_date}, backfill_end={backfill_end}, today={today}, "
+        f"local_max_date={local_max_date}, missing_days={len(missing_days)}, segments={segment_count}"
+    )
+
+    started_at = time.perf_counter()
+    wrote_count = 0
+    fetched_count = 0
+    for seg_start, seg_end in request_segments:
+        if seg_start > seg_end:
+            continue
+        remote_nav_map = _fetch_history_nav_map_by_date_range(
+            user_id,
+            fund_code,
+            seg_start.isoformat(),
+            seg_end.isoformat(),
+        )
+        if not remote_nav_map:
+            continue
+        fetched_count += len(remote_nav_map)
+        for nav_date, nav_value in remote_nav_map.items():
+            if db.upsert_fund_nav_history(fund_code, nav_date, nav_value, source='history_api_establishment_sync'):
+                wrote_count += 1
+
+    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    logger.info(
+        f"净值补齐【{fund_code}】: start={establishment_date}, backfill_end={backfill_end}, today={today}, segments={segment_count}, fetched={fetched_count}, wrote={wrote_count}, elapsed_ms={elapsed_ms}"
+    )
+
+    return db.get_fund_nav_history_range(
+        fund_code,
+        establishment_date.isoformat(),
+        today.isoformat(),
+    ) or local_nav_map
+
+
+def _build_local_performance_chart_data(user_id, fund_code, fund_name, date_interval=DEFAULT_PERFORMANCE_CHART_INTERVAL, user_funds=None):
+    """基于本地 fund_nav_history 构建业绩曲线，不依赖远端业绩曲线接口。"""
+    if user_funds is None:
+        user_funds = db.get_user_funds(user_id)
+
+    # 先读取成立日（缺失时补齐），再确保本地净值覆盖“成立日 -> 今日”后再计算曲线。
+    establishment_date = _get_local_fund_establishment_date(user_id, fund_code, user_funds=user_funds)
+    if isinstance(establishment_date, datetime.date):
+        nav_map = _ensure_nav_history_from_establishment(user_id, fund_code, establishment_date)
+    else:
+        nav_map = db.get_fund_nav_history_range(fund_code) or {}
+
+    # 统一从本地净值历史取数，作为业绩与收益曲线的共同底座。
+    nav_points = []
+    for day in sorted(nav_map.keys()):
+        day_obj = _parse_iso_date(day)
+        nav_value = _safe_float(nav_map.get(day), None)
+        if day_obj is None or nav_value is None or nav_value <= 0:
+            continue
+        nav_points.append((day_obj, round(nav_value, 4)))
+
+    end_date = nav_points[-1][0] if nav_points else datetime.date.today()
+    available_intervals = _get_available_performance_intervals(establishment_date, end_date)
+    available_keys = [item[0] for item in available_intervals]
+
+    selected_interval = str(date_interval or DEFAULT_PERFORMANCE_CHART_INTERVAL).strip().upper()
+    if selected_interval not in available_keys:
+        if DEFAULT_PERFORMANCE_CHART_INTERVAL in available_keys:
+            selected_interval = DEFAULT_PERFORMANCE_CHART_INTERVAL
+        elif 'SINCE_ESTABLISHMENT' in available_keys:
+            selected_interval = 'SINCE_ESTABLISHMENT'
+        elif available_keys:
+            selected_interval = available_keys[0]
+        else:
+            selected_interval = DEFAULT_PERFORMANCE_CHART_INTERVAL
+
+    if nav_points:
+        fallback_start = nav_points[0][0]
+        start_date = _get_interval_start_date(
+            selected_interval,
+            end_date,
+            establishment_date=establishment_date,
+            fallback_start=fallback_start,
+        )
+        filtered_points = [item for item in nav_points if (start_date is None or item[0] >= start_date)]
+        if not filtered_points:
+            filtered_points = nav_points
+    else:
+        filtered_points = []
+
+    labels = [item[0].isoformat() for item in filtered_points]
+    net_values = [item[1] for item in filtered_points]
+
+    growth = []
+    base_nav = net_values[0] if net_values else None
+    for nav in net_values:
+        if base_nav is None or base_nav <= 0:
+            growth.append(None)
+        else:
+            growth.append(round((nav / base_nav - 1.0) * 100.0, 2))
+
+    latest_net_value = net_values[-1] if net_values else None
+    latest_net_value_date = labels[-1] if labels else None
+
+    return {
+        'labels': labels,
+        'growth': growth,
+        'net_values': net_values,
+        'benchmark_label': '沪深300',
+        'benchmark_growth': [],
+        'latest_net_value': latest_net_value,
+        'latest_net_value_date': latest_net_value_date,
+        'from_cache': True,
+        'date_interval': selected_interval,
+        'interval_label': PERFORMANCE_CHART_INTERVAL_LABELS.get(selected_interval, selected_interval),
+        'available_intervals': available_intervals,
+        'establishment_date': establishment_date.isoformat() if isinstance(establishment_date, datetime.date) else None,
+        'growth_source': 'local_nav',
+    }
+
+
 def _fetch_history_nav_map_by_date_range(user_id, fund_code, start_date, end_date):
     """通过历史净值接口批量获取区间净值，返回 {YYYY-MM-DD: nav}。"""
     result = {}
     try:
-        start_text = datetime.date.fromisoformat(str(start_date)).strftime("%Y%m%d")
-        end_text = datetime.date.fromisoformat(str(end_date)).strftime("%Y%m%d")
+        start_obj = datetime.date.fromisoformat(str(start_date))
+        end_obj = datetime.date.fromisoformat(str(end_date))
     except Exception:
+        return result
+
+    if start_obj > end_obj:
         return result
 
     user_funds = db.get_user_funds(user_id)
@@ -924,7 +1439,6 @@ def _fetch_history_nav_map_by_date_range(user_id, fund_code, start_date, end_dat
     if not api_url:
         return result
 
-    importlib.reload(fund)
     my_fund = fund.LanFund(user_id=user_id, db=db)
 
     headers = {
@@ -938,56 +1452,164 @@ def _fetch_history_nav_map_by_date_range(user_id, fund_code, start_date, end_dat
         "accept": "json"
     }
 
-    page_num = 1
-    page_size = 500
-    max_pages = 20
+    page_size = HISTORY_NAV_REQUEST_PAGE_SIZE
+    max_pages = 200
 
-    while page_num <= max_pages:
-        payload = {
-            "productId": fund_key,
-            "startDate": start_text,
-            "endDate": end_text,
-            "pageNum": page_num,
-            "pageSize": page_size,
-        }
-        try:
-            response = my_fund.session.post(
-                api_url,
-                params={"_csrf": my_fund._csrf},
-                json=payload,
-                headers=headers,
-                timeout=10,
-                verify=False,
-            )
-            response_json = response.json()
-        except Exception as e:
-            logger.warning(f"区间历史净值接口请求失败【{fund_code} {start_date}~{end_date} page={page_num}】: {e}")
-            break
+    request_started_at = time.perf_counter()
+    segment_total = 0
+    page_total = 0
 
-        if not response_json.get("success"):
-            break
-
-        value_list = response_json.get("list", []) or []
-        if not value_list:
-            break
-
-        for item in value_list:
-            nav_date = str(item.get("netValueDate", "")).strip()
-            if not nav_date:
-                continue
+    # 接口限制单次 start/end 不超过 600 日
+    segment_start = start_obj
+    while segment_start <= end_obj:
+        segment_total += 1
+        segment_end = min(segment_start + datetime.timedelta(days=599), end_obj)
+        page_num = 1
+        while page_num <= max_pages:
+            page_total += 1
+            payload = {
+                "productId": fund_key,
+                "startDate": segment_start.strftime('%Y%m%d'),
+                "endDate": segment_end.strftime('%Y%m%d'),
+                "pageNum": page_num,
+                "pageSize": page_size,
+            }
             try:
-                nav_value = float(item.get("netValue"))
-            except (TypeError, ValueError):
-                continue
-            if nav_value <= 0:
-                continue
-            result[nav_date] = round(nav_value, 4)
+                response = my_fund.session.post(
+                    api_url,
+                    params={"_csrf": my_fund._csrf},
+                    json=payload,
+                    headers=headers,
+                    timeout=10,
+                    verify=False,
+                )
+                response_json = response.json()
+            except Exception as e:
+                logger.warning(f"区间历史净值接口请求失败【{fund_code} {segment_start}~{segment_end} page={page_num}】: {e}")
+                break
 
-        if len(value_list) < page_size:
-            break
-        page_num += 1
+            if not response_json.get("success"):
+                break
+
+            value_list = response_json.get("list", []) or []
+            if not value_list:
+                break
+
+            for item in value_list:
+                nav_date = str(item.get("netValueDate", "")).strip()
+                if not nav_date:
+                    continue
+                try:
+                    nav_value = float(item.get("netValue"))
+                except (TypeError, ValueError):
+                    continue
+                if nav_value <= 0:
+                    continue
+                result[nav_date] = round(nav_value, 4)
+
+            if len(value_list) < page_size:
+                break
+            page_num += 1
+
+        segment_start = segment_end + datetime.timedelta(days=1)
+
+    elapsed_ms = int((time.perf_counter() - request_started_at) * 1000)
+    logger.info(
+        f"历史净值请求完成【{fund_code}】: start={start_obj}, end={end_obj}, segments={segment_total}, pages={page_total}, records={len(result)}, page_size={page_size}, elapsed_ms={elapsed_ms}"
+    )
 
     return result
+
+
+def _build_missing_nav_segments(expected_dates: List[datetime.date], existing_nav_map: dict) -> List[Tuple[datetime.date, datetime.date]]:
+    """按缺失交易日构建固定 6 个月补齐片段。"""
+    if not expected_dates:
+        return []
+    existing_dates = {datetime.date.fromisoformat(str(day)) for day in existing_nav_map.keys()}
+    missing_dates = sorted([day for day in expected_dates if day not in existing_dates])
+    if not missing_dates:
+        return []
+    return _build_backfill_request_segments(missing_dates, missing_dates[-1])
+
+
+def _sync_nav_history_for_curve(user_id, fund_code, expected_dates: List[datetime.date]):
+    """根据业绩/收益曲线需求补齐本地净值（含新鲜度与缺口段判断）。"""
+    if not expected_dates:
+        return {}
+
+    expected_dates = sorted({item for item in expected_dates if isinstance(item, datetime.date)})
+    if not expected_dates:
+        return {}
+
+    start_date = expected_dates[0]
+    end_date = expected_dates[-1]
+
+    establishment_date = _get_fund_establishment_date(user_id, fund_code)
+    if establishment_date and establishment_date > start_date:
+        expected_dates = [day for day in expected_dates if day >= establishment_date]
+        if not expected_dates:
+            return {}
+        start_date = expected_dates[0]
+        end_date = expected_dates[-1]
+
+    sync_end = min(end_date, _nav_backfill_effective_end_date())
+    if sync_end < start_date:
+        return db.get_fund_nav_history_range(fund_code, start_date.isoformat(), end_date.isoformat()) or {}
+
+    expected_dates_sync = [d for d in expected_dates if d <= sync_end]
+    if not expected_dates_sync:
+        return db.get_fund_nav_history_range(fund_code, start_date.isoformat(), end_date.isoformat()) or {}
+
+    local_nav_map = db.get_fund_nav_history_range(fund_code, start_date.isoformat(), end_date.isoformat()) or {}
+
+    # 新鲜度判断：本地最大净值日 < 预期最大交易日则视为不新鲜，触发增量补齐
+    local_max_date = None
+    if local_nav_map:
+        try:
+            local_max_date = max(datetime.date.fromisoformat(day) for day in local_nav_map.keys())
+        except Exception:
+            local_max_date = None
+
+    need_fresh_backfill = local_max_date is None or local_max_date < sync_end
+    missing_segments = _build_missing_nav_segments(expected_dates_sync, local_nav_map)
+
+    if not need_fresh_backfill and not missing_segments:
+        return local_nav_map
+
+    request_segments = missing_segments[:]
+    if need_fresh_backfill:
+        fresh_start = (local_max_date + datetime.timedelta(days=1)) if local_max_date else start_date
+        if fresh_start <= sync_end:
+            request_segments.append((fresh_start, sync_end))
+
+    # 合并重叠请求片段
+    request_segments = sorted(request_segments, key=lambda item: item[0])
+    merged_segments: List[Tuple[datetime.date, datetime.date]] = []
+    for seg_start, seg_end in request_segments:
+        if not merged_segments:
+            merged_segments.append((seg_start, seg_end))
+            continue
+        last_start, last_end = merged_segments[-1]
+        if seg_start <= (last_end + datetime.timedelta(days=1)):
+            merged_segments[-1] = (last_start, max(last_end, seg_end))
+        else:
+            merged_segments.append((seg_start, seg_end))
+
+    wrote_count = 0
+    for seg_start, seg_end in merged_segments:
+        remote_nav_map = _fetch_history_nav_map_by_date_range(user_id, fund_code, seg_start.isoformat(), seg_end.isoformat())
+        if not remote_nav_map:
+            continue
+        for nav_date, nav_value in remote_nav_map.items():
+            if db.upsert_fund_nav_history(fund_code, nav_date, nav_value, source='history_api_bulk'):
+                wrote_count += 1
+
+    if wrote_count > 0:
+        logger.info(
+            f"净值补齐完成【{fund_code}】: range={start_date}~{end_date}, wrote={wrote_count}, segments={len(merged_segments)}"
+        )
+
+    return db.get_fund_nav_history_range(fund_code, start_date.isoformat(), end_date.isoformat()) or local_nav_map
 
 
 def _normalize_import_tx_type(tx_type_raw):
@@ -3284,7 +3906,7 @@ def api_fund_chart_data():
 def api_fund_performance_chart_data():
     """获取基金业绩曲线数据。"""
     fund_code = request.args.get('code')
-    date_interval = request.args.get('interval', 'THREE_YEAR').strip().upper()
+    date_interval = request.args.get('interval', DEFAULT_PERFORMANCE_CHART_INTERVAL).strip().upper()
     if not fund_code:
         return jsonify({'error': 'Missing fund code'}), 400
 
@@ -3302,27 +3924,29 @@ def api_fund_performance_chart_data():
         'fund_name': user_funds[fund_code]['fund_name']
     }
 
-    importlib.reload(fund)
-    my_fund = fund.LanFund(user_id=user_id, db=db, initialize_remote=False)
-    chart_data = my_fund.get_fund_performance_chart_data(fund_code, fund_data, date_interval)
+    chart_data = _build_local_performance_chart_data(
+        user_id=user_id,
+        fund_code=fund_code,
+        fund_name=fund_data['fund_name'],
+        date_interval=date_interval,
+        user_funds=user_funds,
+    )
 
-    # 业绩曲线查看时顺便回填本地净值缓存，提升后续导入/计算速度
-    if not bool(chart_data.get('from_cache', False)):
-        _cache_nav_history_from_curve_data(
-            fund_code,
-            chart_data.get('labels', []) or [],
-            chart_data.get('net_values', []) or [],
-            source=f'performance_curve:{date_interval.lower()}'
-        )
+    chart_labels = chart_data.get('labels', []) or []
+    resolved_label_dates = _resolve_curve_label_dates(chart_labels)
+    chart_net_values = chart_data.get('net_values', []) or []
 
     transactions = db.get_fund_transactions(user_id, fund_code)
-    chart_labels = chart_data.get('labels', []) or []
     chart_growth = chart_data.get('growth', []) or []
-    growth_by_label = {
-        str(label): chart_growth[index]
-        for index, label in enumerate(chart_labels)
-        if index < len(chart_growth)
-    }
+    growth_by_label = {}
+    for index, label in enumerate(chart_labels):
+        if index >= len(chart_growth):
+            continue
+        point_date = resolved_label_dates[index] if index < len(resolved_label_dates) else None
+        if point_date is not None:
+            growth_by_label[point_date.isoformat()] = chart_growth[index]
+        else:
+            growth_by_label[str(label)] = chart_growth[index]
 
     clear_cycles = _build_clear_cycles(transactions)
     clear_cycle_map = {item['clear_tx_id']: item for item in clear_cycles}
@@ -3358,13 +3982,7 @@ def api_fund_performance_chart_data():
 
     # 计算每个业绩曲线日期点的持有收益率（含已实现收益）
     net_values = chart_data.get('net_values', []) or []
-    parsed_labels = []
-    for label in chart_labels:
-        label_text = str(label or '').strip()
-        try:
-            parsed_labels.append(datetime.date.fromisoformat(label_text))
-        except Exception:
-            parsed_labels.append(None)
+    parsed_labels = resolved_label_dates
 
     tx_points = []
     for tx in transactions:
@@ -3428,14 +4046,6 @@ def api_fund_performance_chart_data():
 
     chart_data['holding_return_pct'] = holding_return_pct
 
-    # 本地缓存命中时不再触发额外远端行情请求，提升重复查看性能
-    if not bool(chart_data.get('from_cache', False)):
-        latest_net_value, latest_nav_date, _latest_fund_data = _get_latest_fund_quote(user_id, fund_code)
-        if latest_net_value and latest_net_value > 0:
-            chart_data['latest_net_value'] = round(float(latest_net_value), 4)
-        if latest_nav_date:
-            chart_data['latest_net_value_date'] = latest_nav_date
-
     return jsonify({
         'chart_data': chart_data,
         'fund_info': {
@@ -3450,7 +4060,7 @@ def api_fund_performance_chart_data():
 def api_fund_profit_chart_data():
     """获取基金累计收益曲线数据（重写版：交易与净值按日对齐，提供更完整指标序列）。"""
     fund_code = request.args.get('code')
-    date_interval = request.args.get('interval', 'THREE_YEAR').strip().upper()
+    date_interval = request.args.get('interval', DEFAULT_PROFIT_CHART_INTERVAL).strip().upper()
     if not fund_code:
         return jsonify({'error': 'Missing fund code'}), 400
 
@@ -3467,18 +4077,14 @@ def api_fund_profit_chart_data():
         'fund_name': user_funds[fund_code]['fund_name']
     }
 
-    importlib.reload(fund)
-    my_fund = fund.LanFund(user_id=user_id, db=db, initialize_remote=False)
-    perf_data = my_fund.get_fund_performance_chart_data(fund_code, fund_data, date_interval)
-    from_cache = bool(perf_data.get('from_cache', False))
-
-    if not from_cache:
-        _cache_nav_history_from_curve_data(
-            fund_code,
-            perf_data.get('labels', []) or [],
-            perf_data.get('net_values', []) or [],
-            source=f'profit_curve:{date_interval.lower()}'
-        )
+    # 先构建“本地净值驱动”的业绩曲线数据：收益曲线与业绩曲线共享同一时间轴与净值基准。
+    perf_data = _build_local_performance_chart_data(
+        user_id=user_id,
+        fund_code=fund_code,
+        fund_name=fund_data['fund_name'],
+        date_interval=date_interval,
+        user_funds=user_funds,
+    )
 
     labels = perf_data.get('labels', []) or []
     net_values = perf_data.get('net_values', []) or []
@@ -3487,27 +4093,75 @@ def api_fund_profit_chart_data():
     if len(net_values) < len(labels):
         net_values = net_values + [None] * (len(labels) - len(net_values))
 
+    # 收益曲线同样以净值为基础：若当前区间净值覆盖不完整，则先触发净值补齐再重建曲线。
+    interval_start_date = None
+    establishment_date = _parse_iso_date(perf_data.get('establishment_date'))
+    if date_interval == 'SINCE_ESTABLISHMENT' and isinstance(establishment_date, datetime.date):
+        interval_start_date = establishment_date
+    elif labels:
+        interval_start_date = _parse_iso_date(labels[0])
+
+    if isinstance(interval_start_date, datetime.date):
+        interval_end_date = _nav_backfill_effective_end_date()
+        interval_nav_map = db.get_fund_nav_history_range(
+            fund_code,
+            interval_start_date.isoformat(),
+            interval_end_date.isoformat(),
+        ) or {}
+
+        interval_nav_dates = []
+        for day in interval_nav_map.keys():
+            day_obj = _parse_iso_date(day)
+            if isinstance(day_obj, datetime.date):
+                interval_nav_dates.append(day_obj)
+
+        expected_interval_days = iter_cn_sse_trading_days(interval_start_date, interval_end_date)
+        existing_interval_days = {
+            day_obj for day_obj in interval_nav_dates
+            if is_cn_sse_trading_day(day_obj)
+        }
+        missing_interval_days = [day for day in expected_interval_days if day not in existing_interval_days]
+        request_segments = _build_backfill_request_segments(missing_interval_days, interval_end_date)
+
+        if request_segments:
+            wrote_count = 0
+            for seg_start, seg_end in request_segments:
+                if seg_start > seg_end:
+                    continue
+                remote_nav_map = _fetch_history_nav_map_by_date_range(
+                    user_id,
+                    fund_code,
+                    seg_start.isoformat(),
+                    seg_end.isoformat(),
+                )
+                if not remote_nav_map:
+                    continue
+                for nav_date, nav_value in remote_nav_map.items():
+                    if db.upsert_fund_nav_history(fund_code, nav_date, nav_value, source='history_api_profit_interval_sync'):
+                        wrote_count += 1
+
+            if wrote_count > 0:
+                logger.info(
+                    f"收益曲线净值补齐完成【{fund_code}】: start={interval_start_date}, end={interval_end_date}, wrote={wrote_count}"
+                )
+                perf_data = _build_local_performance_chart_data(
+                    user_id=user_id,
+                    fund_code=fund_code,
+                    fund_name=fund_data['fund_name'],
+                    date_interval=date_interval,
+                    user_funds=user_funds,
+                )
+                labels = perf_data.get('labels', []) or []
+                net_values = perf_data.get('net_values', []) or []
+                growth_values = perf_data.get('growth', []) or []
+                if len(net_values) < len(labels):
+                    net_values = net_values + [None] * (len(labels) - len(net_values))
+
     def _safe_float(value):
         try:
             return float(value)
         except (TypeError, ValueError):
             return None
-
-    def _parse_label_date(label):
-        text = str(label or '').strip()
-        if not text:
-            return None
-        try:
-            return datetime.date.fromisoformat(text)
-        except Exception:
-            pass
-        try:
-            if len(text) == 5 and text[2] == '-':
-                dt = datetime.datetime.strptime(text, '%m-%d').date()
-                return datetime.date(datetime.date.today().year, dt.month, dt.day)
-        except Exception:
-            pass
-        return None
 
     transactions = db.get_fund_transactions(user_id, fund_code)
     sorted_txs = []
@@ -3548,50 +4202,9 @@ def api_fund_profit_chart_data():
 
     sorted_txs.sort(key=lambda item: item['datetime'])
 
-    parsed_label_dates = [_parse_label_date(label) for label in labels]
-    valid_dates = [date for date in parsed_label_dates if date is not None]
-
-    local_nav_map = {}
-    if valid_dates:
-        local_nav_map = db.get_fund_nav_history_range(
-            fund_code,
-            min(valid_dates).isoformat(),
-            max(valid_dates).isoformat()
-        ) or {}
-
-    if valid_dates:
-        min_date = min(valid_dates).isoformat()
-        max_date = max(valid_dates).isoformat()
-        local_count = len(local_nav_map)
-        expected_count = max(1, len(valid_dates))
-        # 本地净值过稀疏时，按区间批量补齐历史净值并回写本地
-        if local_count < max(10, int(expected_count * 0.3)):
-            history_nav_map = _fetch_history_nav_map_by_date_range(user_id, fund_code, min_date, max_date)
-            if history_nav_map:
-                wrote_count = 0
-                for nav_date, nav_value in history_nav_map.items():
-                    if db.upsert_fund_nav_history(fund_code, nav_date, nav_value, source='history_api_bulk'):
-                        wrote_count += 1
-                if wrote_count > 0:
-                    logger.info(
-                        f"收益曲线净值批量回填完成【{fund_code} {date_interval}】: range={min_date}~{max_date}, wrote={wrote_count}"
-                    )
-                # 重新读取一次本地区间净值，供后续收益计算使用
-                local_nav_map = db.get_fund_nav_history_range(
-                    fund_code,
-                    min_date,
-                    max_date
-                ) or local_nav_map
-
-    if valid_dates and any(_safe_float(value) in (None, 0.0) for value in net_values):
-        for idx, point_date in enumerate(parsed_label_dates):
-            if idx >= len(net_values) or point_date is None:
-                continue
-            if _safe_float(net_values[idx]) not in (None, 0.0):
-                continue
-            nav_value = _safe_float(local_nav_map.get(point_date.isoformat()))
-            if nav_value is not None and nav_value > 0:
-                net_values[idx] = round(nav_value, 4)
+    resolved_label_dates = _resolve_curve_label_dates(labels)
+    expected_dates = [item for item in resolved_label_dates if isinstance(item, datetime.date)]
+    local_nav_map = db.get_fund_nav_history_range(fund_code) or {}
 
     has_valid_nav = any(_safe_float(value) not in (None, 0.0) for value in net_values)
     if labels:
@@ -3632,13 +4245,24 @@ def api_fund_profit_chart_data():
 
         reference_index = None
         if anchor_date:
-            anchor_date_text = str(anchor_date)
-            anchor_suffix = anchor_date_text[5:] if len(anchor_date_text) >= 10 else anchor_date_text
-            for idx, label in enumerate(labels):
-                label_text = str(label)
-                if label_text == anchor_date_text or label_text.endswith(anchor_suffix):
-                    reference_index = idx
-                    break
+            try:
+                anchor_date_obj = datetime.date.fromisoformat(str(anchor_date))
+            except Exception:
+                anchor_date_obj = None
+            if anchor_date_obj is not None:
+                for idx, point_date in enumerate(resolved_label_dates):
+                    if point_date == anchor_date_obj:
+                        reference_index = idx
+                        break
+
+            if reference_index is None:
+                anchor_date_text = str(anchor_date)
+                anchor_suffix = anchor_date_text[5:] if len(anchor_date_text) >= 10 else anchor_date_text
+                for idx, label in enumerate(labels):
+                    label_text = str(label)
+                    if label_text == anchor_date_text or label_text.endswith(anchor_suffix):
+                        reference_index = idx
+                        break
 
         if reference_index is None:
             for idx in range(len(growth_values) - 1, -1, -1):
@@ -3646,7 +4270,8 @@ def api_fund_profit_chart_data():
                     reference_index = idx
                     break
 
-        # 使用“锚点净值 + 同区间涨幅”补齐缺失净值点（非插值，不跨日平铺）
+        # 使用“锚点净值 + 同区间涨幅”补齐缺失净值点（非插值，不跨日平铺）。
+        # 真实净值始终优先，重建值仅用于缺失补齐，避免污染已落库的真实历史净值。
         if anchor_nav and anchor_nav > 0 and reference_index is not None:
             reference_growth = _safe_float(growth_values[reference_index]) or 0.0
             denominator = 1 + reference_growth / 100.0
@@ -3675,7 +4300,7 @@ def api_fund_profit_chart_data():
                 net_values = merged_nav_values
 
     nav_by_date = {}
-    for idx, point_date in enumerate(parsed_label_dates):
+    for idx, point_date in enumerate(resolved_label_dates):
         if point_date is None:
             continue
         nav_value = _safe_float(net_values[idx]) if idx < len(net_values) else None
@@ -3687,24 +4312,9 @@ def api_fund_profit_chart_data():
             if tx['net_value'] is not None:
                 nav_by_date[tx['date']] = round(tx['net_value'], 4)
 
-    sorted_nav_dates = sorted([date.isoformat() if isinstance(date, datetime.date) else str(date) 
-                                for date in nav_by_date.keys()]) if nav_by_date else []
-    
-    if sorted_nav_dates:
-        expanded_labels = sorted_nav_dates
-        expanded_net_values = []
-        for date_str in sorted_nav_dates:
-            for orig_date, nav_val in nav_by_date.items():
-                orig_date_str = orig_date.isoformat() if isinstance(orig_date, datetime.date) else str(orig_date)
-                if orig_date_str == date_str:
-                    expanded_net_values.append(nav_val)
-                    break
-    elif valid_dates:
-        expanded_labels = [date.isoformat() for date in sorted(valid_dates)]
-        expanded_net_values = [nav_by_date.get(datetime.date.fromisoformat(label)) for label in expanded_labels]
-    else:
-        expanded_labels = []
-        expanded_net_values = []
+    expanded_dates = sorted(nav_by_date.keys()) if nav_by_date else sorted(expected_dates)
+    expanded_labels = [item.isoformat() for item in expanded_dates]
+    expanded_net_values = [nav_by_date.get(item) for item in expanded_dates]
 
     tx_index = 0
     cumulative_buy = 0.0
@@ -3724,8 +4334,7 @@ def api_fund_profit_chart_data():
     cumulative_dividend_values = []
     profit_rate_values = []
 
-    for idx, label_str in enumerate(expanded_labels):
-        point_date = _parse_label_date(label_str)
+    for idx, point_date in enumerate(expanded_dates):
         
         while tx_index < len(sorted_txs) and point_date and sorted_txs[tx_index]['date'] <= point_date:
             tx = sorted_txs[tx_index]
@@ -3801,8 +4410,10 @@ def api_fund_profit_chart_data():
         'cumulative_sell_values': cumulative_sell_values,
         'cumulative_dividend_values': cumulative_dividend_values,
         'profit_rate_values': profit_rate_values,
-        'date_interval': date_interval,
+        'date_interval': perf_data.get('date_interval', date_interval),
         'interval_label': perf_data.get('interval_label', date_interval),
+        'available_intervals': perf_data.get('available_intervals', []),
+        'establishment_date': perf_data.get('establishment_date'),
         'latest_profit': latest_profit,
         'latest_profit_rate': latest_profit_rate,
     }
@@ -3902,4 +4513,23 @@ if __name__ == '__main__':
     if os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
         _start_log_cleanup_worker_if_needed()
 
-    run_simple('0.0.0.0', 8311, app, use_reloader=True, use_debugger=False)
+    # 避免日志文件/本地数据库写入触发 reloader 反复重启（会造成“日志清理频繁触发”的错觉）。
+    # 低版本 Werkzeug 可能不支持 exclude_patterns，故做兼容回退。
+    try:
+        run_simple(
+            '0.0.0.0',
+            8311,
+            app,
+            use_reloader=True,
+            use_debugger=False,
+            exclude_patterns=[
+                'cache/logs/*',
+                'cache/*.db',
+                'cache/**/*.db',
+                '*.db-journal',
+                '*.db-wal',
+                '*.db-shm',
+            ],
+        )
+    except TypeError:
+        run_simple('0.0.0.0', 8311, app, use_reloader=True, use_debugger=False)

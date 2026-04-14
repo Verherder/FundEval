@@ -177,7 +177,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // 基金名称点击：展开/收起当前行的基金趋势曲线（业绩）
             if (nameCell && window.toggleFundRowChart) {
                 const code = nameCell.dataset.code;
-                window.toggleFundRowChart(code, 'performance', 'THREE_YEAR');
+                window.toggleFundRowChart(code, 'performance', 'SINCE_ESTABLISHMENT');
                 return;
             }
 
@@ -198,7 +198,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // 收益数值点击：展开累计收益曲线
             if (positionGainCell && window.toggleFundRowChart) {
                 const code = positionGainCell.dataset.code;
-                window.toggleFundRowChart(code, 'profit', 'THREE_YEAR');
+                window.toggleFundRowChart(code, 'profit', 'THREE_MONTH');
             }
         });
     }
@@ -697,6 +697,49 @@ async function addFunds() {
         }
     } catch (e) {
         alert('操作失败: ' + e.message);
+    }
+}
+
+// 批量回填成立日期
+async function backfillEstablishmentDates() {
+    const confirmed = window.confirm('将为当前账户所有“成立日期缺失”的基金尝试自动补齐，是否继续？');
+    if (!confirmed) return;
+
+    try {
+        const response = await fetch('/api/fund/backfill-establishment-dates', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const result = await response.json();
+
+        if (!result || !result.success) {
+            const message = (result && result.message) ? result.message : '回填失败';
+            if (typeof window.showSimpleMessage === 'function') {
+                window.showSimpleMessage(message, 'error');
+            } else {
+                alert(message);
+            }
+            return;
+        }
+
+        const summary = `回填完成：缺失${result.missing || 0}，补齐${result.updated || 0}，失败${result.failed || 0}`;
+        if (typeof window.showSimpleMessage === 'function') {
+            window.showSimpleMessage(summary, 'success');
+        } else {
+            alert(summary);
+        }
+
+        // 回填仅更新元数据，无需整页重载，直接刷新基金表格即可
+        if (typeof fetchPortfolioData === 'function') {
+            fetchPortfolioData().catch(() => {});
+        }
+    } catch (e) {
+        const message = '回填失败: ' + (e?.message || e);
+        if (typeof window.showSimpleMessage === 'function') {
+            window.showSimpleMessage(message, 'error');
+        } else {
+            alert(message);
+        }
     }
 }
 
@@ -1831,6 +1874,7 @@ document.addEventListener('DOMContentLoaded', function() {
     window.closeFundSelectionModal = closeFundSelectionModal;
     window.confirmFundSelection = confirmFundSelection;
     window.addFunds = addFunds;
+    window.backfillEstablishmentDates = backfillEstablishmentDates;
     window.markHold = markHold;
     window.unmarkHold = unmarkHold;
     window.deleteFunds = deleteFunds;
@@ -3917,8 +3961,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (document.hidden) {
             stopAutoRefresh();
         } else {
-            // Immediate refresh when tab becomes visible
-            refreshCurrentPage();
+            // 页面切回可见时仅恢复定时器，不做立即刷新，避免首屏/切页触发“自动点刷新”
             startAutoRefresh();
         }
     });

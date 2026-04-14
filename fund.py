@@ -34,6 +34,8 @@ PERFORMANCE_CHART_INTERVALS = {
     "SIX_MONTH": "近6月",
     "ONE_YEAR": "近1年",
     "THREE_YEAR": "近3年",
+    "FIVE_YEAR": "近5年",
+    "SINCE_ESTABLISHMENT": "成立以来",
 }
 
 sem = threading.Semaphore(5)
@@ -153,6 +155,89 @@ class LanFund:
         # if self.CACHE_MAP:
         #     logger.debug(f"加载 {len(self.CACHE_MAP)} 个基金代码缓存成功")
 
+    @staticmethod
+    def _normalize_establishment_date_text(raw_value):
+        """将成立日期规范为 YYYY-MM-DD 文本，失败返回空字符串。"""
+        text = str(raw_value or '').strip()
+        if not text:
+            return ''
+        try:
+            if re.fullmatch(r"\d{8}", text):
+                return datetime.datetime.strptime(text, "%Y%m%d").strftime("%Y-%m-%d")
+            return datetime.date.fromisoformat(text).isoformat()
+        except Exception:
+            return ''
+
+    def _fetch_fund_establishment_date(self, fund_code):
+        """从基金详情接口获取成立日期，返回 YYYY-MM-DD 或 None。"""
+        try:
+            api_tpl = DATA_SOURCE_URLS.get('fund123_matiaria_tpl')
+            if not api_tpl:
+                return None
+
+            url = api_tpl.format(fund=fund_code)
+            response = timed_http_request(
+                self.session,
+                "GET",
+                url,
+                source="fund123",
+                headers={
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Connection": "keep-alive",
+                    "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+                    "accept": "application/json,text/plain,*/*"
+                },
+                timeout=10,
+                verify=False,
+            )
+
+            date_text = None
+            try:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    date_text = payload.get('titleInfo', {}).get('establishmentDate')
+            except Exception:
+                pass
+
+            if not date_text:
+                match = re.search(r'"establishmentDate"\s*:\s*"(\d{4}-\d{2}-\d{2}|\d{8})"', response.text)
+                if match:
+                    date_text = match.group(1)
+
+            normalized = self._normalize_establishment_date_text(date_text)
+            return normalized or None
+        except Exception:
+            return None
+
+    def _ensure_fund_establishment_date(self, fund_code):
+        """确保缓存/数据库存在成立日期；缺失时远端补齐并返回 date 对象。"""
+        fund_cache_data = self.CACHE_MAP.get(fund_code, {}) if isinstance(self.CACHE_MAP, dict) else {}
+        existing_text = self._normalize_establishment_date_text(fund_cache_data.get('establishment_date'))
+        if existing_text:
+            try:
+                return datetime.date.fromisoformat(existing_text)
+            except Exception:
+                pass
+
+        fetched_text = self._fetch_fund_establishment_date(fund_code)
+        if not fetched_text:
+            return None
+
+        try:
+            if isinstance(fund_cache_data, dict):
+                fund_cache_data['establishment_date'] = fetched_text
+                self.CACHE_MAP[fund_code] = fund_cache_data
+
+            if self.user_id is not None and self.db is not None:
+                self.db.update_fund_establishment_date(self.user_id, fund_code, fetched_text)
+            else:
+                self.save_cache()
+
+            return datetime.date.fromisoformat(fetched_text)
+        except Exception:
+            return None
+
     def save_cache(self):
         """
         保存缓存数据，优先保存到数据库（如果有user_id），否则保存到json文件。
@@ -256,11 +341,13 @@ class LanFund:
                 if response.json()["success"]:
                     fund_key = response.json()["fundInfo"]["key"]
                     fund_name = response.json()["fundInfo"]["fundName"]
+                    establishment_date = self._fetch_fund_establishment_date(code)
                     self.CACHE_MAP[code] = {
                         "fund_key": fund_key,
                         "fund_name": fund_name,
                         "is_hold": False,
-                        "shares": 0
+                        "shares": 0,
+                        "establishment_date": establishment_date,
                     }
                     logger.info(f"添加基金代码【{code}】成功")
                 else:
@@ -810,200 +897,111 @@ class LanFund:
             return raw_label
         return raw_label
 
-    def get_fund_performance_chart_data(self, fund_code, fund_data, date_interval="THREE_YEAR"):
-        """获取基金业绩曲线数据。"""
-        fund_key = fund_data["fund_key"]
-
-        if date_interval not in PERFORMANCE_CHART_INTERVALS:
-            date_interval = "THREE_YEAR"
-
-        # 本地优先：命中缓存则直接返回，避免重复请求远端
-        cached_chart_data = None
-        if self.db is not None and hasattr(self.db, 'get_fund_performance_curve_cache'):
-            try:
-                cached_rows = self.db.get_fund_performance_curve_cache(fund_code, date_interval)
-                if cached_rows:
-                    labels = []
-                    growth = []
-                    net_values = []
-                    benchmark_growth = []
-
-                    def safe_float(value, digits=None):
-                        try:
-                            number = float(value)
-                            if digits is not None:
-                                return round(number, digits)
-                            return number
-                        except (TypeError, ValueError):
-                            return None
-
-                    for row in cached_rows:
-                        label_text = str(row.get('curve_date') or '').strip()
-                        if not label_text:
-                            continue
-                        labels.append(label_text)
-                        growth.append(safe_float(row.get('growth_rate'), 2))
-                        net_values.append(safe_float(row.get('nav_value'), 4))
-                        benchmark_growth.append(safe_float(row.get('benchmark_growth_rate'), 2))
-
-                    if labels:
-                        latest_net_value = None
-                        latest_net_value_date = None
-                        for index in range(len(net_values) - 1, -1, -1):
-                            if net_values[index] is None:
-                                continue
-                            latest_net_value = net_values[index]
-                            latest_net_value_date = labels[index] if index < len(labels) else None
-                            break
-
-                        cached_chart_data = {
-                            'labels': labels,
-                            'growth': growth,
-                            'net_values': net_values,
-                            'benchmark_label': '沪深300',
-                            'benchmark_growth': benchmark_growth,
-                            'latest_net_value': latest_net_value,
-                            'latest_net_value_date': latest_net_value_date,
-                            'from_cache': True,
-                            'date_interval': date_interval,
-                            'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
-                        }
-                        logger.debug(f"业绩曲线本地缓存命中【{fund_code} {date_interval}】: {len(labels)} points")
-            except Exception as e:
-                logger.warning(f"读取本地业绩曲线缓存失败【{fund_code} {date_interval}】: {e}")
-
-        if cached_chart_data is not None:
-            return cached_chart_data
-
-        # 仅在需要远端请求时再初始化远端上下文，避免本地命中也触发网络开销
-        if not self._remote_initialized:
-            try:
-                self.init()
-                self._remote_initialized = True
-            except Exception as e:
-                logger.warning(f"远端初始化失败，业绩曲线请求可能失败【{fund_code} {date_interval}】: {e}")
-
-        headers = {
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "Connection": "keep-alive",
-            "Content-Type": "application/json",
-            "Origin": DATA_SOURCE_URLS['fund123_origin'],
-            "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-            "X-API-Key": "foobar",
-            "accept": "json"
+    def get_fund_performance_chart_data(self, fund_code, fund_data, date_interval="SINCE_ESTABLISHMENT"):
+        """获取基金业绩曲线数据（纯本地净值版）。"""
+        interval_days_map = {
+            "ONE_MONTH": 31,
+            "THREE_MONTH": 93,
+            "SIX_MONTH": 186,
+            "ONE_YEAR": 365,
+            "THREE_YEAR": 365 * 3,
+            "FIVE_YEAR": 365 * 5,
         }
 
+        if date_interval not in PERFORMANCE_CHART_INTERVALS:
+            date_interval = "SINCE_ESTABLISHMENT"
+
         try:
-            response = timed_http_request(
-                self.session,
-                "POST",
-                DATA_SOURCE_URLS['fund123_curves_api'],
-                source="fund123",
-                headers=headers,
-                params={"_csrf": self._csrf},
-                json={
-                    "productId": fund_key,
-                    "dateInterval": date_interval
-                },
-                timeout=10,
-                verify=False,
-            )
-            response_json = response.json()
-            if not response_json.get("success"):
-                logger.error(f"获取基金业绩曲线失败【{fund_code}】: {response.text.strip()}")
+            if self.db is None:
                 return {
                     'labels': [],
                     'growth': [],
-                    'from_cache': False,
+                    'net_values': [],
+                    'benchmark_label': '沪深300',
+                    'benchmark_growth': [],
+                    'latest_net_value': None,
+                    'latest_net_value_date': None,
+                    'from_cache': True,
                     'date_interval': date_interval,
                     'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
                 }
 
-            all_points = response_json.get("points", []) or []
-            points = [x for x in all_points if x.get("type") == "fund"]
-            benchmark_points = [x for x in all_points if x.get("type") == "indexbase"]
-            labels = []
+            # 业绩曲线数据源统一为本地净值历史，避免依赖远端业绩曲线接口。
+            nav_map = self.db.get_fund_nav_history_range(fund_code) or {}
+            nav_points = []
+            for nav_date in sorted(nav_map.keys()):
+                try:
+                    nav_raw = nav_map.get(nav_date)
+                    if nav_raw is None:
+                        continue
+                    nav_value = float(nav_raw)
+                    if nav_value <= 0:
+                        continue
+                    dt = datetime.date.fromisoformat(str(nav_date))
+                    nav_points.append((dt, round(nav_value, 4)))
+                except (TypeError, ValueError):
+                    continue
+                except Exception:
+                    continue
+
+            if not nav_points:
+                return {
+                    'labels': [],
+                    'growth': [],
+                    'net_values': [],
+                    'benchmark_label': '沪深300',
+                    'benchmark_growth': [],
+                    'latest_net_value': None,
+                    'latest_net_value_date': None,
+                    'from_cache': True,
+                    'date_interval': date_interval,
+                    'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
+                }
+
+            # 先读取 user_funds 中的成立日；缺失时远端补齐，再用于区间/按钮判断。
+            establishment_date = self._ensure_fund_establishment_date(fund_code)
+
+            # 按请求区间裁剪净值序列；成立以来优先使用成立日，否则回退到首个净值日。
+            end_date = nav_points[-1][0]
+            if date_interval == "SINCE_ESTABLISHMENT":
+                start_date = establishment_date or nav_points[0][0]
+            else:
+                days = interval_days_map.get(date_interval)
+                start_date = end_date - datetime.timedelta(days=max((days or 1) - 1, 0))
+                if establishment_date is not None and start_date < establishment_date:
+                    start_date = establishment_date
+
+            filtered_points = [item for item in nav_points if item[0] >= start_date]
+            if not filtered_points:
+                filtered_points = nav_points
+
+            labels = [item[0].isoformat() for item in filtered_points]
+            net_values = [item[1] for item in filtered_points]
+
+            # 以区间首个有效净值为基准，计算区间内累计涨跌幅（百分比）。
             growth = []
-            net_values = []
-            benchmark_growth_map = {}
+            base_nav = net_values[0] if net_values else None
+            for nav in net_values:
+                if base_nav is None or base_nav <= 0:
+                    growth.append(None)
+                else:
+                    growth.append(round((nav / base_nav - 1.0) * 100.0, 2))
 
-            def extract_point_net_value(point):
-                candidate_keys = [
-                    "netValue", "unitNetValue", "unitValue", "value", "nav", "close", "y"
-                ]
-                for key in candidate_keys:
-                    value = point.get(key)
-                    if value in (None, ""):
-                        continue
-                    try:
-                        return round(float(value), 4)
-                    except (TypeError, ValueError):
-                        continue
-                return None
-
-            for index, point in enumerate(benchmark_points):
-                try:
-                    rate = round(float(point.get("rate", 0)) * 100, 2)
-                except (TypeError, ValueError):
-                    continue
-                benchmark_label = self._format_curve_point_label(point, index)
-                benchmark_growth_map[benchmark_label] = rate
-
-            for index, point in enumerate(points):
-                try:
-                    rate = round(float(point.get("rate", 0)) * 100, 2)
-                except (TypeError, ValueError):
-                    continue
-                labels.append(self._format_curve_point_label(point, index))
-                growth.append(rate)
-                net_values.append(extract_point_net_value(point))
-
-            benchmark_growth = [benchmark_growth_map.get(label) for label in labels]
-
-            # 云端回填：批量写入本地曲线缓存，供后续本地直接读取
-            if self.db is not None and hasattr(self.db, 'bulk_upsert_fund_performance_curve_cache'):
-                try:
-                    cache_points = []
-                    max_len = len(labels)
-                    for idx in range(max_len):
-                        cache_points.append({
-                            'curve_date': labels[idx],
-                            'growth_rate': growth[idx] if idx < len(growth) else None,
-                            'benchmark_growth_rate': benchmark_growth[idx] if idx < len(benchmark_growth) else None,
-                            'nav_value': net_values[idx] if idx < len(net_values) else None,
-                        })
-                    write_count = self.db.bulk_upsert_fund_performance_curve_cache(
-                        fund_code,
-                        date_interval,
-                        cache_points,
-                        source='fund123_curves_api'
-                    )
-                    if write_count > 0:
-                        logger.debug(f"业绩曲线云端回填本地缓存完成【{fund_code} {date_interval}】: {write_count} points")
-                except Exception as e:
-                    logger.warning(f"回填本地业绩曲线缓存失败【{fund_code} {date_interval}】: {e}")
-
-            latest_net_value = None
-            latest_net_value_date = None
-            for index in range(len(net_values) - 1, -1, -1):
-                if net_values[index] is None:
-                    continue
-                latest_net_value = net_values[index]
-                latest_net_value_date = labels[index] if index < len(labels) else None
-                break
+            latest_net_value = net_values[-1] if net_values else None
+            latest_net_value_date = labels[-1] if labels else None
 
             return {
                 'labels': labels,
                 'growth': growth,
                 'net_values': net_values,
                 'benchmark_label': '沪深300',
-                'benchmark_growth': benchmark_growth,
+                'benchmark_growth': [],
                 'latest_net_value': latest_net_value,
                 'latest_net_value_date': latest_net_value_date,
-                'from_cache': False,
+                'from_cache': True,
                 'date_interval': date_interval,
-                'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
+                'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval],
+                'growth_source': 'local_nav',
             }
         except Exception as e:
             logger.error(f"获取基金业绩曲线数据失败【{fund_code}】: {e}")
@@ -1015,9 +1013,10 @@ class LanFund:
                 'benchmark_growth': [],
                 'latest_net_value': None,
                 'latest_net_value_date': None,
-                'from_cache': False,
+                'from_cache': True,
                 'date_interval': date_interval,
-                'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
+                'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval],
+                'growth_source': 'local_nav',
             }
 
     def search_code(self, is_return=False):
@@ -1886,7 +1885,7 @@ class LanFund:
         for line_msg in format_table_msg([
             [
                 "基金代码", "基金名称", "基金类型", "日期", "净值|日增长率", "近1周", "近1月", "近3月", "近6月",
-                "今年来", "近1年", "近2年", "近3年", "成立来"
+                "今年来", "近1年", "近2年", "近3年", "成立以来"
             ],
             *fund_results
         ]).split("\n"):
@@ -2735,7 +2734,7 @@ class LanFund:
             <div style="padding: 20px;">
                 <h3 style="margin: 0 0 15px 0;">板块: {data["bk_name"]}</h3>
                 {get_table_html(
-                ["基金代码", "基金名称", "基金类型", "日期", "净值", "日增长率", "近1周", "近1月", "近3月", "近6月", "今年来", "近1年", "近2年", "近3年", "成立来"],
+                ["基金代码", "基金名称", "基金类型", "日期", "净值", "日增长率", "近1周", "近1月", "近3月", "近6月", "今年来", "近1年", "近2年", "近3年", "成立以来"],
                 data["results"],
                 [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
             )}

@@ -94,3 +94,42 @@ def get_data_source_urls() -> Dict[str, str]:
         raise ValueError(f"config.yaml 缺少必要的数据源URL配置: {', '.join(missing_keys)}")
 
     return {key: configured[key].strip() for key in REQUIRED_DATA_SOURCE_URL_KEYS}
+
+
+def get_performance_chart_config() -> Dict[str, Any]:
+    """获取业绩图表配置。"""
+    try:
+        config = load_yaml_config()
+        pc = config.get('performance_chart', {})
+        return {
+            'interval_labels': pc.get('interval_labels', {}),
+            'interval_days': pc.get('interval_days', {}),
+            'interval_order': pc.get('interval_order', []),
+            'default_interval': pc.get('default_interval', 'SINCE_ESTABLISHMENT'),
+            'default_profit_interval': pc.get('default_profit_interval', 'THREE_MONTH'),
+        }
+    except Exception:
+        return {}
+
+
+def get_nav_sync_config() -> Dict[str, Any]:
+    """获取历史净值同步配置。"""
+    try:
+        config = load_yaml_config()
+        ns = config.get('nav_sync', {})
+        return {
+            'request_page_size': ns.get('request_page_size', 300),
+            'backfill_months': ns.get('backfill_months', 12),
+            'include_today_after': ns.get('include_today_after', '20:00'),
+        }
+    except Exception:
+        return {}
+
+
+def get_server_config() -> Dict[str, Any]:
+    """获取服务器配置。"""
+    try:
+        config = load_yaml_config()
+        return config.get('server', {})
+    except Exception:
+        return {}
