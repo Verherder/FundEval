@@ -247,6 +247,28 @@ class Database:
         except Exception as e:
             logger.warning(f"Failed to create indexes for fund_performance_curve_cache: {e}")
 
+        # 指数历史净值缓存（用于业绩曲线基准对比）
+        cursor.execute('''
+                       CREATE TABLE IF NOT EXISTS index_nav_history
+                       (
+                           id INTEGER PRIMARY KEY AUTOINCREMENT,
+                           index_code TEXT NOT NULL,
+                           nav_date TEXT NOT NULL,
+                           close REAL NOT NULL,
+                           change_pct REAL,
+                           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           UNIQUE(index_code, nav_date)
+                       )
+                       ''')
+        try:
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_index_nav_history_code_date
+                ON index_nav_history(index_code, nav_date)
+            ''')
+        except Exception as e:
+            logger.warning(f"Failed to create indexes for index_nav_history: {e}")
+
         # 检查并添加chart_default字段
         cursor.execute("PRAGMA table_info(user_funds)")
         columns = [col[1] for col in cursor.fetchall()]
@@ -1331,3 +1353,52 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to get chart default fund for user {user_id}: {e}")
             return None
+
+    def bulk_upsert_index_nav_history(self, index_code, records):
+        """批量写入指数历史净值。records 为 list of dict，每项含 nav_date, close, change_pct。"""
+        try:
+            code = str(index_code or '').strip()
+            if not code or not records:
+                return False
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.executemany('''
+                INSERT INTO index_nav_history (index_code, nav_date, close, change_pct, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(index_code, nav_date)
+                DO UPDATE SET
+                    close = excluded.close,
+                    change_pct = excluded.change_pct,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', [(code, r['nav_date'], float(r['close']), r.get('change_pct'), ) for r in records])
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to bulk upsert index nav history: {e}")
+            return False
+
+    def get_index_nav_history_range(self, index_code, start_date=None, end_date=None):
+        """按日期区间读取指数净值，返回 {nav_date: close}。"""
+        try:
+            code = str(index_code or '').strip()
+            if not code:
+                return {}
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            sql = 'SELECT nav_date, close FROM index_nav_history WHERE index_code = ?'
+            params = [code]
+            if start_date:
+                sql += ' AND nav_date >= ?'
+                params.append(str(start_date).strip())
+            if end_date:
+                sql += ' AND nav_date <= ?'
+                params.append(str(end_date).strip())
+            sql += ' ORDER BY nav_date ASC'
+            cursor.execute(sql, tuple(params))
+            rows = cursor.fetchall()
+            conn.close()
+            return {row['nav_date']: float(row['close']) for row in rows}
+        except Exception as e:
+            logger.error(f"Failed to get index nav history range: {e}")
+            return {}

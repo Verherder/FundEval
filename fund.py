@@ -679,7 +679,7 @@ class LanFund:
                         estimateDate = quote_dt.strftime("%Y-%m-%d")
                         forecastGrowth = str(round(float(fund_info["forecastGrowth"]) * 100, 2)) + "%"
 
-                        # 记录“当日估值涨幅”历史（仅当估值更新时间为15:00时入库），用于后续与对应净值日的实际涨幅比较
+                        # 记录"当日估值涨幅"历史（仅当估值更新时间为15:00时入库），用于后续与对应净值日的实际涨幅比较
                         try:
                             is_final_quote = (quote_dt.hour == 15 and quote_dt.minute == 0)
 
@@ -1473,7 +1473,7 @@ class LanFund:
             annual_return = annual_rate * 100 if annual_rate is not None else None
             return holding_return, annual_return, holding_gain, effective_shares
 
-        # 在保留原有“按估值涨跌排序”的前提下，稳定分成两组：持仓基金在前，非持仓在后。
+        # 在保留原有"按估值涨跌排序"的前提下，稳定分成两组：持仓基金在前，非持仓在后。
         result = sorted(result, key=lambda row: 0 if has_active_position(row[0]) else 1)
 
         total = len(result)
@@ -1530,26 +1530,14 @@ class LanFund:
             estimate2_time = row[11] if len(row) > 11 else "N/A"
             estimate2_date = row[12] if len(row) > 12 else ""
 
-            estimate1_cell = (
-                f"<span class='fund-estimate-cell' data-code='{code}' data-estimate-date='{estimate_date}' "
-                f"style='cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看估值曲线'>{forecast_growth}</span>"
-                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{now_time}</span>"
-            )
-            estimate2_cell = (
-                f"<span class='fund-estimate2-cell' data-code='{code}' data-estimate2-date='{estimate2_date}' "
-                f"style='font-weight:500;'>{estimate2_growth}</span>"
-                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{estimate2_time}</span>"
-            )
-
             day_growth_val = parse_growth_percent(day_growth)
-            date_extra = ""
 
             # 显示日期时统一短格式（YYYY-MM-DD -> MM-DD）
             display_net_value_date = net_value_date
             if isinstance(net_value_date, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", net_value_date):
                 display_net_value_date = net_value_date[5:]
 
-            # 仅当“净值日期对应的历史估值”存在时，才计算差值，避免拿今天估值去减旧净值日涨幅
+            # 仅当"净值日期对应的历史估值"存在时，才计算差值，避免拿今天估值去减旧净值日涨幅
             fund_cache = self.CACHE_MAP.get(code, {})
             estimate_history = fund_cache.get("estimate_history", {}) if isinstance(fund_cache, dict) else {}
             history_estimate_val = None
@@ -1566,13 +1554,33 @@ class LanFund:
                         history_estimate_val = estimate_history.get(key)
                         break
 
+            # 估值1误差：历史估值 - 真实日涨幅
+            estimate1_diff_str = ""
             if history_estimate_val is not None and day_growth_val is not None:
-                growth_diff = float(history_estimate_val) - day_growth_val
-                date_extra = f", {format_diff_value(growth_diff)}"
+                diff1 = float(history_estimate_val) - day_growth_val
+                estimate1_diff_str = f" {format_diff_value(diff1)}"
+
+            # 估值2误差：仅当估值2日期与净值日期一致时（日涨幅已是今日数据）才计算
+            estimate2_diff_str = ""
+            estimate2_growth_val = parse_growth_percent(estimate2_growth)
+            if estimate2_growth_val is not None and day_growth_val is not None and estimate2_date == net_value_date:
+                diff2 = estimate2_growth_val - day_growth_val
+                estimate2_diff_str = f" {format_diff_value(diff2)}"
+
+            estimate1_cell = (
+                f"<span class='fund-estimate-cell' data-code='{code}' data-estimate-date='{estimate_date}' "
+                f"style='cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看估值曲线'>{forecast_growth}</span>"
+                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{now_time}{estimate1_diff_str}</span>"
+            )
+            estimate2_cell = (
+                f"<span class='fund-estimate2-cell' data-code='{code}' data-estimate2-date='{estimate2_date}' "
+                f"style='font-weight:500;'>{estimate2_growth}</span>"
+                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{estimate2_time}{estimate2_diff_str}</span>"
+            )
 
             daygrowth_cell = (
                 f"<span class='fund-daygrowth-cell' data-code='{code}'>{day_growth}</span>"
-                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{display_net_value_date}{date_extra}</span>"
+                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{display_net_value_date}</span>"
             )
             rows.append([
                 star_html,

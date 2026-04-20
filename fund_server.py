@@ -20,6 +20,7 @@ except Exception:
     load_workbook = None
 
 import urllib3
+import requests as _requests
 from dotenv import load_dotenv
 from flask import Flask, request, render_template, redirect, url_for, jsonify, \
     send_file
@@ -1229,6 +1230,54 @@ def _get_interval_start_date(interval_key, end_date, establishment_date=None, fa
     return start_date
 
 
+def _ensure_index_nav_history(index_code, start_date, end_date):
+    """确保本地指数净值覆盖 [start_date, end_date] 区间，缺失则从云端补齐。
+    返回 {nav_date: close} 字典。
+    """
+    start_obj = _parse_iso_date(str(start_date))
+    end_obj = _parse_iso_date(str(end_date))
+    if start_obj is None or end_obj is None:
+        return db.get_index_nav_history_range(index_code, start_date, end_date)
+
+    local_map = db.get_index_nav_history_range(index_code, start_obj.isoformat(), end_obj.isoformat())
+
+    # 用交易日历判断缺失
+    all_trading_days = iter_cn_sse_trading_days(start_obj, end_obj)
+    missing = [d for d in all_trading_days if d.isoformat() not in local_map]
+
+    if not missing:
+        return local_map
+
+    # 从云端拉取缺失区间（一次请求覆盖整个缺口）
+    fetch_start = missing[0].strftime('%Y%m%d')
+    fetch_end = missing[-1].strftime('%Y%m%d')
+    url = f'https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode={index_code}&startDate={fetch_start}&endDate={fetch_end}'
+    try:
+        resp = _requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
+        resp.raise_for_status()
+        data = resp.json().get('data') or []
+    except Exception as e:
+        logger.warning(f"沪深300数据补齐失败【{index_code}】: {e}")
+        return local_map
+
+    records = []
+    for item in data:
+        td = str(item.get('tradeDate', ''))
+        if len(td) == 8:
+            td = f'{td[:4]}-{td[4:6]}-{td[6:]}'
+        close = item.get('close')
+        if td and close is not None:
+            records.append({'nav_date': td, 'close': float(close), 'change_pct': item.get('changePct')})
+
+    if records:
+        db.bulk_upsert_index_nav_history(index_code, records)
+        for r in records:
+            local_map[r['nav_date']] = r['close']
+
+    logger.info(f"沪深300数据补齐【{index_code}】: 缺失 {len(missing)} 天，从云端补入 {len(records)} 条")
+    return local_map
+
+
 def _ensure_nav_history_from_establishment(user_id, fund_code, establishment_date):
     """确保本地净值覆盖「成立日 -> 有效截止日」区间（增量补齐）；当日 20:00 前不补今天。"""
     if not isinstance(establishment_date, datetime.date):
@@ -1397,12 +1446,26 @@ def _build_local_performance_chart_data(user_id, fund_code, fund_name, date_inte
     latest_net_value = net_values[-1] if net_values else None
     latest_net_value_date = labels[-1] if labels else None
 
+    # 填充沪深300基准曲线（本地优先，缺失则从云端补齐）
+    benchmark_growth = []
+    if labels:
+        hs300_map = _ensure_index_nav_history('000300', labels[0], labels[-1])
+        base_close = None
+        for label in labels:
+            close = hs300_map.get(label)
+            if close is not None and base_close is None:
+                base_close = close
+            if base_close and close is not None:
+                benchmark_growth.append(round((close / base_close - 1.0) * 100.0, 2))
+            else:
+                benchmark_growth.append(None)
+
     return {
         'labels': labels,
         'growth': growth,
         'net_values': net_values,
         'benchmark_label': '沪深300',
-        'benchmark_growth': [],
+        'benchmark_growth': benchmark_growth,
         'latest_net_value': latest_net_value,
         'latest_net_value_date': latest_net_value_date,
         'from_cache': True,
@@ -4055,6 +4118,54 @@ def api_fund_performance_chart_data():
     })
 
 
+@app.route('/api/index/sync-nav', methods=['POST'])
+@login_required
+def api_index_sync_nav():
+    """从中证指数官网拉取指定指数历史净值并存库。
+    Body JSON: {"index_code": "000300", "start_date": "20260101", "end_date": "20260420"}
+    """
+    body = request.get_json(silent=True) or {}
+    index_code = str(body.get('index_code', '000300')).strip()
+    start_date = str(body.get('start_date', '')).strip()
+    end_date = str(body.get('end_date', '')).strip()
+
+    if not start_date or not end_date:
+        today = datetime.date.today()
+        end_date = today.strftime('%Y%m%d')
+        start_date = (today - datetime.timedelta(days=365)).strftime('%Y%m%d')
+
+    url = f'https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode={index_code}&startDate={start_date}&endDate={end_date}'
+    try:
+        resp = _requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch index nav for {index_code}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+    data = payload.get('data') or []
+    if not data:
+        return jsonify({'synced': 0, 'message': 'no data returned'})
+
+    records = []
+    for item in data:
+        trade_date = str(item.get('tradeDate', '')).strip()
+        close = item.get('close')
+        if not trade_date or close is None:
+            continue
+        # 转为 YYYY-MM-DD
+        if len(trade_date) == 8:
+            trade_date = f'{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}'
+        records.append({
+            'nav_date': trade_date,
+            'close': float(close),
+            'change_pct': item.get('changePct'),
+        })
+
+    db.bulk_upsert_index_nav_history(index_code, records)
+    return jsonify({'synced': len(records)})
+
+
 @app.route('/api/fund/profit-chart-data')
 @login_required
 def api_fund_profit_chart_data():
@@ -4344,7 +4455,8 @@ def api_fund_profit_chart_data():
             tx_fee = tx['fee']
 
             if tx_type == 'buy' and tx_shares > 0:
-                total_cost = tx_amount + tx_fee
+                # amount 是含手续费的总投入，fee 已包含在内，不重复加
+                total_cost = tx_amount
                 cumulative_buy += total_cost
                 holding_shares += tx_shares
                 remaining_cost += total_cost
@@ -4352,7 +4464,8 @@ def api_fund_profit_chart_data():
                 sold_shares = min(tx_shares, holding_shares)
                 avg_cost = (remaining_cost / holding_shares) if holding_shares > 1e-8 else 0.0
                 sold_cost = sold_shares * avg_cost
-                proceeds = max(tx_amount - tx_fee, 0.0)
+                # amount 是到账净额（已扣手续费），不重复扣
+                proceeds = tx_amount
 
                 if tx_shares > sold_shares and tx_shares > 0:
                     proceeds *= (sold_shares / tx_shares)
