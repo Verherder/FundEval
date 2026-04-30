@@ -8,5 +8,6 @@ __pycache__/
 CLAUDE.md
 *.DS_Store
 *.log
+cache/logs
 cache/fund_data.db
 dist/

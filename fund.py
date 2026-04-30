@@ -664,6 +664,21 @@ class LanFund:
                             if len(gz_parts) >= 2:
                                 estimate2Date = gz_parts[0]
                                 estimate2Time = gz_parts[1][:5]
+                                # 估值2收盘缓存（仅当时间为15:00时入库），用于后续与净值日实际涨幅比较
+                                try:
+                                    estimate2_dt = datetime.datetime.strptime(gztime_raw, "%Y-%m-%d %H:%M")
+                                    is_final_estimate2 = (estimate2_dt.hour == 15 and estimate2_dt.minute == 0)
+                                    if is_final_estimate2:
+                                        estimate2_key = estimate2_dt.strftime("%Y-%m-%d")
+                                        estimate2_val = round(float(gszzl_raw), 2)
+                                        fund_cache = self.CACHE_MAP.get(fund, {})
+                                        current_history2 = fund_cache.get("estimate_history_2", {})
+                                        new_history2 = {estimate2_key: estimate2_val}
+                                        if current_history2 != new_history2:
+                                            fund_cache["estimate_history_2"] = new_history2
+                                            self._cache_dirty = True
+                                except Exception:
+                                    pass
                 except Exception:
                     pass
 
@@ -1554,17 +1569,31 @@ class LanFund:
                         history_estimate_val = estimate_history.get(key)
                         break
 
-            # 估值1误差：历史估值 - 真实日涨幅
+            # 估值1误差：仅当昨日净值已更新（日涨幅不是今天）时展示
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
             estimate1_diff_str = ""
-            if history_estimate_val is not None and day_growth_val is not None:
+            if history_estimate_val is not None and day_growth_val is not None and net_value_date != today:
                 diff1 = float(history_estimate_val) - day_growth_val
                 estimate1_diff_str = f" {format_diff_value(diff1)}"
 
-            # 估值2误差：仅当估值2日期与净值日期一致时（日涨幅已是今日数据）才计算
+            # 估值2误差：仅当"净值日期对应的历史估值2"存在时，才计算差值
             estimate2_diff_str = ""
-            estimate2_growth_val = parse_growth_percent(estimate2_growth)
-            if estimate2_growth_val is not None and day_growth_val is not None and estimate2_date == net_value_date:
-                diff2 = estimate2_growth_val - day_growth_val
+            estimate2_history = fund_cache.get("estimate_history_2", {}) if isinstance(fund_cache, dict) else {}
+            history_estimate2_val = None
+            if isinstance(net_value_date, str):
+                lookup_keys2 = [net_value_date]
+                if re.match(r"^\d{4}-\d{2}-\d{2}$", net_value_date):
+                    lookup_keys2.append(net_value_date[5:])
+                elif re.match(r"^\d{2}-\d{2}$", net_value_date):
+                    lookup_keys2.append(f"{datetime.datetime.now().year}-{net_value_date}")
+
+                for key in lookup_keys2:
+                    if key in estimate2_history:
+                        history_estimate2_val = estimate2_history.get(key)
+                        break
+
+            if history_estimate2_val is not None and day_growth_val is not None and net_value_date != today:
+                diff2 = float(history_estimate2_val) - day_growth_val
                 estimate2_diff_str = f" {format_diff_value(diff2)}"
 
             estimate1_cell = (
