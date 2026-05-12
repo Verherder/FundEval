@@ -13,7 +13,6 @@ from decimal import Decimal, ROUND_HALF_UP
 import requests
 import urllib3
 import tabulate as tabulate_module
-from curl_cffi import requests as curl_requests
 from dotenv import load_dotenv
 from loguru import logger
 from tabulate import tabulate
@@ -279,27 +278,6 @@ class LanFund:
                 logger.warning("未能在 fund123 页面中解析到 csrf，部分功能可能不可用")
         except Exception as e:
             logger.error(f"获取 fund123 csrf 失败（网络或接口问题）: {e}")
-
-        # 百度行情预热：可能因 DNS/网络失败，但不影响主流程
-        try:
-            timed_http_request(
-                self.baidu_session,
-                "GET",
-                DATA_SOURCE_URLS['baidu_index_warmup'],
-                source="baidu",
-                headers={
-                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
-                    "referer": DATA_SOURCE_URLS['gushitong_referer']
-                },
-                timeout=10,
-                verify=False,
-            )
-        except Exception as e:
-            logger.error(f"预热百度行情接口失败（网络或接口问题）: {e}")
-        # self.baidu_session.cookies.update({
-        #     "BDUSS": "3hJYkhPNEM3Z2xOeH5TLVU4OEhhU1hPUFYxdVV3V0pkd1VEMEhCTEgxRENMWEJsSVFBQUFBJCQAAAAAAAAAAAEAAAAVl0lPamRrZGpiZGIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMKgSGXCoEhlM",
-        #     "BDUSS_BFESS": "3hJYkhPNEM3Z2xOeH5TLVU4OEhhU1hPUFYxdVV3V0pkd1VEMEhCTEgxRENMWEJsSVFBQUFBJCQAAAAAAAAAAAEAAAAVl0lPamRrZGpiZGIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMKgSGXCoEhlM",
-        # })
 
     def add_code(self, codes):
         """

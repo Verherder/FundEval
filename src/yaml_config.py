@@ -13,10 +13,9 @@ REQUIRED_DATA_SOURCE_URL_KEYS = [
     'fund123_intraday_api',
     'fund123_history_net_value_api',
     'fundgz_js_tpl',
-    # baidu
+    # baidu（warmup已移除，保留key兼容旧配置）
     'gushitong_origin',
     'gushitong_referer',
-    'baidu_index_warmup',
     'baidu_getbanner_tpl',
     'baidu_getquotation_api',
     'baidu_expressnews_tpl',

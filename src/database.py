@@ -413,7 +413,7 @@ class Database:
                 fund_code = row['fund_code']
                 sectors = json.loads(row['sectors']) if row['sectors'] else []
                 estimate_history = json.loads(row['estimate_history']) if row['estimate_history'] else {}
-                estimate_history_2 = json.loads(row['estimate_history_2']) if row.get('estimate_history_2') else {}
+                estimate_history_2 = json.loads(row['estimate_history_2']) if 'estimate_history_2' in row.keys() and row['estimate_history_2'] else {}
 
                 fund_map[fund_code] = {
                     'fund_key': row['fund_key'],
