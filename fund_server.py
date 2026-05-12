@@ -37,7 +37,7 @@ logger.add(
     retention="14 days",
 )
 
-import fund
+import src.fund as fund
 from src.auth import login_required, get_current_user_id, get_current_username, login_user, logout_user
 from src.database import Database
 from src.module_html import enhance_fund_tab_content
