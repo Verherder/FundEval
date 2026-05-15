@@ -515,6 +515,9 @@ class LanFund:
 
                 netValue = re.findall(r'"netValue":"(.*?)"', response.text)[0]
                 netValueDate = re.findall(r'"netValueDate":"(.*?)"', response.text)[0]
+                # 先落库净值，再拼装显示字符串
+                if self.db and self.user_id:
+                    self.db.upsert_fund_nav_history(fund, netValueDate, float(netValue), "fund123")
                 netValue = netValue + f"({netValueDate})"
                 url = DATA_SOURCE_URLS['fund123_curves_api']
                 params = {
@@ -1471,8 +1474,8 @@ class LanFund:
 
         total = len(result)
         hold_count = sum(1 for r in result if self.CACHE_MAP.get(r[0], {}).get("is_hold", False))
-        # 列：标记、基金代码、基金名称(共X个持有Y个)、估值1、估值2、日涨幅、连涨/跌、近30天、持仓/收益、持有/年化
-        titles = ["标记", "基金代码", f"基金名称 (共{total}个持有{hold_count}个)", "估值1", "估值2", "日涨幅", "连涨/跌", "近30天", "持仓/收益", "持有/年化"]
+        # 列：标记、基金代码、基金名称(共X个持有Y个)、估值1、估值2、日涨幅、连涨/跌、近30天、日收益、持仓/收益、持有/年化
+        titles = ["标记", "基金代码", f"基金名称 (共{total}个持有{hold_count}个)", "估值1", "估值2", "日涨幅", "连涨/跌", "近30天", "日收益", "持仓/收益", "持有/年化"]
         rows = []
         for row in result:
             code = row[0]
@@ -1589,6 +1592,50 @@ class LanFund:
                 f"<span class='fund-daygrowth-cell' data-code='{code}'>{day_growth}</span>"
                 f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{display_net_value_date}</span>"
             )
+            day_growth_val = parse_growth_percent(day_growth)
+            # 日收益计算逻辑：
+            # 1. 如果今日涨幅已更新（净值日期是今天），用今日净值和昨日净值计算
+            # 2. 如果今日涨幅未更新，用最近交易日净值和前一日净值计算
+            current_nav = None
+            prev_nav = None
+            if net_value_date and self.db and self.user_id:
+                from src.trading_calendar import iter_cn_sse_trading_days
+                today_date = datetime.datetime.now().date()
+                today_str = today_date.strftime("%Y-%m-%d")
+
+                if net_value_date == today_str:
+                    # 今日涨幅已更新，今日净值从API获取，从数据库拿上一个交易日净值
+                    current_nav = net_value_num
+                    prev_trading_days = iter_cn_sse_trading_days(today_date - datetime.timedelta(days=7), today_date)
+                    if len(prev_trading_days) >= 2:
+                        prev_date = prev_trading_days[-2].strftime("%Y-%m-%d")
+                        prev_nav = self.db.get_fund_nav_by_date(code, prev_date)
+                else:
+                    # 今日涨幅未更新，用最近交易日净值和前一日净值计算
+                    # 处理净值日期格式：可能是"MM-DD"或"YYYY-MM-DD"
+                    try:
+                        if isinstance(net_value_date, str) and re.match(r"^\d{2}-\d{2}$", net_value_date):
+                            net_value_date_obj = datetime.datetime.strptime(f"{datetime.datetime.now().year}-{net_value_date}", "%Y-%m-%d").date()
+                        elif isinstance(net_value_date, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", net_value_date):
+                            net_value_date_obj = datetime.datetime.strptime(net_value_date, "%Y-%m-%d").date()
+                        else:
+                            net_value_date_obj = None
+                    except Exception:
+                        net_value_date_obj = None
+                    if net_value_date_obj:
+                        trading_days = iter_cn_sse_trading_days(net_value_date_obj - datetime.timedelta(days=7), net_value_date_obj)
+                        if len(trading_days) >= 2:
+                            # 最近交易日净值
+                            current_nav = net_value_num
+                            # 前一日净值
+                            prev_date = trading_days[-2].strftime("%Y-%m-%d")
+                            prev_nav = self.db.get_fund_nav_by_date(code, prev_date)
+
+            if current_nav is not None and prev_nav is not None and shares > 0:
+                day_return = shares * (current_nav - prev_nav)
+            else:
+                day_return = position_amount * day_growth_val / 100 if day_growth_val is not None else None
+            day_return_display = format_money_value(day_return) if day_return is not None else "--"
             rows.append([
                 star_html,
                 code_cell,
@@ -1598,13 +1645,14 @@ class LanFund:
                 daygrowth_cell,
                 consecutive_info,
                 monthly_info,
+                day_return_display,
                 position_amount_display,
                 performance_display
             ])
         return get_table_html(
             titles,
             rows,
-            sortable_columns=[3, 4, 5, 6, 7, 8],
+            sortable_columns=[3, 4, 5, 6, 7, 8, 9],
         )
 
     @staticmethod

@@ -564,6 +564,10 @@ def generate_holdings_cards_html(fund_data_map):
                     <div class="holding-metric-value" id="card-daygrowth-{code}">--</div>
                 </div>
                 <div class="holding-metric">
+                    <div class="holding-metric-label">日收益</div>
+                    <div class="holding-metric-value" id="card-dayreturn-{code}">--</div>
+                </div>
+                <div class="holding-metric">
                     <div class="holding-metric-label">持仓市值</div>
                     <div class="holding-metric-value" id="card-position-{code}">¥0.00</div>
                 </div>
@@ -3586,6 +3590,7 @@ def get_javascript_code():
                     </div>
                     <div class="card-details">
                         <div class="detail-item">持仓份额 <b>${fund.shares.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</b></div>
+                        <div class="detail-item">日收益 <b class="${estClass}">${fund.actualGain >= 0 ? '+' : ''}¥${fund.actualGain.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</b></div>
                         <div class="detail-item">估值盈亏 <b class="${estClass}">${fund.estimatedGrowth >= 0 ? '+' : ''}¥${(fund.positionValue * fund.estimatedGrowth / 100).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</b></div>
                         <div class="detail-item">当前净值 <b>${fund.netValue.toFixed(4)}</b></div>
                         <div class="detail-item">日涨幅 <b class="${dayClass}">${fund.dayGrowth >= 0 ? '+' : ''}${fund.dayGrowth.toFixed(2)}%</b></div>
