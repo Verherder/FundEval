@@ -3475,6 +3475,9 @@ def get_javascript_code():
                 // 解析近30天
                 const monthlyText = cells[8].textContent.trim();
 
+                // 解析日收益（新增列）
+                const dayReturnText = cells[9].textContent.trim();
+
                 // 计算持仓市值
                 const positionValue = shares * netValue;
 
@@ -3491,7 +3494,8 @@ def get_javascript_code():
                         consecutive: consecutiveText,
                         monthly: monthlyText,
                         shares: shares,
-                        positionValue: positionValue
+                        positionValue: positionValue,
+                        dayReturn: dayReturnText
                     });
                 }
 
@@ -3590,7 +3594,7 @@ def get_javascript_code():
                     </div>
                     <div class="card-details">
                         <div class="detail-item">持仓份额 <b>${fund.shares.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</b></div>
-                        <div class="detail-item">日收益 <b class="${estClass}">${fund.actualGain >= 0 ? '+' : ''}¥${fund.actualGain.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</b></div>
+                        <div class="detail-item">日收益 <b class="${dayClass}">${fund.dayReturn}</b></div>
                         <div class="detail-item">估值盈亏 <b class="${estClass}">${fund.estimatedGrowth >= 0 ? '+' : ''}¥${(fund.positionValue * fund.estimatedGrowth / 100).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</b></div>
                         <div class="detail-item">当前净值 <b>${fund.netValue.toFixed(4)}</b></div>
                         <div class="detail-item">日涨幅 <b class="${dayClass}">${fund.dayGrowth >= 0 ? '+' : ''}${fund.dayGrowth.toFixed(2)}%</b></div>
@@ -3754,11 +3758,20 @@ def get_javascript_code():
             });
         }
 
-        // 初始化 - 首屏先渲染，再异步加载份额数据与统计，避免 /portfolio 已返回但页面仍长时间无响应
+        // 初始化 - 首屏先渲染，再异步加载份额数据与统计
         requestAnimationFrame(function() {
             setTimeout(function() {
                 loadSharesData();
-            }, 0);
+            }, 100);
+        });
+
+        // DOM加载完成后也尝试计算持仓统计（确保表格已渲染）
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(function() {
+                if (window.fundSharesData && Object.keys(window.fundSharesData).length > 0) {
+                    calculatePositionSummary();
+                }
+            }, 100);
         });
 
         // 份额弹窗 - 点击外部关闭
