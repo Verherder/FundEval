@@ -2663,6 +2663,10 @@ def get_javascript_code():
     function autoColorize() {
         const cells = document.querySelectorAll('.style-table td');
         cells.forEach(cell => {
+            // 排除持仓金额和收益单元格，不应用自动颜色
+            if (cell.querySelector('.fund-position-amount-cell') || cell.querySelector('.fund-position-gain-cell')) {
+                return;
+            }
             const text = cell.textContent.trim();
             const cleanText = text.replace(/[%,亿万手]/g, '');
             const val = parseFloat(cleanText);
@@ -4287,6 +4291,11 @@ def get_portfolio_page_html(fund_content, fund_map, fund_chart_data=None, fund_c
                     return;
                 }}
 
+                // 跳过持仓金额和收益单元格，不应用自动颜色
+                if (cell.querySelector('.fund-position-amount-cell') || cell.querySelector('.fund-position-gain-cell')) {{
+                    return;
+                }}
+
                 const text = cell.textContent.trim();
                 if (!text || text === '-' || text === 'N/A' || text === '---') {{
                     return;
@@ -5703,6 +5712,10 @@ def get_sectors_page_html(sectors_content, select_fund_content, fund_map, userna
         function autoColorize() {{
             const cells = document.querySelectorAll('.style-table td');
             cells.forEach(cell => {{
+                // 排除持仓金额和收益单元格，不应用自动颜色
+                if (cell.querySelector('.fund-position-amount-cell') || cell.querySelector('.fund-position-gain-cell')) {{
+                    return;
+                }}
                 const text = cell.textContent.trim();
                 const cleanText = text.replace(/[%,亿万手]/g, '');
                 const val = parseFloat(cleanText);
