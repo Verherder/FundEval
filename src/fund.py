@@ -237,6 +237,45 @@ class LanFund:
         except Exception:
             return None
 
+    def _fetch_prev_nav_from_cloud(self, fund_code):
+        """
+        从 fund123 云端获取基金最新净值，用于日收益计算中前一交易日净值缺失时补全。
+        返回净值浮点数，计算后同步落库 fund_nav_history。
+        """
+        try:
+            url = DATA_SOURCE_URLS['fund123_matiaria_tpl'].format(fund=fund_code)
+            response = timed_http_request(
+                self.session,
+                "GET",
+                url,
+                source="fund123",
+                headers={
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Origin": DATA_SOURCE_URLS['fund123_origin'],
+                    "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+                    "X-API-Key": "foobar",
+                    "accept": "json"
+                },
+                timeout=10,
+                verify=False,
+            )
+            net_value = re.findall(r'"netValue":"(.*?)"', response.text)
+            net_value_date = re.findall(r'"netValueDate":"(.*?)"', response.text)
+            if not net_value or not net_value_date:
+                logger.warning(f"获取基金【{fund_code}】云端净值失败：响应格式异常")
+                return None
+            nav_float = float(net_value[0])
+            nav_date = net_value_date[0]
+            # 落库
+            if self.db and self.user_id:
+                self.db.upsert_fund_nav_history(fund_code, nav_date, nav_float, "fund123")
+            logger.info(f"云端获取基金【{fund_code}】净值成功: {nav_float}({nav_date})")
+            return nav_float
+        except Exception as e:
+            logger.error(f"云端获取基金【{fund_code}】净值异常: {e}")
+            return None
+
     def save_cache(self):
         """
         保存缓存数据，优先保存到数据库（如果有user_id），否则保存到json文件。
@@ -1610,6 +1649,12 @@ class LanFund:
                     if len(prev_trading_days) >= 2:
                         prev_date = prev_trading_days[-2].strftime("%Y-%m-%d")
                         prev_nav = self.db.get_fund_nav_by_date(code, prev_date)
+                        # 如果上一个交易日净值不存在，尝试获取更早的本地净值
+                        if prev_nav is None:
+                            prev_nav = self.db.get_prev_fund_nav(code, prev_date)
+                        # 如果本地仍然没有，尝试从云端获取
+                        if prev_nav is None:
+                            prev_nav = self._fetch_prev_nav_from_cloud(code)
                 else:
                     # 今日涨幅未更新，用最近交易日净值和前一日净值计算
                     # 处理净值日期格式：可能是"MM-DD"或"YYYY-MM-DD"
@@ -1630,6 +1675,12 @@ class LanFund:
                             # 前一日净值
                             prev_date = trading_days[-2].strftime("%Y-%m-%d")
                             prev_nav = self.db.get_fund_nav_by_date(code, prev_date)
+                            # 如果前一日净值不存在，尝试获取更早的本地净值
+                            if prev_nav is None:
+                                prev_nav = self.db.get_prev_fund_nav(code, prev_date)
+                            # 如果本地仍然没有，尝试从云端获取
+                            if prev_nav is None:
+                                prev_nav = self._fetch_prev_nav_from_cloud(code)
 
             if current_nav is not None and prev_nav is not None and shares > 0:
                 day_return = shares * (current_nav - prev_nav)

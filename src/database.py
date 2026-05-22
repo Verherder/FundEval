@@ -913,6 +913,33 @@ class Database:
             logger.error(f"Failed to get fund nav by date: {e}")
             return None
 
+    def get_prev_fund_nav(self, fund_code, before_date):
+        """获取指定日期之前的最近净值。"""
+        try:
+            code = str(fund_code or '').strip()
+            date_text = str(before_date or '').strip()
+            if not code or not date_text:
+                return None
+
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT nav_value, nav_date
+                FROM fund_nav_history
+                WHERE fund_code = ? AND nav_date < ?
+                ORDER BY nav_date DESC
+                LIMIT 1
+            ''', (code, date_text))
+            row = cursor.fetchone()
+            conn.close()
+            if not row:
+                return None
+            value = float(row['nav_value'])
+            return value if value > 0 else None
+        except Exception as e:
+            logger.error(f"Failed to get prev fund nav: {e}")
+            return None
+
     def upsert_fund_nav_history(self, fund_code, nav_date, nav_value, source=None):
         """写入/更新基金历史净值缓存。"""
         try:

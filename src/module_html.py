@@ -3649,6 +3649,19 @@ def get_javascript_code():
                     `<span class="sensitive-value ${estimatedGain >= 0 ? 'positive' : 'negative'}" style="color: ${estColor}"><span class="real-value">¥${Math.abs(estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></span><span id="estimatedGainPct" style="color: ${estColor}"> (${estGainPct.toFixed(2)}%)</span>`;
             }
 
+            // 更新右上角工具栏预估收益
+            const toolbarEstimatedGainEl = document.getElementById('toolbarEstimatedGain');
+            if (toolbarEstimatedGainEl) {
+                toolbarEstimatedGainEl.textContent =
+                    estSign + '¥' + Math.abs(estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                toolbarEstimatedGainEl.style.color = estColor;
+            }
+            const toolbarEstimatedGainPctEl = document.getElementById('toolbarEstimatedGainPct');
+            if (toolbarEstimatedGainPctEl) {
+                toolbarEstimatedGainPctEl.textContent = estSign + estGainPct.toFixed(2) + '%';
+                toolbarEstimatedGainPctEl.style.color = estColor;
+            }
+
             // 更新实际涨跌
             const actualGainEl = document.getElementById('actualGain');
             if (actualGainEl) {
@@ -3716,8 +3729,12 @@ def get_javascript_code():
                 // 等待DOM加载完成后更新按钮状态
                 updateAllSharesButtons();
 
-                // 计算持仓统计
-                calculatePositionSummary();
+                // 调用刷新逻辑来计算持仓统计（会自动更新toolbar）
+                if (typeof refreshCurrentPage === 'function') {
+                    refreshCurrentPage();
+                } else if (typeof calculatePositionSummary === 'function') {
+                    calculatePositionSummary();
+                }
             }
         } catch (e) {
             console.error('加载份额数据失败:', e);

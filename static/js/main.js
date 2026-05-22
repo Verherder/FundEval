@@ -1663,13 +1663,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const displayData = {
             totalValue: shouldFreezeGainRefresh && previousSnapshot
-                ? Number(previousSnapshot.totalValue || totalValue)
+                ? (Number(previousSnapshot.totalValue) || totalValue)
                 : totalValue,
             estimatedGain: shouldFreezeGainRefresh && previousSnapshot
-                ? Number(previousSnapshot.estimatedGain || 0)
+                ? (Number(previousSnapshot.estimatedGain) || estimatedGain)
                 : estimatedGain,
             estimatedGainPct: shouldFreezeGainRefresh && previousSnapshot
-                ? Number(previousSnapshot.estimatedGainPct || 0)
+                ? (Number(previousSnapshot.estimatedGainPct) || estimatedGainPct)
                 : estimatedGainPct,
             actualGain,
             actualGainPct,
