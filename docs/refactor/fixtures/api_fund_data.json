@@ -1,0 +1,26 @@
+{
+  "_comment": "匿名化样例：GET /api/fund/data 响应体形状（基金代码与名称为虚构）",
+  "000001": {
+    "fund_key": "demo_key_001",
+    "fund_name": "示例成长混合A",
+    "is_hold": true,
+    "shares": 1200.5,
+    "sectors": ["科技", "消费"],
+    "establishment_date": "2018-06-15",
+    "estimate_history": {
+      "2026-05-20": 1.2345,
+      "2026-05-21": 1.2410
+    },
+    "estimate_history_2": {}
+  },
+  "110022": {
+    "fund_key": "demo_key_022",
+    "fund_name": "示例债券C",
+    "is_hold": false,
+    "shares": 0,
+    "sectors": [],
+    "establishment_date": "2015-01-10",
+    "estimate_history": {},
+    "estimate_history_2": {}
+  }
+}
