@@ -1439,7 +1439,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // 计算并显示持仓统计
-    function calculatePositionSummary() {
+    window.calculatePositionSummary = function() {
         let totalValue = 0;
         let estimatedGain = 0;
         let actualGain = 0;
@@ -1856,7 +1856,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 summaryHoldCount.textContent = `${heldCount} 只`;
             }
         }
-    }
+    };
 
     // Note: loadSharesData() is called only in portfolio.html, not globally
     // This prevents unnecessary requests to /api/fund/data on other pages
