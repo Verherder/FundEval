@@ -1,9 +1,5 @@
 # -*- coding: UTF-8 -*-
-"""Tests for financial utilities (XIRR/XNPV).
-
-These tests will be validated against the actual implementation in src/fund.py
-(phase 6迁移到 src/utils/financial.py).
-"""
+"""Tests for financial utilities (XIRR/XNPV) in src/utils/financial.py."""
 
 from datetime import date
 
@@ -15,7 +11,7 @@ class TestXNPV:
 
     def test_xnpv_basic(self):
         """Test basic XNPV calculation."""
-        from src.fund import xnpv
+        from src.utils.financial import xnpv
 
         rate = 0.05
         cashflows = [
@@ -27,7 +23,7 @@ class TestXNPV:
 
     def test_xnpv_negative_rate(self):
         """Test XNPV with negative rate."""
-        from src.fund import xnpv
+        from src.utils.financial import xnpv
 
         rate = -0.5
         cashflows = [
@@ -39,7 +35,7 @@ class TestXNPV:
 
     def test_xnpv_extreme_negative_rate(self):
         """Test XNPV returns inf when rate <= -0.999999."""
-        from src.fund import xnpv
+        from src.utils.financial import xnpv
 
         rate = -0.999999
         cashflows = [
@@ -51,7 +47,7 @@ class TestXNPV:
 
     def test_xnpv_zero_rate(self):
         """Test XNPV with zero rate (simple sum)."""
-        from src.fund import xnpv
+        from src.utils.financial import xnpv
 
         rate = 0.0
         cashflows = [
@@ -63,7 +59,7 @@ class TestXNPV:
 
     def test_xnpv_empty(self):
         """Test XNPV with empty cashflows (edge case)."""
-        from src.fund import xnpv
+        from src.utils.financial import xnpv
 
         rate = 0.05
         cashflows = []
@@ -80,7 +76,7 @@ class TestSolveXIRR:
 
     def test_solve_xirr_basic(self):
         """Test basic XIRR calculation."""
-        from src.fund import solve_xirr
+        from src.utils.financial import solve_xirr
 
         cashflows = [
             (date(2024, 1, 1), -1000.0),
@@ -94,7 +90,7 @@ class TestSolveXIRR:
 
     def test_solve_xirr_single_cashflow(self):
         """Test XIRR returns None with single cashflow."""
-        from src.fund import solve_xirr
+        from src.utils.financial import solve_xirr
 
         cashflows = [(date(2024, 1, 1), -1000.0)]
         result = solve_xirr(cashflows)
@@ -102,7 +98,7 @@ class TestSolveXIRR:
 
     def test_solve_xirr_no_negative(self):
         """Test XIRR returns None when no negative cashflow (no investment)."""
-        from src.fund import solve_xirr
+        from src.utils.financial import solve_xirr
 
         cashflows = [
             (date(2024, 1, 1), 1000.0),
@@ -113,7 +109,7 @@ class TestSolveXIRR:
 
     def test_solve_xirr_no_positive(self):
         """Test XIRR returns None when no positive cashflow (no return)."""
-        from src.fund import solve_xirr
+        from src.utils.financial import solve_xirr
 
         cashflows = [
             (date(2024, 1, 1), -1000.0),
@@ -124,7 +120,7 @@ class TestSolveXIRR:
 
     def test_solve_xirr_multiple_cashflows(self):
         """Test XIRR with multiple cashflows."""
-        from src.fund import solve_xirr
+        from src.utils.financial import solve_xirr
 
         cashflows = [
             (date(2024, 1, 1), -5000.0),
@@ -140,7 +136,7 @@ class TestSolveXIRR:
 
     def test_solve_xirr_zero_amt(self):
         """Test XIRR returns None when all zero amounts."""
-        from src.fund import solve_xirr
+        from src.utils.financial import solve_xirr
 
         cashflows = [
             (date(2024, 1, 1), 0.0),
@@ -155,7 +151,7 @@ class TestXIRRIntegration:
 
     def test_xnpv_solve_xirr_roundtrip(self):
         """Test that XIRR produced by solve_xirr produces NPV ≈ 0 via xnpv."""
-        from src.fund import solve_xirr, xnpv
+        from src.utils.financial import solve_xirr, xnpv
 
         cashflows = [
             (date(2024, 1, 1), -1000.0),

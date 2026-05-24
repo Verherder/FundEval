@@ -16,7 +16,7 @@ def login_required(f):
             if request.path.startswith('/api/'):
                 return {'success': False, 'message': '请先登录'}, 401
             # 否则重定向到登录页
-            return redirect(url_for('login'))
+            return redirect(url_for('auth.login'))
         return f(*args, **kwargs)
 
     return decorated_function

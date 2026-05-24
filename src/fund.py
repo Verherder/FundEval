@@ -9,6 +9,7 @@ import re
 import threading
 import time
 from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
 
 import requests
 import urllib3
@@ -17,10 +18,33 @@ from dotenv import load_dotenv
 from loguru import logger
 from tabulate import tabulate
 
-from src.ai_analyzer import AIAnalyzer
-from src.http_timing import timed_http_request
-from src.module_html import get_table_html
-from src.yaml_config import get_data_source_urls
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+from src.data.bk_map import BK_MAP
+from src.data.sectors import MAJOR_CATEGORIES
+from src.services.metrics import (
+    compute_holding_metrics,
+    format_diff_value,
+    format_money_value,
+    format_pct_value,
+    parse_growth_percent,
+    safe_float,
+)
+from src.utils.financial import solve_xirr, xnpv
+from src.repositories.fund_repo import FundRepo
+from src.repositories.nav_repo import NavRepo
+from src.config.yaml_config import get_data_source_urls
+from src.market_data import (
+    fetch_A,
+    fetch_bk,
+    fetch_kx,
+    fetch_market_chart_data,
+    fetch_market_info,
+    fetch_select_fund,
+    fetch_seven_A,
+    fetch_timing_chart_data,
+    fetch_volume_chart_data,
+)
 
 # 加载环境变量
 load_dotenv()
@@ -67,39 +91,11 @@ def format_table_msg(table, tablefmt="pretty"):
 class LanFund:
     CACHE_MAP = {}
 
-    # 板块分类映射
-    MAJOR_CATEGORIES = {
-        "科技": ["人工智能", "半导体", "云计算", "5G", "光模块", "CPO", "F5G", "通信设备", "PCB", "消费电子",
-                 "计算机", "软件开发", "信创", "网络安全", "IT服务", "国产软件", "计算机设备", "光通信",
-                 "算力", "脑机接口", "通信", "电子", "光学光电子", "元件", "存储芯片", "第三代半导体",
-                 "光刻胶", "电子化学品", "LED", "毫米波", "智能穿戴", "东数西算", "数据要素", "国资云",
-                 "Web3.0", "AIGC", "AI应用", "AI手机", "AI眼镜", "DeepSeek", "TMT", "科技"],
-        "医药健康": ["医药生物", "医疗器械", "生物疫苗", "CRO", "创新药", "精准医疗", "医疗服务", "中药",
-                     "化学制药", "生物制品", "基因测序", "超级真菌"],
-        "消费": ["食品饮料", "白酒", "家用电器", "纺织服饰", "商贸零售", "新零售", "家居用品", "文娱用品",
-                 "婴童", "养老产业", "体育", "教育", "在线教育", "社会服务", "轻工制造", "新消费",
-                 "可选消费", "消费", "家电零部件", "智能家居"],
-        "金融": ["银行", "证券", "保险", "非银金融", "国有大型银行", "股份制银行", "城商行", "金融"],
-        "能源": ["新能源", "煤炭", "石油石化", "电力", "绿色电力", "氢能源", "储能", "锂电池", "电池",
-                 "光伏设备", "风电设备", "充电桩", "固态电池", "能源", "煤炭开采", "公用事业", "锂矿"],
-        "工业制造": ["机械设备", "汽车", "新能源车", "工程机械", "高端装备", "电力设备", "专用设备",
-                     "通用设备", "自动化设备", "机器人", "人形机器人", "汽车零部件", "汽车服务",
-                     "汽车热管理", "尾气治理", "特斯拉", "无人驾驶", "智能驾驶", "电网设备", "电机",
-                     "高端制造", "工业4.0", "工业互联", "低空经济", "通用航空"],
-        "材料": ["有色金属", "黄金股", "贵金属", "基础化工", "钢铁", "建筑材料", "稀土永磁", "小金属",
-                 "工业金属", "材料", "大宗商品", "资源"],
-        "军工": ["国防军工", "航天装备", "航空装备", "航海装备", "军工电子", "军民融合", "商业航天",
-                 "卫星互联网", "航母", "航空机场"],
-        "基建地产": ["建筑装饰", "房地产", "房地产开发", "房地产服务", "交通运输", "物流"],
-        "环保": ["环保", "环保设备", "环境治理", "垃圾分类", "碳中和", "可控核聚变", "液冷"],
-        "传媒": ["传媒", "游戏", "影视", "元宇宙", "超清视频", "数字孪生"],
-        "主题": ["国企改革", "一带一路", "中特估", "中字头", "并购重组", "华为", "新兴产业",
-                 "国家安防", "安全主题", "农牧主题", "农林牧渔", "养殖业", "猪肉", "高端装备"]
-    }
-
     def __init__(self, user_id=None, db=None, initialize_remote=True):
         self.user_id = user_id  # 用户ID，如果为None则使用文件模式
         self.db = db  # 数据库实例，从外部传入
+        self.fund_repo = FundRepo(db) if db else None
+        self.nav_repo = NavRepo(db) if db else None
 
         # 普通 HTTP 会话使用requests（fund123）
         self.session = requests.Session()
@@ -137,22 +133,35 @@ class LanFund:
                 logger.error(f"初始化失败(网络或接口问题，不影响登录等基础功能): {e}")
 
     def load_cache(self):
-        """
-        加载缓存数据，优先从数据库加载（如果有user_id），否则从文件加载。
-        """
-        """加载缓存数据，优先从数据库加载（如果有user_id），否则从文件加载"""
+        """加载缓存数据，优先数据库；数据库为空时从 fund_map.json 迁移。"""
         if self.user_id is not None and self.db is not None:
-            # 从数据库加载
-            self.CACHE_MAP = self.db.get_user_funds(self.user_id)
+            self.CACHE_MAP = self.fund_repo.get_user_funds(self.user_id)
+            if not self.CACHE_MAP:
+                _migrated = self._try_migrate_from_file()
+                if _migrated is not None:
+                    self.CACHE_MAP = _migrated
         else:
-            # 从文件加载（CLI模式）
-            if not os.path.exists("cache"):
-                os.mkdir("cache")
-            if os.path.exists("cache/fund_map.json"):
-                with open("cache/fund_map.json", "r", encoding="gbk") as f:
+            fund_map_path = _PROJECT_ROOT / "cache" / "fund_map.json"
+            if fund_map_path.exists():
+                with open(str(fund_map_path), "r", encoding="gbk") as f:
                     self.CACHE_MAP = json.load(f)
-        # if self.CACHE_MAP:
-        #     logger.debug(f"加载 {len(self.CACHE_MAP)} 个基金代码缓存成功")
+
+    def _try_migrate_from_file(self):
+        """如果 fund_map.json 存在，将其内容迁移到数据库并返回 CACHE_MAP。"""
+        fund_map_path = _PROJECT_ROOT / "cache" / "fund_map.json"
+        if not fund_map_path.exists():
+            return None
+        try:
+            with open(str(fund_map_path), "r", encoding="gbk") as f:
+                data = json.load(f)
+            if not data:
+                return None
+            self.fund_repo.save_user_funds(self.user_id, data)
+            logger.info(f"从 fund_map.json 迁移 {len(data)} 个基金到数据库 (user_id={self.user_id})")
+            return data
+        except Exception as e:
+            logger.warning(f"从 fund_map.json 迁移数据失败: {e}")
+            return None
 
     @staticmethod
     def _normalize_establishment_date_text(raw_value):
@@ -175,11 +184,8 @@ class LanFund:
                 return None
 
             url = api_tpl.format(fund=fund_code)
-            response = timed_http_request(
-                self.session,
-                "GET",
+            response = self.session.get(
                 url,
-                source="fund123",
                 headers={
                     "Accept-Language": "zh-CN,zh;q=0.9",
                     "Connection": "keep-alive",
@@ -229,7 +235,7 @@ class LanFund:
                 self.CACHE_MAP[fund_code] = fund_cache_data
 
             if self.user_id is not None and self.db is not None:
-                self.db.update_fund_establishment_date(self.user_id, fund_code, fetched_text)
+                self.fund_repo.update_fund_establishment_date(self.user_id, fund_code, fetched_text)
             else:
                 self.save_cache()
 
@@ -244,11 +250,8 @@ class LanFund:
         """
         try:
             url = DATA_SOURCE_URLS['fund123_matiaria_tpl'].format(fund=fund_code)
-            response = timed_http_request(
-                self.session,
-                "GET",
+            response = self.session.get(
                 url,
-                source="fund123",
                 headers={
                     "Accept-Language": "zh-CN,zh;q=0.9",
                     "Origin": DATA_SOURCE_URLS['fund123_origin'],
@@ -269,7 +272,7 @@ class LanFund:
             nav_date = net_value_date[0]
             # 落库
             if self.db and self.user_id:
-                self.db.upsert_fund_nav_history(fund_code, nav_date, nav_float, "fund123")
+                self.nav_repo.upsert_fund_nav_history(fund_code, nav_date, nav_float, "fund123")
             logger.info(f"云端获取基金【{fund_code}】净值成功: {nav_float}({nav_date})")
             return nav_float
         except Exception as e:
@@ -282,10 +285,10 @@ class LanFund:
         """
         if self.user_id is not None and self.db is not None:
             # 保存到数据库
-            self.db.save_user_funds(self.user_id, self.CACHE_MAP)
+            self.fund_repo.save_user_funds(self.user_id, self.CACHE_MAP)
         else:
             # 保存到文件（CLI模式）
-            with open("cache/fund_map.json", "w", encoding="gbk") as f:
+            with open(str(_PROJECT_ROOT / "cache" / "fund_map.json"), "w", encoding="gbk") as f:
                 json.dump(self.CACHE_MAP, f, ensure_ascii=False, indent=4)
 
     def init(self):
@@ -295,11 +298,8 @@ class LanFund:
         """
         # fund123: 获取 csrf
         try:
-            res = timed_http_request(
-                self.session,
-                "GET",
+            res = self.session.get(
                 DATA_SOURCE_URLS['fund123_fund_page'],
-                source="fund123",
                 headers={
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
                     "Accept-Language": "zh-CN,zh;q=0.9",
@@ -344,11 +344,8 @@ class LanFund:
                 data = {
                     "fundCode": code
                 }
-                response = timed_http_request(
-                    self.session,
-                    "POST",
+                response = self.session.post(
                     url,
-                    source="fund123",
                     headers=headers,
                     params=params,
                     json=data,
@@ -405,7 +402,7 @@ class LanFund:
 
         # 构建板块序号到名称的映射
         all_sectors = []
-        for category, sectors in self.MAJOR_CATEGORIES.items():
+        for category, sectors in MAJOR_CATEGORIES.items():
             for sector in sectors:
                 all_sectors.append(sector)
 
@@ -540,11 +537,8 @@ class LanFund:
                 # 这里直接从响应文本中提取 netValue / netValueDate，供基金列表、持仓金额、
                 # 以及 fund_server._get_latest_fund_quote() 复用。
                 url = DATA_SOURCE_URLS['fund123_matiaria_tpl'].format(fund=fund)
-                response = timed_http_request(
-                    self.session,
-                    "GET",
+                response = self.session.get(
                     url,
-                    source="fund123",
                     headers=headers,
                     timeout=10,
                     verify=False,
@@ -556,7 +550,7 @@ class LanFund:
                 netValueDate = re.findall(r'"netValueDate":"(.*?)"', response.text)[0]
                 # 先落库净值，再拼装显示字符串
                 if self.db and self.user_id:
-                    self.db.upsert_fund_nav_history(fund, netValueDate, float(netValue), "fund123")
+                    self.nav_repo.upsert_fund_nav_history(fund, netValueDate, float(netValue), "fund123")
                 netValue = netValue + f"({netValueDate})"
                 url = DATA_SOURCE_URLS['fund123_curves_api']
                 params = {
@@ -566,11 +560,8 @@ class LanFund:
                     "productId": fund_key,
                     "dateInterval": "ONE_MONTH"
                 }
-                response = timed_http_request(
-                    self.session,
-                    "POST",
+                response = self.session.post(
                     url,
-                    source="fund123",
                     headers=headers,
                     params=params,
                     json=data,
@@ -648,11 +639,8 @@ class LanFund:
                     "format": True,
                     "source": "WEALTHBFFWEB"
                 }
-                response = timed_http_request(
-                    self.session,
-                    "POST",
+                response = self.session.post(
                     url,
-                    source="fund123",
                     headers=headers,
                     params=params,
                     json=data,
@@ -664,11 +652,8 @@ class LanFund:
                 estimate2Date = ""
                 try:
                     fundgz_url = DATA_SOURCE_URLS['fundgz_js_tpl'].format(fund=fund)
-                    fundgz_resp = timed_http_request(
-                        self.session,
-                        "GET",
+                    fundgz_resp = self.session.get(
                         fundgz_url,
-                        source="fundgz",
                         timeout=10,
                         verify=False,
                     )
@@ -779,281 +764,6 @@ class LanFund:
             except Exception as e:
                 logger.error(f"查询基金代码【{fund}】失败: {e}")
 
-    def get_fund_today_data(self, fund, fund_data):
-        fund_key = fund_data["fund_key"]
-        fund_name = fund_data["fund_name"]
-
-        headers = {
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "Connection": "keep-alive",
-            "Content-Type": "application/json",
-            "Origin": DATA_SOURCE_URLS['fund123_origin'],
-            "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-            "X-API-Key": "foobar",
-            "accept": "json"
-        }
-
-        url = DATA_SOURCE_URLS['fund123_intraday_api']
-        params = {
-            "_csrf": self._csrf
-        }
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
-        tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        data = {
-            "startTime": today,
-            "endTime": tomorrow,
-            "limit": 200,
-            "productId": fund_key,
-            "format": True,
-            "source": "WEALTHBFFWEB"
-        }
-        try:
-            response = timed_http_request(
-                self.session,
-                "POST",
-                url,
-                source="fund123",
-                headers=headers,
-                params=params,
-                json=data,
-                timeout=10,
-                verify=False,
-            )
-            if response.json()["success"]:
-                if not response.json()["list"]:
-                    return []
-                else:
-                    results = []
-                    for fund_info in response.json()["list"]:
-                        now_time = datetime.datetime.fromtimestamp(fund_info["time"] / 1000).strftime(
-                            "%H:%M"
-                        )
-                        forecastGrowth = str(round(float(fund_info["forecastGrowth"]) * 100, 2)) + "%"
-                        forecastNetValue = str(round(float(fund_info["forecastNetValue"]), 4))
-                        results.append({
-                            "fund_name": fund_name,
-                            "fund_code": fund,
-                            "now_time": now_time,
-                            "forecastGrowth": forecastGrowth,
-                            "forecastNetValue": forecastNetValue
-                        })
-                    return results
-            else:
-                logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
-        except Exception as e:
-            logger.error(f"获取基金当日估值数据失败【{fund}】: {e}")
-        return []
-
-    def get_fund_chart_data(self, fund_code, fund_data):
-        """获取基金估值趋势图数据
-
-        Args:
-            fund_code: 基金代码
-            fund_data: 基金数据字典，包含fund_key和fund_name
-
-        Returns:
-            dict: {
-                'labels': ['09:30', '09:45', ...],  # 时间标签
-                'growth': [1.2, 1.5, ...],           # 涨幅数值
-                'net_values': [1.2345, 1.2360, ...] # 净值数值
-            }
-        """
-        try:
-            raw_data = self.get_fund_today_data(fund_code, fund_data)
-        except Exception as e:
-            logger.error(f"获取基金估值趋势图数据失败【{fund_code}】: {e}")
-            raw_data = []
-        if not raw_data:
-            return {
-                'labels': [],
-                'growth': [],
-                'net_values': []
-            }
-
-        return {
-            'labels': [point['now_time'] for point in raw_data],
-            'growth': [float(point['forecastGrowth'].replace('%', '')) for point in raw_data],
-            'net_values': [float(point['forecastNetValue']) for point in raw_data]
-        }
-
-    @staticmethod
-    def _format_curve_point_label(point, index):
-        """格式化业绩曲线点的横轴标签。"""
-        raw_label = None
-        for key in ("reportDateTimestamp", "point", "date", "time", "tradeDate", "day", "valueDate", "netValueDate", "x"):
-            if point.get(key) not in (None, ""):
-                raw_label = point.get(key)
-                break
-
-        if raw_label is None:
-            return str(index + 1)
-
-        if isinstance(raw_label, (int, float)):
-            integer_val = int(raw_label)
-            integer_str = str(integer_val)
-
-            if re.fullmatch(r"(?:19|20)\d{6}", integer_str):
-                try:
-                    return datetime.datetime.strptime(integer_str, "%Y%m%d").strftime("%Y-%m-%d")
-                except Exception:
-                    pass
-
-            if re.fullmatch(r"\d{5}", integer_str):
-                try:
-                    excel_base = datetime.datetime(1899, 12, 30)
-                    return (excel_base + datetime.timedelta(days=integer_val)).strftime("%Y-%m-%d")
-                except Exception:
-                    pass
-
-            timestamp = integer_val / 1000 if integer_val > 10 ** 11 else integer_val
-            try:
-                return datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
-            except Exception:
-                return str(integer_val)
-
-        raw_label = str(raw_label).strip()
-        if re.fullmatch(r"\d{13}", raw_label):
-            return datetime.datetime.fromtimestamp(int(raw_label) / 1000).strftime("%Y-%m-%d")
-        if re.fullmatch(r"\d{10}", raw_label):
-            return datetime.datetime.fromtimestamp(int(raw_label)).strftime("%Y-%m-%d")
-        if re.fullmatch(r"(?:19|20)\d{6}", raw_label):
-            try:
-                return datetime.datetime.strptime(raw_label, "%Y%m%d").strftime("%Y-%m-%d")
-            except Exception:
-                return raw_label
-        if re.fullmatch(r"\d{5}", raw_label):
-            try:
-                excel_base = datetime.datetime(1899, 12, 30)
-                return (excel_base + datetime.timedelta(days=int(raw_label))).strftime("%Y-%m-%d")
-            except Exception:
-                return raw_label
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_label):
-            return raw_label
-        return raw_label
-
-    def get_fund_performance_chart_data(self, fund_code, fund_data, date_interval="SINCE_ESTABLISHMENT"):
-        """获取基金业绩曲线数据（纯本地净值版）。"""
-        interval_days_map = {
-            "ONE_MONTH": 31,
-            "THREE_MONTH": 93,
-            "SIX_MONTH": 186,
-            "ONE_YEAR": 365,
-            "THREE_YEAR": 365 * 3,
-            "FIVE_YEAR": 365 * 5,
-        }
-
-        if date_interval not in PERFORMANCE_CHART_INTERVALS:
-            date_interval = "SINCE_ESTABLISHMENT"
-
-        try:
-            if self.db is None:
-                return {
-                    'labels': [],
-                    'growth': [],
-                    'net_values': [],
-                    'benchmark_label': '沪深300',
-                    'benchmark_growth': [],
-                    'latest_net_value': None,
-                    'latest_net_value_date': None,
-                    'from_cache': True,
-                    'date_interval': date_interval,
-                    'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
-                }
-
-            # 业绩曲线数据源统一为本地净值历史，避免依赖远端业绩曲线接口。
-            nav_map = self.db.get_fund_nav_history_range(fund_code) or {}
-            nav_points = []
-            for nav_date in sorted(nav_map.keys()):
-                try:
-                    nav_raw = nav_map.get(nav_date)
-                    if nav_raw is None:
-                        continue
-                    nav_value = float(nav_raw)
-                    if nav_value <= 0:
-                        continue
-                    dt = datetime.date.fromisoformat(str(nav_date))
-                    nav_points.append((dt, round(nav_value, 4)))
-                except (TypeError, ValueError):
-                    continue
-                except Exception:
-                    continue
-
-            if not nav_points:
-                return {
-                    'labels': [],
-                    'growth': [],
-                    'net_values': [],
-                    'benchmark_label': '沪深300',
-                    'benchmark_growth': [],
-                    'latest_net_value': None,
-                    'latest_net_value_date': None,
-                    'from_cache': True,
-                    'date_interval': date_interval,
-                    'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval]
-                }
-
-            # 先读取 user_funds 中的成立日；缺失时远端补齐，再用于区间/按钮判断。
-            establishment_date = self._ensure_fund_establishment_date(fund_code)
-
-            # 按请求区间裁剪净值序列；成立以来优先使用成立日，否则回退到首个净值日。
-            end_date = nav_points[-1][0]
-            if date_interval == "SINCE_ESTABLISHMENT":
-                start_date = establishment_date or nav_points[0][0]
-            else:
-                days = interval_days_map.get(date_interval)
-                start_date = end_date - datetime.timedelta(days=max((days or 1) - 1, 0))
-                if establishment_date is not None and start_date < establishment_date:
-                    start_date = establishment_date
-
-            filtered_points = [item for item in nav_points if item[0] >= start_date]
-            if not filtered_points:
-                filtered_points = nav_points
-
-            labels = [item[0].isoformat() for item in filtered_points]
-            net_values = [item[1] for item in filtered_points]
-
-            # 以区间首个有效净值为基准，计算区间内累计涨跌幅（百分比）。
-            growth = []
-            base_nav = net_values[0] if net_values else None
-            for nav in net_values:
-                if base_nav is None or base_nav <= 0:
-                    growth.append(None)
-                else:
-                    growth.append(round((nav / base_nav - 1.0) * 100.0, 2))
-
-            latest_net_value = net_values[-1] if net_values else None
-            latest_net_value_date = labels[-1] if labels else None
-
-            return {
-                'labels': labels,
-                'growth': growth,
-                'net_values': net_values,
-                'benchmark_label': '沪深300',
-                'benchmark_growth': [],
-                'latest_net_value': latest_net_value,
-                'latest_net_value_date': latest_net_value_date,
-                'from_cache': True,
-                'date_interval': date_interval,
-                'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval],
-                'growth_source': 'local_nav',
-            }
-        except Exception as e:
-            logger.error(f"获取基金业绩曲线数据失败【{fund_code}】: {e}")
-            return {
-                'labels': [],
-                'growth': [],
-                'net_values': [],
-                'benchmark_label': '沪深300',
-                'benchmark_growth': [],
-                'latest_net_value': None,
-                'latest_net_value_date': None,
-                'from_cache': True,
-                'date_interval': date_interval,
-                'interval_label': PERFORMANCE_CHART_INTERVALS[date_interval],
-                'growth_source': 'local_nav',
-            }
-
     def search_code(self, is_return=False):
         self._cache_dirty = False
         self.result = []
@@ -1162,112 +872,9 @@ class LanFund:
                 logger.info(line_msg)
 
     def calculate_position_summary(self):
-        """计算持仓统计信息
-
-        Returns:
-            dict: 持仓统计数据，如果没有持仓则返回None
-        """
-        total_value = 0
-        estimated_gain = 0
-        actual_gain = 0
-        settled_value = 0
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
-
-        # 判断是否是9:30之前或今日净值未更新
-        now = datetime.datetime.now()
-        current_hour = now.hour
-        current_minute = now.minute
-        before_market_open = current_hour < 9 or (current_hour == 9 and current_minute < 30)
-
-        # 存储每个基金的详细涨跌信息
-        fund_details = []
-
-        for fund_data in self.result:
-            # fund_data format: [code, name, time, net_value, estimated_growth, day_growth, consecutive_info, monthly_info]
-            shares = self.CACHE_MAP.get(fund_data[0], {}).get('shares', 0)
-            if shares <= 0:
-                continue
-
-            try:
-                fund_code = fund_data[0]
-                fund_name = fund_data[1]
-
-                # 解析净值 "1.234(2025-02-02)" or "1.234(02-03)"
-                net_value_str = fund_data[3]
-                net_value = float(net_value_str.split('(')[0])
-                net_value_date = net_value_str.split('(')[1].replace(')', '')
-
-                # 处理净值日期格式：API可能返回"MM-DD"或"YYYY-MM-DD"
-                # 如果是"MM-DD"格式，添加当前年份
-                if len(net_value_date) == 5:  # 格式为"MM-DD"
-                    current_year = datetime.datetime.now().year
-                    net_value_date = f"{current_year}-{net_value_date}"
-
-                # 解析估值增长率 "+1.23%" or "N/A"
-                estimated_growth_str = fund_data[4]
-                if estimated_growth_str != "N/A":
-                    # 移除ANSI颜色代码
-                    estimated_growth_str = estimated_growth_str.replace('\033[1;31m', '').replace('\033[1;32m',
-                                                                                                  '').replace('%', '')
-                    estimated_growth = float(estimated_growth_str)
-                else:
-                    estimated_growth = 0
-
-                # 解析日涨幅 "+1.23%" or "N/A"
-                day_growth_str = fund_data[5]
-                if day_growth_str != "N/A":
-                    # 移除ANSI颜色代码
-                    day_growth_str = day_growth_str.replace('\033[1;31m', '').replace('\033[1;32m', '').replace('%', '')
-                    day_growth = float(day_growth_str)
-                else:
-                    day_growth = 0
-
-                # 计算持仓市值
-                position_value = shares * net_value
-                total_value += position_value
-
-                # 计算预估涨跌（始终计算）
-                fund_est_gain = position_value * estimated_growth / 100
-                estimated_gain += fund_est_gain
-
-                # 计算实际涨跌
-                # 逻辑：只有当净值日期是今天时（今日净值已更新），才计算实际涨跌
-                fund_act_gain = 0
-                if net_value_date == today:
-                    # 今日净值已更新，计算实际收益
-                    fund_act_gain = position_value * day_growth / 100
-                    actual_gain += fund_act_gain
-                    settled_value += position_value
-
-                # 保存每个基金的详细信息
-                fund_details.append({
-                    'code': fund_code,
-                    'name': fund_name,
-                    'shares': shares,
-                    'position_value': position_value,
-                    'estimated_gain': fund_est_gain,
-                    'estimated_gain_pct': (fund_est_gain / position_value * 100) if position_value > 0 else 0,
-                    'actual_gain': fund_act_gain,
-                    'actual_gain_pct': (fund_act_gain / position_value * 100) if position_value > 0 else 0,
-                })
-
-            except (ValueError, IndexError, AttributeError) as e:
-                logger.warning(f"解析基金数据失败: {fund_data[0]}, {e}")
-                continue
-
-        # 如果没有持仓，返回None
-        if total_value == 0:
-            return None
-
-        return {
-            'total_value': total_value,
-            'estimated_gain': estimated_gain,
-            'estimated_gain_pct': (estimated_gain / total_value * 100) if total_value > 0 else 0,
-            'actual_gain': actual_gain,
-            'actual_gain_pct': (actual_gain / settled_value * 100) if settled_value > 0 else 0,
-            'settled_value': settled_value,
-            'fund_details': fund_details  # 新增：每个基金的详细涨跌信息
-        }
+        """计算持仓统计信息（CLI 输出用，委托给独立函数）。"""
+        from src.fund_table import calculate_position_summary
+        return calculate_position_summary(self.result, self.CACHE_MAP)
 
     def modify_shares(self):
         """修改基金持仓份额（CLI交互式）"""
@@ -1326,684 +933,12 @@ class LanFund:
         self.save_cache()
         logger.info("\n份额修改完成")
 
-    def fund_html(self):
-        result = self.search_code(True) or []
+    def build_fund_table(self):
+        from src.fund_table import build_fund_table
+        return build_fund_table(self)
 
-        def parse_growth_percent(value):
-            if value in (None, "", "N/A", "--", "---"):
-                return None
-            match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value))
-            return float(match.group()) if match else None
-
-        def format_diff_value(value):
-            text = f"{value:.2f}".rstrip("0").rstrip(".")
-            return "0" if text in ("", "-0", "+0") else text
-
-        def safe_float(value, default=0.0):
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return default
-
-        def has_active_position(fund_code):
-            return safe_float(self.CACHE_MAP.get(fund_code, {}).get('shares', 0), 0.0) > 0
-
-        def format_pct_value(value):
-            if value is None:
-                return "--"
-            rounded_value = round(float(value), 2)
-            if abs(rounded_value) < 1e-10:
-                color = "var(--text-main)"
-                text = "0.00%"
-            elif rounded_value > 0:
-                color = "var(--up-color)"
-                text = f"{rounded_value:.2f}%"
-            else:
-                color = "var(--down-color)"
-                text = f"{rounded_value:.2f}%"
-            return f"<span style='color:{color} !important;font-weight:600;'>{text}</span>"
-
-        def format_money_value(value):
-            if value is None:
-                return "--"
-            rounded_value = round(float(value), 2)
-            if abs(rounded_value) < 1e-10:
-                color = "var(--text-main)"
-            elif rounded_value > 0:
-                color = "var(--up-color)"
-            else:
-                color = "var(--down-color)"
-            return f"<span style='color:{color} !important;font-weight:600;'>¥{rounded_value:,.2f}</span>"
-
-        def xnpv(rate, cashflows):
-            if rate <= -0.999999:
-                return float("inf")
-            t0 = cashflows[0][0]
-            total_value = 0.0
-            for tx_date, amount in cashflows:
-                days = (tx_date - t0).total_seconds() / 86400
-                total_value += amount / ((1 + rate) ** (days / 365.0))
-            return total_value
-
-        def solve_xirr(cashflows):
-            if len(cashflows) < 2:
-                return None
-            has_positive = any(amount > 0 for _, amount in cashflows)
-            has_negative = any(amount < 0 for _, amount in cashflows)
-            if not (has_positive and has_negative):
-                return None
-
-            low, high = -0.9999, 10.0
-            try:
-                f_low = xnpv(low, cashflows)
-                f_high = xnpv(high, cashflows)
-            except Exception:
-                return None
-
-            expand_count = 0
-            while f_low * f_high > 0 and expand_count < 20:
-                high *= 2
-                try:
-                    f_high = xnpv(high, cashflows)
-                except Exception:
-                    return None
-                expand_count += 1
-
-            if f_low * f_high > 0:
-                return None
-
-            for _ in range(100):
-                mid = (low + high) / 2
-                f_mid = xnpv(mid, cashflows)
-                if abs(f_mid) < 1e-7:
-                    return mid
-                if f_low * f_mid <= 0:
-                    high = mid
-                    f_high = f_mid
-                else:
-                    low = mid
-                    f_low = f_mid
-            return (low + high) / 2
-
-        def compute_holding_metrics(fund_code, current_shares, current_net_value):
-            share_eps = 1e-4
-            if not self.db or self.user_id is None or current_shares <= 0 or current_net_value <= 0:
-                return None, None, None, current_shares
-
-            transactions = self.db.get_fund_transactions(self.user_id, fund_code)
-            if not transactions:
-                return None, None, None, current_shares
-
-            running_shares = 0.0
-            cycle_start = 0
-            for index, tx in enumerate(transactions):
-                tx_shares = safe_float(tx.get('shares'), 0.0)
-                tx_type = str(tx.get('tx_type', '')).lower()
-                if tx_type == 'buy':
-                    running_shares += tx_shares
-                elif tx_type == 'sell':
-                    running_shares -= tx_shares
-
-                if abs(running_shares) <= share_eps:
-                    running_shares = 0.0
-                    cycle_start = index + 1
-
-            cycle_transactions = transactions[cycle_start:]
-            if not cycle_transactions:
-                return None, None, None, current_shares
-
-            tx_remaining_shares = 0.0
-            tx_remaining_cost = 0.0
-            cumulative_dividend = 0.0
-            cashflows = []
-
-            for tx in cycle_transactions:
-                tx_type = str(tx.get('tx_type', '')).lower()
-                tx_shares = safe_float(tx.get('shares'), 0.0)
-                tx_amount = safe_float(tx.get('amount'), 0.0)
-                tx_net_value = safe_float(tx.get('net_value'), 0.0)
-                try:
-                    tx_date = datetime.datetime.fromisoformat(str(tx.get('tx_time')).replace(' ', 'T'))
-                except Exception:
-                    try:
-                        tx_date = datetime.datetime.strptime(str(tx.get('tx_time')), "%Y-%m-%d %H:%M:%S")
-                    except Exception:
-                        tx_date = datetime.datetime.now()
-
-                if tx_type == 'buy' and tx_shares > 0:
-                    buy_cost = tx_amount if tx_amount > 0 else tx_shares * tx_net_value
-                    tx_remaining_shares += tx_shares
-                    tx_remaining_cost += buy_cost
-                    cashflows.append((tx_date, -buy_cost))
-                elif tx_type == 'sell' and tx_shares > 0 and tx_remaining_shares > share_eps:
-                    avg_cost_before = (tx_remaining_cost / tx_remaining_shares) if tx_remaining_shares > share_eps else 0.0
-                    sell_shares = min(tx_shares, tx_remaining_shares)
-                    tx_remaining_cost -= sell_shares * avg_cost_before
-                    tx_remaining_shares -= sell_shares
-                    if tx_remaining_shares <= share_eps:
-                        tx_remaining_shares = 0.0
-                        tx_remaining_cost = 0.0
-                    proceeds = tx_amount if tx_amount > 0 else tx_shares * tx_net_value
-                    cashflows.append((tx_date, proceeds))
-                elif tx_type == 'dividend' and tx_amount > 0:
-                    cumulative_dividend += tx_amount
-                    cashflows.append((tx_date, tx_amount))
-
-            if tx_remaining_shares <= share_eps:
-                return None, None, None, current_shares
-
-            tx_remaining_shares = float(Decimal(str(tx_remaining_shares)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
-            effective_shares = current_shares
-            if abs(tx_remaining_shares - current_shares) > share_eps:
-                effective_shares = tx_remaining_shares
-
-            avg_unit_cost = (tx_remaining_cost / tx_remaining_shares) if tx_remaining_shares > share_eps else 0.0
-            holding_cost = effective_shares * avg_unit_cost
-            current_value = effective_shares * current_net_value
-            holding_gain = (current_value - holding_cost) + cumulative_dividend
-            holding_return = (holding_gain / holding_cost * 100) if holding_cost > 0 else None
-
-            cashflows.append((datetime.datetime.now(), current_value))
-            annual_rate = solve_xirr(cashflows)
-            annual_return = annual_rate * 100 if annual_rate is not None else None
-            return holding_return, annual_return, holding_gain, effective_shares
-
-        # 在保留原有"按估值涨跌排序"的前提下，稳定分成两组：持仓基金在前，非持仓在后。
-        result = sorted(result, key=lambda row: 0 if has_active_position(row[0]) else 1)
-
-        total = len(result)
-        hold_count = sum(1 for r in result if self.CACHE_MAP.get(r[0], {}).get("is_hold", False))
-        # 列：标记、基金代码、基金名称(共X个持有Y个)、估值1、估值2、日涨幅、连涨/跌、近30天、日收益、持仓/收益、持有/年化
-        titles = ["标记", "基金代码", f"基金名称 (共{total}个持有{hold_count}个)", "估值1", "估值2", "日涨幅", "连涨/跌", "近30天", "日收益", "持仓/收益", "持有/年化"]
-        rows = []
-        for row in result:
-            code = row[0]
-            is_hold = self.CACHE_MAP.get(code, {}).get("is_hold", False)
-            code_cell = f'{code}'
-            star_char = "⭐" if is_hold else "☆"
-            star_html = (
-                f'<span class="fund-hold-star" data-code="{code}" data-hold="{1 if is_hold else 0}" '
-                f'title="点击切换持有" style="cursor:pointer;user-select:none;">{star_char}</span>'
-            )
-            name = row[1]
-            if name.startswith("⭐ "):
-                name = name[2:]
-            # 将板块标注（🏷️ ...）放到基金名称下一行
-            if "🏷️" in name and "<span" in name:
-                name = name.replace(" <span", "<br><span", 1)
-            # 让基金名称可点击以展开/收起行内趋势图
-            name_cell = (
-                f'<span class="fund-name-cell" data-code="{code}" '
-                f'style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">{name}</span>'
-            )
-            now_time = row[2]
-            net_value_text = row[3]
-            net_value_display = net_value_text.split('(')[0] if isinstance(net_value_text, str) else net_value_text
-            shares = safe_float(self.CACHE_MAP.get(code, {}).get('shares', 0), 0.0)
-            net_value_num = safe_float(net_value_display, 0.0)
-            holding_return, annual_return, holding_gain, effective_shares = compute_holding_metrics(code, shares, net_value_num)
-            calc_shares = effective_shares if effective_shares is not None else shares
-            position_amount = net_value_num * calc_shares
-            position_amount_display = (
-                f"<span class='fund-position-amount-cell' data-code='{code}' "
-                f"style='cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看交易记录'>"
-                f"¥{position_amount:,.2f}</span>"
-                f"<br><span class='fund-position-gain-cell' data-code='{code}' "
-                f"style='font-size:11px;color:var(--text-dim);font-weight:400;cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看累计收益曲线'>{format_money_value(holding_gain)}</span>"
-            )
-            performance_display = (
-                f"{format_pct_value(holding_return)}"
-                f"<br>{format_pct_value(annual_return)}"
-            )
-            forecast_growth = row[4]
-            day_growth = row[5]
-            net_value_date = row[6]
-            consecutive_info = row[7]
-            monthly_info = row[8]
-            estimate_date = row[9] if len(row) > 9 else ""
-            estimate2_growth = row[10] if len(row) > 10 else "N/A"
-            estimate2_time = row[11] if len(row) > 11 else "N/A"
-            estimate2_date = row[12] if len(row) > 12 else ""
-
-            day_growth_val = parse_growth_percent(day_growth)
-
-            # 显示日期时统一短格式（YYYY-MM-DD -> MM-DD）
-            display_net_value_date = net_value_date
-            if isinstance(net_value_date, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", net_value_date):
-                display_net_value_date = net_value_date[5:]
-
-            # 仅当"净值日期对应的历史估值"存在时，才计算差值，避免拿今天估值去减旧净值日涨幅
-            fund_cache = self.CACHE_MAP.get(code, {})
-            estimate_history = fund_cache.get("estimate_history", {}) if isinstance(fund_cache, dict) else {}
-            history_estimate_val = None
-            if isinstance(net_value_date, str):
-                lookup_keys = [net_value_date]
-                if re.match(r"^\d{4}-\d{2}-\d{2}$", net_value_date):
-                    lookup_keys.append(net_value_date[5:])
-                elif re.match(r"^\d{2}-\d{2}$", net_value_date):
-                    current_year = datetime.datetime.now().year
-                    lookup_keys.append(f"{current_year}-{net_value_date}")
-
-                for key in lookup_keys:
-                    if key in estimate_history:
-                        history_estimate_val = estimate_history.get(key)
-                        break
-
-            # 估值1误差：仅当昨日净值已更新（日涨幅不是今天）时展示
-            today = datetime.datetime.now().strftime("%Y-%m-%d")
-            estimate1_diff_str = ""
-            if history_estimate_val is not None and day_growth_val is not None and net_value_date != today:
-                diff1 = float(history_estimate_val) - day_growth_val
-                estimate1_diff_str = f" {format_diff_value(diff1)}"
-
-            # 估值2误差：仅当"净值日期对应的历史估值2"存在时，才计算差值
-            estimate2_diff_str = ""
-            estimate2_history = fund_cache.get("estimate_history_2", {}) if isinstance(fund_cache, dict) else {}
-            history_estimate2_val = None
-            if isinstance(net_value_date, str):
-                lookup_keys2 = [net_value_date]
-                if re.match(r"^\d{4}-\d{2}-\d{2}$", net_value_date):
-                    lookup_keys2.append(net_value_date[5:])
-                elif re.match(r"^\d{2}-\d{2}$", net_value_date):
-                    lookup_keys2.append(f"{datetime.datetime.now().year}-{net_value_date}")
-
-                for key in lookup_keys2:
-                    if key in estimate2_history:
-                        history_estimate2_val = estimate2_history.get(key)
-                        break
-
-            if history_estimate2_val is not None and day_growth_val is not None and net_value_date != today:
-                diff2 = float(history_estimate2_val) - day_growth_val
-                estimate2_diff_str = f" {format_diff_value(diff2)}"
-
-            estimate1_cell = (
-                f"<span class='fund-estimate-cell' data-code='{code}' data-estimate-date='{estimate_date}' "
-                f"style='cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看估值曲线'>{forecast_growth}</span>"
-                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{now_time}{estimate1_diff_str}</span>"
-            )
-            estimate2_cell = (
-                f"<span class='fund-estimate2-cell' data-code='{code}' data-estimate2-date='{estimate2_date}' "
-                f"style='font-weight:500;'>{estimate2_growth}</span>"
-                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{estimate2_time}{estimate2_diff_str}</span>"
-            )
-
-            daygrowth_cell = (
-                f"<span class='fund-daygrowth-cell' data-code='{code}'>{day_growth}</span>"
-                f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{display_net_value_date}</span>"
-            )
-            day_growth_val = parse_growth_percent(day_growth)
-            # 日收益计算逻辑：
-            # 1. 如果今日涨幅已更新（净值日期是今天），用今日净值和昨日净值计算
-            # 2. 如果今日涨幅未更新，用最近交易日净值和前一日净值计算
-            current_nav = None
-            prev_nav = None
-            if net_value_date and self.db and self.user_id:
-                from src.trading_calendar import iter_cn_sse_trading_days
-                today_date = datetime.datetime.now().date()
-                today_str = today_date.strftime("%Y-%m-%d")
-
-                if net_value_date == today_str:
-                    # 今日涨幅已更新，今日净值从API获取，从数据库拿上一个交易日净值
-                    current_nav = net_value_num
-                    prev_trading_days = iter_cn_sse_trading_days(today_date - datetime.timedelta(days=7), today_date)
-                    if len(prev_trading_days) >= 2:
-                        prev_date = prev_trading_days[-2].strftime("%Y-%m-%d")
-                        prev_nav = self.db.get_fund_nav_by_date(code, prev_date)
-                        # 如果上一个交易日净值不存在，尝试获取更早的本地净值
-                        if prev_nav is None:
-                            prev_nav = self.db.get_prev_fund_nav(code, prev_date)
-                        # 如果本地仍然没有，尝试从云端获取
-                        if prev_nav is None:
-                            prev_nav = self._fetch_prev_nav_from_cloud(code)
-                else:
-                    # 今日涨幅未更新，用最近交易日净值和前一日净值计算
-                    # 处理净值日期格式：可能是"MM-DD"或"YYYY-MM-DD"
-                    try:
-                        if isinstance(net_value_date, str) and re.match(r"^\d{2}-\d{2}$", net_value_date):
-                            net_value_date_obj = datetime.datetime.strptime(f"{datetime.datetime.now().year}-{net_value_date}", "%Y-%m-%d").date()
-                        elif isinstance(net_value_date, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", net_value_date):
-                            net_value_date_obj = datetime.datetime.strptime(net_value_date, "%Y-%m-%d").date()
-                        else:
-                            net_value_date_obj = None
-                    except Exception:
-                        net_value_date_obj = None
-                    if net_value_date_obj:
-                        trading_days = iter_cn_sse_trading_days(net_value_date_obj - datetime.timedelta(days=7), net_value_date_obj)
-                        if len(trading_days) >= 2:
-                            # 最近交易日净值
-                            current_nav = net_value_num
-                            # 前一日净值
-                            prev_date = trading_days[-2].strftime("%Y-%m-%d")
-                            prev_nav = self.db.get_fund_nav_by_date(code, prev_date)
-                            # 如果前一日净值不存在，尝试获取更早的本地净值
-                            if prev_nav is None:
-                                prev_nav = self.db.get_prev_fund_nav(code, prev_date)
-                            # 如果本地仍然没有，尝试从云端获取
-                            if prev_nav is None:
-                                prev_nav = self._fetch_prev_nav_from_cloud(code)
-
-            if current_nav is not None and prev_nav is not None and shares > 0:
-                day_return = shares * (current_nav - prev_nav)
-            else:
-                day_return = position_amount * day_growth_val / 100 if day_growth_val is not None else None
-            day_return_display = format_money_value(day_return) if day_return is not None else "--"
-            rows.append([
-                star_html,
-                code_cell,
-                name_cell,
-                estimate1_cell,
-                estimate2_cell,
-                daygrowth_cell,
-                consecutive_info,
-                monthly_info,
-                day_return_display,
-                position_amount_display,
-                performance_display
-            ])
-        return get_table_html(
-            titles,
-            rows,
-            sortable_columns=[3, 4, 5, 6, 7, 8, 9],
-        )
-
-    @staticmethod
-    def select_fund(bk_id=None, is_return=False):
-        if not is_return:
-            logger.critical("板块基金查询功能")
-        bk_map = {
-            "光模块": "BK000651",
-            "F5G": "BK000652",
-            "CPO": "BK000641",
-            "航天装备": "BK000157",
-            "通信设备": "BK000176",
-            "PCB": "BK000644",
-            "小金属": "BK000051",
-            "有色金属": "BK000047",
-            "工业金属": "BK000049",
-            "卫星互联网": "BK000347",
-            "元件": "BK000055",
-            "商业航天": "BK000313",
-            "黄金股": "BK000292",
-            "存储芯片": "BK000642",
-            "光通信": "BK000501",
-            "算力": "BK000601",
-            "脑机接口": "BK000663",
-            "军工电子": "BK000161",
-            "通信": "BK000174",
-            "消费电子": "BK000058",
-            "风电设备": "BK000147",
-            "家电零部件": "BK000072",
-            "稀土永磁": "BK000228",
-            "贵金属": "BK000050",
-            "可控核聚变": "BK000649",
-            "5G": "BK000291",
-            "游戏": "BK000387",
-            "毫米波": "BK000370",
-            "电子": "BK000053",
-            "人工智能": "BK000217",
-            "通用设备": "BK000151",
-            "半导体": "BK000054",
-            "电机": "BK000144",
-            "光刻胶": "BK000331",
-            "液冷": "BK000653",
-            "智能穿戴": "BK000248",
-            "云计算": "BK000266",
-            "专用设备": "BK000152",
-            "材料": "BK000195",
-            "电子化学品": "BK000059",
-            "TMT": "BK000388",
-            "锂矿": "BK000645",
-            "CRO": "BK000353",
-            "工业4.0": "BK000236",
-            "科技": "BK000391",
-            "第三代半导体": "BK000239",
-            "DeepSeek": "BK000561",
-            "Web3.0": "BK000326",
-            "人形机器人": "BK000581",
-            "国防军工": "BK000156",
-            "传媒": "BK000166",
-            "LED": "BK000393",
-            "机械设备": "BK000150",
-            "高端装备": "BK000441",
-            "AI眼镜": "BK000647",
-            "医疗服务": "BK000096",
-            "特斯拉": "BK000300",
-            "汽车热管理": "BK000251",
-            "尾气治理": "BK000346",
-            "军民融合": "BK000298",
-            "电力设备": "BK000143",
-            "智能家居": "BK000247",
-            "电池": "BK000148",
-            "锂电池": "BK000295",
-            "电网设备": "BK000149",
-            "IT服务": "BK000164",
-            "信创": "BK000299",
-            "新能源车": "BK000225",
-            "汽车零部件": "BK000061",
-            "工程机械": "BK000154",
-            "高端制造": "BK000481",
-            "低空经济": "BK000521",
-            "AI手机": "BK000650",
-            "东数西算": "BK000325",
-            "工业互联": "BK000392",
-            "元宇宙": "BK000305",
-            "软件开发": "BK000165",
-            "AIGC": "BK000369",
-            "影视": "BK000286",
-            "计算机": "BK000162",
-            "新能源": "BK000226",
-            "基础化工": "BK000035",
-            "华为": "BK000293",
-            "新兴产业": "BK000389",
-            "无人驾驶": "BK000279",
-            "资源": "BK000386",
-            "充电桩": "BK000301",
-            "大宗商品": "BK000204",
-            "国产软件": "BK000216",
-            "自动化设备": "BK000155",
-            "化学制药": "BK000091",
-            "AI应用": "BK000681",
-            "国家安防": "BK000232",
-            "一带一路": "BK000254",
-            "固态电池": "BK000362",
-            "基因测序": "BK000321",
-            "国资云": "BK000278",
-            "建筑材料": "BK000133",
-            "计算机设备": "BK000163",
-            "机器人": "BK000234",
-            "光伏设备": "BK000146",
-            "新消费": "BK000621",
-            "精准医疗": "BK000484",
-            "在线教育": "BK000220",
-            "钢铁": "BK000043",
-            "氢能源": "BK000227",
-            "创新药": "BK000208",
-            "并购重组": "BK000483",
-            "农牧主题": "BK000200",
-            "碳中和": "BK000482",
-            "环保设备": "BK000186",
-            "安全主题": "BK000194",
-            "轻工制造": "BK000085",
-            "超级真菌": "BK000367",
-            "储能": "BK000230",
-            "保险": "BK000129",
-            "社会服务": "BK000114",
-            "垃圾分类": "BK000309",
-            "教育": "BK000120",
-            "航空装备": "BK000158",
-            "智能驾驶": "BK000461",
-            "超清视频": "BK000307",
-            "家居用品": "BK000088",
-            "数字孪生": "BK000327",
-            "环保": "BK000184",
-            "商贸零售": "BK000108",
-            "医药生物": "BK000090",
-            "数据要素": "BK000602",
-            "网络安全": "BK000258",
-            "环境治理": "BK000185",
-            "汽车": "BK000060",
-            "生物疫苗": "BK000280",
-            "文娱用品": "BK000089",
-            "光学光电子": "BK000056",
-            "农林牧渔": "BK000026",
-            "纺织服饰": "BK000081",
-            "建筑装饰": "BK000137",
-            "生物制品": "BK000093",
-            "航母": "BK000339",
-            "非银金融": "BK000127",
-            "养老产业": "BK000256",
-            "医疗器械": "BK000095",
-            "婴童": "BK000303",
-            "国有大型银行": "BK000122",
-            "国企改革": "BK000203",
-            "通用航空": "BK000264",
-            "家用电器": "BK000066",
-            "汽车服务": "BK000062",
-            "金融": "BK000199",
-            "中特估": "BK000421",
-            "中字头": "BK000308",
-            "养殖业": "BK000032",
-            "航海装备": "BK000160",
-            "体育": "BK000115",
-            "通信服务": "BK000175",
-            "银行": "BK000121",
-            "可选消费": "BK000198",
-            "房地产开发": "BK000106",
-            "房地产": "BK000105",
-            "绿色电力": "BK000209",
-            "石油石化": "BK000180",
-            "房地产服务": "BK000107",
-            "物流": "BK000101",
-            "猪肉": "BK000340",
-            "证券": "BK000128",
-            "公用事业": "BK000097",
-            "煤炭": "BK000177",
-            "航空机场": "BK000103",
-            "煤炭开采": "BK000178",
-            "能源": "BK000197",
-            "电力": "BK000098",
-            "城商行": "BK000124",
-            "交通运输": "BK000100",
-            "消费": "BK000390",
-            "新零售": "BK000262",
-            "股份制银行": "BK000123",
-            "中药": "BK000092",
-            "食品饮料": "BK000074",
-            "白酒": "BK000076"
-        }
-        bk_list = list(bk_map.keys())
-
-        # 如果是返回模式且没有指定板块ID,返回板块列表
-        if is_return and bk_id is None:
-            return {"bk_map": bk_map, "bk_list": bk_list}
-
-        results = []
-        id_map = {}
-        for i in range(0, len(bk_list), 5):
-            tmp = bk_list[i:i + 5]
-            tmp = [str(i + 1 + j) + ". " + tmp[j] for j in range(len(tmp))]
-            for j in range(len(tmp)):
-                id_map[str(i + 1 + j)] = bk_map[bk_list[i + j]]
-            results.append(tmp)
-
-        if not is_return:
-            for line_msg in format_table_msg(results).split("\n"):
-                logger.info(line_msg)
-
-            logger.debug("请输入要查询的板块序号(单选):")
-            bk_id = input()
-            while bk_id not in id_map:
-                logger.error("输入有误, 请重新输入要查询的板块序号:")
-                bk_id = input()
-
-        # 如果是返回模式,直接使用传入的bk_id
-        if is_return and bk_id not in id_map:
-            # 如果传入的是板块名称而不是ID,尝试查找
-            if bk_id in bk_map:
-                bk_code = bk_map[bk_id]
-            else:
-                return {"error": "无效的板块ID或名称"}
-        else:
-            bk_code = id_map[bk_id]
-
-        url = DATA_SOURCE_URLS['eastmoney_fundguide_api']
-
-        params = {
-            "dt": "4",
-            "sd": "",
-            "ed": "",
-            "tp": bk_code,
-            "sc": "1n",
-            "st": "desc",
-            "pi": "1",
-            "pn": "1000",
-            "zf": "diy",
-            "sh": "list",
-            "rnd": str(random.random())
-        }
-
-        headers = {
-            "Connection": "keep-alive",
-            "Referer": DATA_SOURCE_URLS['eastmoney_fundguide_referer'],
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
-            "accept": "*/*",
-            "accept-language": "zh-CN,zh;q=0.9",
-            "sec-ch-ua": "\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"",
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": "\"Windows\""
-        }
-
-        response = timed_http_request(
-            requests,
-            "GET",
-            url,
-            source="eastmoney",
-            headers=headers,
-            params=params,
-            timeout=30,
-        )
-        text = json.loads(response.text.replace("var rankData =", "").strip())
-        datas = text["datas"]
-        fund_results = []
-        for data in datas:
-            data_list = data.split(",")
-            fund_results.append([
-                (data_list[0] or "---"),
-                (data_list[1] or "---"),
-                (data_list[3] or "---"),
-                (data_list[15] or "---"),
-                (data_list[16] or "---"),  # 净值
-                (data_list[17] or "---") + "%",  # 日增长率
-                (data_list[5] or "---") + "%",
-                (data_list[6] or "---") + "%",
-                (data_list[7] or "---") + "%",
-                (data_list[8] or "---") + "%",
-                (data_list[4] or "---") + "%",
-                (data_list[9] or "---") + "%",
-                (data_list[10] or "---") + "%",
-                (data_list[11] or "---") + "%",
-                (data_list[24] or "---") + "%"
-            ])
-
-        if is_return:
-            return {
-                "bk_id": bk_id,
-                "bk_name": list(bk_map.keys())[int(bk_id) - 1] if bk_id.isdigit() else bk_id,
-                "results": fund_results
-            }
-
-        logger.critical(f"板块【{bk_id}. {list(bk_map.keys())[int(bk_id) - 1]}】基金列表:")
-        for line_msg in format_table_msg([
-            [
-                "基金代码", "基金名称", "基金类型", "日期", "净值|日增长率", "近1周", "近1月", "近3月", "近6月",
-                "今年来", "近1年", "近2年", "近3年", "成立以来"
-            ],
-            *fund_results
-        ]).split("\n"):
-            logger.info(line_msg)
+    def select_fund(self, bk_id=None, is_return=False):
+        return fetch_select_fund(bk_id, is_return)
 
 
     def run(self, is_add=False, is_delete=False, is_hold=False, is_not_hold=False, report_dir=None,
@@ -2105,8 +1040,6 @@ class LanFund:
             else:
                 self.kx()
                 self.bk()
-                self.real_time_gold()
-                self.gold()
                 self.seven_A()
                 self.A()
                 self.get_market_info()
@@ -2118,757 +1051,28 @@ class LanFund:
             print(f"[FUNC] LanFund.run total_elapsed_ms={elapsed:.1f}")
 
     def get_market_info(self, is_return=False):
-        result = []
-        try:
-            markets = ["asia", "america"]
-            for market in markets:
-                url = DATA_SOURCE_URLS['baidu_getbanner_tpl'].format(market=market)
-                response = timed_http_request(self.baidu_session, "GET", url, source="baidu", timeout=10, verify=False)
-                if response.json()["ResultCode"] == "0":
-                    market_list = response.json()["Result"]["list"]
-                    for market_info in market_list:
-                        ratio = market_info["ratio"]
-                        if not is_return:
-                            if "-" in ratio:
-                                ratio = "\033[1;32m" + ratio
-                            else:
-                                ratio = "\033[1;31m" + ratio
-                        result.append([
-                            market_info["name"],
-                            market_info["lastPrice"],
-                            ratio
-                        ])
-
-            # 增加创业板指
-            url = DATA_SOURCE_URLS['baidu_getquotation_api']
-            params = {
-                "srcid": "5353",
-                "all": "1",
-                "pointType": "string",
-                "group": "quotation_index_minute",
-                "query": "399006",
-                "code": "399006",
-                "market_type": "ab",
-                "newFormat": "1",
-                "name": "创业板指",
-                "finClientType": "pc"
-            }
-            response = timed_http_request(
-                self.baidu_session,
-                "GET",
-                url,
-                source="baidu",
-                params=params,
-                timeout=10,
-                verify=False,
-            )
-            if str(response.json()["ResultCode"]) == "0":
-                cur = response.json()["Result"]["cur"]
-                ratio = cur["ratio"]
-                if not is_return:
-                    if "-" in ratio:
-                        ratio = "\033[1;32m" + ratio
-                    else:
-                        ratio = "\033[1;31m" + ratio
-                result.insert(2, [
-                    "创业板指",
-                    cur["price"],
-                    ratio
-                ])
-        except Exception as e:
-            logger.error(f"获取市场信息失败: {e}")
-        if is_return:
-            return result
-        if result:
-            logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 市场信息:")
-            for line_msg in format_table_msg([
-                [
-                    "指数名称", "指数", "涨跌幅"
-                ],
-                *result
-            ]).split("\n"):
-                logger.info(line_msg)
-
-    def marker_html(self):
-        result = self.get_market_info(True)
-        return get_table_html(
-            ["指数名称", "指数", "涨跌幅"],
-            result,
-        )
+        return fetch_market_info(self.baidu_session, is_return)
 
     def get_market_chart_data(self):
-        """返回全球指数图表数据（用于前端Chart.js）"""
-        result = self.get_market_info(True)
-        # result 格式: [[名称, 指数, 涨跌幅], ...]
-        labels = [item[0] for item in result] if result else []
-        prices = []
-        changes = []
-        for item in result:
-            try:
-                price = float(item[1]) if item[1] else 0
-                # 涨跌幅可能包含%和颜色代码，需要清理
-                change_str = item[2] if item[2] else "0%"
-                change_str = change_str.replace('%', '').replace('\033[1;31m', '').replace('\033[1;32m', '')
-                change = float(change_str)
-            except:
-                price = 0
-                change = 0
-            prices.append(price)
-            changes.append(change)
-        return {
-            'labels': labels,
-            'prices': prices,
-            'changes': changes
-        }
+        return fetch_market_chart_data(self.baidu_session)
 
     def get_volume_chart_data(self):
-        """返回成交量趋势图表数据（用于前端Chart.js）"""
-        result = self.seven_A(True)
-        # result 格式: [[日期, 总成交额, 上交所, 深交所, 北交所], ...]
-        labels = []
-        total_data = []
-        ss_data = []
-        sz_data = []
-        bj_data = []
-        for item in result:
-            try:
-                labels.append(item[0])  # 日期
-                # 清理数据，移除"亿"等字符
-                total = float(item[1].replace('亿', '')) if item[1] else 0
-                ss = float(item[2].replace('亿', '')) if item[2] else 0
-                sz = float(item[3].replace('亿', '')) if item[3] else 0
-                bj = float(item[4].replace('亿', '')) if item[4] else 0
-                total_data.append(total)
-                ss_data.append(ss)
-                sz_data.append(sz)
-                bj_data.append(bj)
-            except:
-                continue
-        return {
-            'labels': labels[::-1],  # 反转顺序，让日期从早到晚
-            'total': total_data[::-1],
-            'sh': ss_data[::-1],
-            'sz': sz_data[::-1],
-            'bj': bj_data[::-1]
-        }
+        return fetch_volume_chart_data(self.baidu_session)
 
     def get_timing_chart_data(self):
-        """返回上证分时图表数据（用于前端Chart.js）"""
-        result = self.A(True)
-        # result 格式: [[时间, 指数, 涨跌额, 涨跌幅, 成交量, 成交额], ...]
-        labels = []
-        prices = []
-        change_pcts = []  # 涨跌幅
-        change_amounts = []  # 涨跌额（原始数据）
-        volumes = []
-        amounts = []  # 成交额
-        for item in result:
-            try:
-                labels.append(item[0])  # 时间
-                price = float(item[1]) if item[1] else 0
-                # 提取涨跌幅，如"+0.38%"，转换为浮点数
-                pct_str = item[3].replace('%', '') if len(item) > 3 and item[3] else '0'
-                pct = float(pct_str)
-                # 提取涨跌额（原始数据，如"+12.34"或"-5.67"）
-                change_amt = float(item[2]) if len(item) > 2 and item[2] else 0
-                # 成交量清理"万手"等字符
-                vol_str = item[4].replace('万手', '').replace(',', '') if len(item) > 4 and item[4] else '0'
-                volume = float(vol_str)
-                # 成交额清理"亿"等字符
-                amt_str = item[5].replace('亿', '').replace(',', '') if len(item) > 5 and item[5] else '0'
-                amount = float(amt_str)
-                prices.append(price)
-                change_pcts.append(pct)
-                change_amounts.append(change_amt)
-                volumes.append(volume)
-                amounts.append(amount)
-            except:
-                continue
-        return {
-            'labels': labels,
-            'prices': prices,
-            'change_pcts': change_pcts,
-            'change_amounts': change_amounts,  # 涨跌额（原始数据）
-            'volumes': volumes,
-            'amounts': amounts  # 成交额（亿）
-        }
+        return fetch_timing_chart_data(self.baidu_session)
 
-    def gold_html(self):
-        result = self.gold(True)
-        if result:
-            return get_table_html(
-                ["日期", "中国黄金基础金价", "周大福金价", "中国黄金基础金价涨跌", "周大福金价涨跌"],
-                result
-            )
-
-    @staticmethod
-    def bk(is_return=False):
-        bk_result = []
-        try:
-            url = DATA_SOURCE_URLS['eastmoney_bk_api']
-            params = {
-                "cb": "",
-                "fid": "f62",
-                "po": "1",
-                "pz": "100",
-                "pn": "1",
-                "np": "1",
-                "fltt": "2",
-                "invt": "2",
-                "ut": "8dec03ba335b81bf4ebdf7b29ec27d15",
-                "fs": "m:90 t:2",
-                "fields": "f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f204,f205,f124,f1,f13"
-            }
-            response = timed_http_request(
-                requests,
-                "GET",
-                url,
-                source="eastmoney",
-                params=params,
-                timeout=10,
-                verify=False,
-            )
-            if str(response.json()["data"]):
-                data = response.json()["data"]
-                for bk in data["diff"]:
-                    ratio = str(bk["f3"]) + "%"
-                    if not is_return:
-                        if "-" in ratio:
-                            ratio = "\033[1;32m" + ratio
-                        else:
-                            ratio = "\033[1;31m" + ratio
-                    add_market_cap = bk["f62"]
-                    add_market_cap = str(round(add_market_cap / 100000000, 2)) + "亿"
-                    if not is_return:
-                        if "-" in add_market_cap:
-                            add_market_cap = "\033[1;32m" + add_market_cap
-                        else:
-                            add_market_cap = "\033[1;31m" + add_market_cap
-                    add_market_cap2 = bk["f84"]
-                    add_market_cap2 = str(round(add_market_cap2 / 100000000, 2)) + "亿"
-                    if not is_return:
-                        if "-" in add_market_cap2:
-                            add_market_cap2 = "\033[1;32m" + add_market_cap2
-                        else:
-                            add_market_cap2 = "\033[1;31m" + add_market_cap2
-                    bk_result.append([
-                        bk["f14"],
-                        ratio,
-                        add_market_cap,
-                        str(round(bk["f184"], 2)) + "%",
-                        add_market_cap2,
-                        str(round(bk["f87"], 2)) + "%",
-                    ])
-        except:
-            pass
-
-        bk_result = sorted(
-            bk_result,
-            key=lambda x: float(x[1].split("m")[-1].replace("%", "")) if x[3] != "N/A" else -99,
-            reverse=True
-        )
-        if is_return:
-            return bk_result
-        if bk_result:
-            logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 行业板块:")
-            for line_msg in format_table_msg([
-                [
-                    "板块名称", "今日涨跌幅", "今日主力净流入", "今日主力净流入占比", "今日小单净流入", "今日小单流入占比"
-                ],
-                *bk_result
-            ]).split("\n"):
-                logger.info(line_msg)
-
-    def bk_html(self):
-        result = self.bk(True)
-        return get_table_html(
-            ["板块名称", "今日涨跌幅", "今日主力净流入", "今日主力净流入占比", "今日小单净流入", "今日小单流入占比"],
-            result,
-            sortable_columns=[1, 2, 3, 4, 5]
-        )
+    def bk(self, is_return=False):
+        return fetch_bk(is_return)
 
     def kx(self, is_return=False, count=10):
-        url = DATA_SOURCE_URLS['baidu_expressnews_tpl'].format(count=count)
-        kx_list = []
-        try:
-            response = timed_http_request(self.baidu_session, "GET", url, source="baidu", timeout=10, verify=False)
-            if response.json()["ResultCode"] == "0":
-                kx_list = response.json()["Result"]["content"]["list"]
-        except:
-            pass
-
-        if is_return:
-            return kx_list
-
-        if kx_list:
-            logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 7*24 快讯:")
-            for i, v in enumerate(kx_list):
-                evaluate = v.get("evaluate", "")
-                if evaluate == "利好":
-                    pre = "\033[1;31m"
-                elif evaluate == "利空":
-                    pre = "\033[1;32m"
-                else:
-                    pre = ""
-                title = v.get("title", v["content"]["items"][0]["data"])
-                publish_time = v["publish_time"]
-                publish_time = datetime.datetime.fromtimestamp(int(publish_time)).strftime("%Y-%m-%d %H:%M:%S")
-                entity = v.get("entity", [])
-                entity = ", ".join([f"{x['code'].strip()}-{x['name'].strip()} {x['ratio'].strip()}" for x in entity])
-                logger.info(f"{pre}{i + 1}. {publish_time} {title}.")
-                if entity:
-                    logger.debug(f"影响股票: {entity}.")
-
-    def kx_html(self):
-        result = self.kx(True)
-        # 将 result 转换为表格格式
-        # kx 返回的是一个 list of dicts，我们需要将其转换为 list of lists
-        table_data = []
-        for v in result:
-            evaluate = v.get("evaluate", "")
-            title = v.get("title", v["content"]["items"][0]["data"])
-            publish_time = v["publish_time"]
-            publish_time = datetime.datetime.fromtimestamp(int(publish_time)).strftime("%H:%M:%S")
-
-            # 格式化评价，添加颜色
-            if evaluate == "利好":
-                evaluate = f'<span class="positive">{evaluate}</span>'
-            elif evaluate == "利空":
-                evaluate = f'<span class="negative">{evaluate}</span>'
-
-            table_data.append([publish_time, evaluate, title])
-
-        return get_table_html(
-            ["时间", "多空", "快讯内容"],
-            table_data
-        )
-
-    @staticmethod
-    def gold(is_return=False):
-        try:
-            headers = {
-                "accept": "*/*",
-                "accept-language": "zh-CN,zh;q=0.9",
-                "referer": DATA_SOURCE_URLS['cngold_hist_referer'],
-                "sec-ch-ua": "\"Chromium\";v=\"128\", \"Not;A=Brand\";v=\"24\", \"Google Chrome\";v=\"128\"",
-                "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": "\"Windows\"",
-                "sec-fetch-dest": "script",
-                "sec-fetch-mode": "no-cors",
-                "sec-fetch-site": "cross-site",
-                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-            }
-            url = DATA_SOURCE_URLS['jijinhao_history_api']
-            params = {
-                "code": "JO_52683",
-                "style": "3",
-                "pageSize": "10",
-                "needField": "128,129,70",
-                "currentPage": "1",
-                "_": int(time.time() * 1000)
-            }
-            response = timed_http_request(
-                requests,
-                "GET",
-                url,
-                source="jijinhao",
-                headers=headers,
-                params=params,
-                timeout=10,
-                verify=False,
-            )
-            data = json.loads(response.text.replace("var quote_json = ", ""))["data"]
-
-            url = DATA_SOURCE_URLS['jijinhao_history_api']
-            params = {
-                "code": "JO_42660",
-                "style": "3",
-                "pageSize": "10",
-                "needField": "128,129,70",
-                "currentPage": "1",
-                "_": int(time.time() * 1000)
-            }
-            response = timed_http_request(
-                requests,
-                "GET",
-                url,
-                source="jijinhao",
-                headers=headers,
-                params=params,
-                timeout=10,
-                verify=False,
-            )
-            data2 = json.loads(response.text.replace("var quote_json = ", ""))["data"]
-
-            gold_list = []
-
-            for i in range(len(data)):
-                gold = data[i]
-                t = gold["time"]
-                date = datetime.datetime.fromtimestamp(t / 1000).strftime("%Y-%m-%d")
-                radio = str(gold.get("q70", "N/A"))
-                radio2 = "N/A"
-                gold2 = {}
-                if len(data2) > i:
-                    gold2 = data2[i]
-                    radio2 = str(gold.get("q70", "N/A"))
-                if not is_return:
-                    if "-" in radio:
-                        radio = "\033[1;32m" + radio
-                    else:
-                        radio = "\033[1;31m" + radio
-                    if "-" in radio2:
-                        radio2 = "\033[1;32m" + radio2
-                    else:
-                        radio2 = "\033[1;31m" + radio2
-                gold_list.append([
-                    date,
-                    gold["q1"],
-                    gold2.get("q1", "N/A"),
-                    radio,
-                    radio2
-                ])
-            if is_return:
-                return gold_list[::-1]
-            if gold_list:
-                logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 金价:")
-                for line_msg in format_table_msg([
-                    [
-                        "日期", "中国黄金基础金价", "周大福金价", "中国黄金基础金价涨跌", "周大福金价涨跌"
-                    ],
-                    *gold_list[::-1]
-                ]).split("\n"):
-                    logger.info(line_msg)
-        except Exception as e:
-            logger.error(f"获取贵金属价格失败: {e}")
-
-    @staticmethod
-    def real_time_gold(is_return=False):
-        headers = {
-            "accept": "*/*",
-            "accept-language": "zh-CN,zh;q=0.9",
-            "referer": DATA_SOURCE_URLS['cngold_realtime_referer'],
-            "sec-ch-ua": "\"Not;A=Brand\";v=\"99\", \"Google Chrome\";v=\"139\", \"Chromium\";v=\"139\"",
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": "\"Windows\"",
-            "sec-fetch-dest": "script",
-            "sec-fetch-mode": "no-cors",
-            "sec-fetch-site": "cross-site",
-            "sec-fetch-storage-access": "active",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
-        }
-        try:
-            url = DATA_SOURCE_URLS['jijinhao_realtime_api']
-            params = {
-                "codes": "JO_71,JO_92233,JO_92232,JO_75",
-                "_": str(int(time.time() * 1000))
-            }
-            response = timed_http_request(
-                requests,
-                "GET",
-                url,
-                source="jijinhao",
-                headers=headers,
-                params=params,
-                timeout=10,
-                verify=False,
-            )
-            data = json.loads(response.text.replace("var quote_json = ", ""))
-            result = [[], [], []]
-            columns = ["名称", "最新价", "涨跌额", "涨跌幅", "开盘价", "最高价", "最低价", "昨收价", "更新时间", "单位"]
-            if data:
-                data1 = data["JO_71"]
-                data2 = data["JO_92233"]
-                data3 = data["JO_92232"]
-                keys = ["showName", "q63", "q70", "q80", "q1", "q3", "q4", "q2", "time", "unit"]
-                for key in keys:
-                    if key == "time":
-                        for i, t in enumerate([data1[key], data2[key], data3[key]]):
-                            date = datetime.datetime.fromtimestamp(t / 1000).strftime("%Y-%m-%d %H:%M:%S")
-                            result[i].append(date)
-
-                    else:
-                        value1 = data1.get(key, "N/A")
-                        value2 = data2.get(key, "N/A")
-                        value3 = data3.get(key, "N/A")
-                        if not isinstance(value1, str):
-                            value1 = round(value1, 2)
-                        if not isinstance(value2, str):
-                            value2 = round(value2, 2)
-                        if not isinstance(value3, str):
-                            value3 = round(value3, 2)
-                        value1 = str(value1)
-                        value2 = str(value2)
-                        value3 = str(value3)
-                        if key == "q70":
-                            if not is_return:
-                                if "-" in value1:
-                                    value1 = "\033[1;32m" + value1
-                                else:
-                                    value1 = "\033[1;31m" + value1
-                                if "-" in value2:
-                                    value2 = "\033[1;32m" + value2
-                                else:
-                                    value2 = "\033[1;31m" + value2
-                                if "-" in value3:
-                                    value3 = "\033[1;32m" + value3
-                                else:
-                                    value3 = "\033[1;31m" + value3
-                        if key == "q80":
-                            value1 = value1 + "%"
-                            value2 = value2 + "%"
-                            value3 = value3 + "%"
-                        result[0].append(value1)
-                        result[1].append(value2)
-                        result[2].append(value3)
-
-            if is_return:
-                return result
-            if result and result[0] and result[1] and result[2]:
-                logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 实时贵金属价:")
-                for line_msg in format_table_msg([
-                    columns,
-                    result[0],
-                    result[1],
-                    result[2]
-                ]).split("\n"):
-                    logger.info(line_msg)
-        except Exception as e:
-            logger.error(f"获取实时贵金属价格失败: {e}")
-
-    def real_time_gold_html(self):
-        result = self.real_time_gold(True)
-        if result:
-            return get_table_html(
-                ["名称", "最新价", "涨跌额", "涨跌幅", "开盘价", "最高价", "最低价", "昨收价", "更新时间", "单位"],
-                result
-            )
+        return fetch_kx(self.baidu_session, is_return, count)
 
     def A(self, is_return=False):
-        url = DATA_SOURCE_URLS['baidu_getquotation_api']
-        params = {
-            "srcid": "5353",
-            "all": "1",
-            "pointType": "string",
-            "group": "quotation_index_minute",
-            "query": "000001",
-            "code": "000001",
-            "market_type": "ab",
-            "newFormat": "1",
-            "name": "上证指数",
-            "finClientType": "pc"
-        }
-        response = timed_http_request(
-            self.baidu_session,
-            "GET",
-            url,
-            source="baidu",
-            params=params,
-            timeout=10,
-            verify=False,
-        )
-        try:
-            if str(response.json()["ResultCode"]) == "0":
-                marketData = response.json()["Result"]["newMarketData"]["marketData"][0]["p"]
-                if not is_return:
-                    marketData = marketData.split(";")[-30:]
-                else:
-                    marketData = marketData.split(";")
-                marketData = [x.split(",")[1:] for x in marketData]
-                if marketData:
-                    result = []
-                    for i in marketData:
-                        if not is_return:
-                            if "+" in i[2]:
-                                i[1] = "\033[1;31m" + i[1]
-                            else:
-                                i[1] = "\033[1;32m" + i[1]
-                        i[3] = i[3] + "%"
-                        try:
-                            i[4] = str(round(float(float(i[4]) / 10000), 2)) + "万手"
-                            i[5] = str(round(float(float(i[5]) / 10000 / 10000), 2)) + "亿"
-                        except:
-                            pass
-                        result.append(i[:-2])
-                    if is_return:
-                        return result
-                    logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 近 30 分钟上证指数:")
-                    for line_msg in format_table_msg([
-                        [
-                            "时间", "指数", "涨跌额", "涨跌幅", "成交量", "成交额"
-                        ],
-                        *result
-                    ]).split("\n"):
-                        logger.info(line_msg)
-        except Exception as e:
-            logger.error(f"获取上证指数信息失败: {e}")
-
-    def A_html(self):
-        result = self.A(True)
-        return get_table_html(
-            ["时间", "指数", "涨跌额", "涨跌幅", "成交量", "成交额"],
-            result
-        )
+        return fetch_A(self.baidu_session, is_return)
 
     def seven_A(self, is_return=False):
-        url = DATA_SOURCE_URLS['baidu_metrictrend_api']
-        params = {
-            "financeType": "index",
-            "market": "ab",
-            "code": "000001",
-            "targetType": "market",
-            "metric": "amount",
-            "finClientType": "pc"
-        }
-        try:
-            response = timed_http_request(
-                self.baidu_session,
-                "GET",
-                url,
-                source="baidu",
-                params=params,
-                timeout=10,
-                verify=False,
-            )
-            if str(response.json()["ResultCode"]) == "0":
-                trend = response.json()["Result"]["trend"]
-                result = []
-                # 近七天的日期
-                today = datetime.datetime.now()
-                dates = [(today - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(8)]
-                for i in dates:
-                    total = trend[0]
-                    ss = trend[1]
-                    sz = trend[2]
-                    bj = trend[3]
-                    total_data = [x for x in total["content"] if x["marketDate"] == i]
-                    ss_data = [x for x in ss["content"] if x["marketDate"] == i]
-                    sz_data = [x for x in sz["content"] if x["marketDate"] == i]
-                    bj_data = [x for x in bj["content"] if x["marketDate"] == i]
-                    if total_data and ss_data and sz_data and bj_data:
-                        total_amount = total_data[0]["data"]["amount"] + "亿"
-                        ss_amount = ss_data[0]["data"]["amount"] + "亿"
-                        sz_amount = sz_data[0]["data"]["amount"] + "亿"
-                        bj_amount = bj_data[0]["data"]["amount"] + "亿"
-                        result.append([
-                            i, total_amount, ss_amount, sz_amount, bj_amount
-                        ])
-
-                if is_return:
-                    return result
-                if result:
-                    logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 近 7 日成交量:")
-                    for line_msg in format_table_msg([
-                        [
-                            "日期", "总成交额", "上交所", "深交所", "北交所"
-                        ],
-                        *result
-                    ]).split("\n"):
-                        logger.info(line_msg)
-        except Exception as e:
-            logger.error(f"获取近七日成交量信息失败: {e}")
-
-    def seven_A_html(self):
-        result = self.seven_A(True)
-        if result:
-            return get_table_html(
-                ["日期", "总成交额", "上交所", "深交所", "北交所"],
-                result,
-                [1, 2, 3, 4]
-            )
-
-    def select_fund_html(self, bk_id=None):
-        """生成板块基金查询的HTML"""
-        if bk_id is None:
-            # 返回板块选择界面
-            data = self.select_fund(is_return=True)
-            bk_list = data["bk_list"]
-
-            # 使用类属性的大板块分类
-            major_categories = self.MAJOR_CATEGORIES
-
-            # 生成分类板块按钮
-            buttons_html = '<div style="padding: 20px;">'
-            for category, sectors in major_categories.items():
-                # 过滤出属于当前大类的板块
-                category_sectors = [(idx + 1, name) for idx, name in enumerate(bk_list) if name in sectors]
-                if not category_sectors:
-                    continue
-
-                buttons_html += f'<div style="margin-bottom: 25px;">'
-                buttons_html += f'<h4 style="margin: 0 0 10px 0; color: #666; font-size: 14px; font-weight: 600;">{category}</h4>'
-                buttons_html += '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px;">'
-
-                for idx, bk_name in category_sectors:
-                    buttons_html += f'''
-                    <button onclick="loadSectorFunds('{idx}')"
-                            style="padding: 10px; background: #fff; border: 1px solid #ddd;
-                                   cursor: pointer; font-weight: 500; transition: all 0.2s;
-                                   text-align: center; font-size: 13px; border-radius: 4px;"
-                            onmouseover="this.style.background='#0070e0'; this.style.color='#fff'; this.style.borderColor='#0070e0'"
-                            onmouseout="this.style.background='#fff'; this.style.color='#000'; this.style.borderColor='#ddd'">
-                        {bk_name}
-                    </button>
-                    '''
-                buttons_html += '</div></div>'
-            buttons_html += '</div>'
-
-            return f'''
-            <div id="sector-selection">
-                <h3 style="padding: 20px 20px 10px 20px; margin: 0; font-size: 1.2rem;">选择板块查看基金列表</h3>
-                {buttons_html}
-            </div>
-            <div id="sector-funds-result"></div>
-            <script>
-            function loadSectorFunds(bkId) {{
-                const resultDiv = document.getElementById('sector-funds-result');
-                resultDiv.innerHTML = '<p style="padding: 20px; text-align: center;">加载中...</p>';
-                resultDiv.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-
-                fetch('/fund/sector?bk_id=' + bkId)
-                    .then(response => response.text())
-                    .then(html => {{
-                        resultDiv.innerHTML = html;
-                        autoColorize();
-                        resultDiv.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-                    }})
-                    .catch(error => {{
-                        resultDiv.innerHTML = '<p style="padding: 20px; color: red;">加载失败: ' + error + '</p>';
-                    }});
-            }}
-            </script>
-            '''
-        else:
-            # 返回指定板块的基金列表
-            data = self.select_fund(bk_id=bk_id, is_return=True)
-            if "error" in data:
-                return f'<p style="color: red; padding: 20px;">{data["error"]}</p>'
-
-            return f'''
-            <div style="padding: 20px;">
-                <h3 style="margin: 0 0 15px 0;">板块: {data["bk_name"]}</h3>
-                {get_table_html(
-                ["基金代码", "基金名称", "基金类型", "日期", "净值", "日增长率", "近1周", "近1月", "近3月", "近6月", "今年来", "近1年", "近2年", "近3年", "成立以来"],
-                data["results"],
-                [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
-            )}
-            </div>
-            '''
-
-    def ai_analysis(self, deep_mode=False, fast_mode=False):
-        """使用AI分析器进行市场分析
-
-        Args:
-            deep_mode: 是否启用深度研究模式（默认False）
-            fast_mode: 是否启用快速分析模式（默认False）
-        """
-        analyzer = AIAnalyzer()
-        if deep_mode:
-            analyzer.analyze_deep(self, report_dir=self.report_dir)
-        elif fast_mode:
-            analyzer.analyze_fast(self, report_dir=self.report_dir)
-        else:
-            analyzer.analyze(self, report_dir=self.report_dir)
+        return fetch_seven_A(self.baidu_session, is_return)
 
 
 if __name__ == '__main__':

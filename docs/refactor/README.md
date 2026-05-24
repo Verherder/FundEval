@@ -13,6 +13,7 @@
 | 1 | **README.md**（本文件） | 了解背景、目标架构、兼容策略 |
 | 2 | [GETTING_STARTED.md](GETTING_STARTED.md) | 搭环境、跑通门禁命令 |
 | 3 | [PLAN.md](PLAN.md) | 按阶段跟着编码（23 个 PR、0–11 阶段） |
+| 4 | [ARCHITECTURE.md](ARCHITECTURE.md) | 重构后的架构说明（分层、依赖、请求流转） |
 | 4 | [checklist.md](checklist.md) | 每个 PR 合并前按 P0 清单验证 |
 | * | [decisions/](decisions/) | 对某个设计决策有疑问时查阅（6 个 ADR） |
 | * | [fixtures/](fixtures/) | API 响应形状样例，阶段 0 写测试时参考 |

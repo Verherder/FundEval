@@ -76,7 +76,7 @@ pip install -r requirements.txt
 #### 启动服务
 
 ```bash
-python fund_server.py
+python run.py
 ```
 
 默认地址：`http://localhost:8311/portfolio`
