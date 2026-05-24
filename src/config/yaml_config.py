@@ -13,7 +13,7 @@ REQUIRED_DATA_SOURCE_URL_KEYS = [
     'fund123_intraday_api',
     'fund123_history_net_value_api',
     'fundgz_js_tpl',
-    # baidu（warmup已移除，保留key兼容旧配置）
+    # baidu
     'gushitong_origin',
     'gushitong_referer',
     'baidu_getbanner_tpl',
@@ -31,21 +31,21 @@ REQUIRED_DATA_SOURCE_URL_KEYS = [
     'jijinhao_realtime_api',
 ]
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # project root
+
+
 def load_yaml_config(config_path: Optional[str] = None) -> dict:
-    """
-    加载 YAML 配置文件，返回配置字典。
-    优先级：环境变量 FUNDEVAL_CONFIG > 当前目录 > 项目根目录
-    """
     if config_path:
         path = Path(config_path)
     else:
         import os
+
         explicit = os.getenv("FUNDEVAL_CONFIG")
         if explicit:
             path = Path(explicit)
         else:
             cwd = Path.cwd()
-            for p in [cwd / "config.yaml", Path(__file__).resolve().parent.parent / "config.yaml"]:
+            for p in [cwd / "config.yaml", _PROJECT_ROOT / "config.yaml"]:
                 if p.exists():
                     path = p
                     break
@@ -56,12 +56,6 @@ def load_yaml_config(config_path: Optional[str] = None) -> dict:
 
 
 def get_page_refresh_config() -> Dict[str, int]:
-    """
-    获取页面刷新配置（从config.yaml）
-    返回：{
-        'auto_refresh_interval': 毫秒
-    }
-    """
     try:
         config = load_yaml_config()
         page_refresh = config.get('page_refresh', {})
@@ -69,7 +63,6 @@ def get_page_refresh_config() -> Dict[str, int]:
             'auto_refresh_interval': page_refresh.get('auto_refresh_interval', 60000)
         }
     except Exception as e:
-        # 返回默认值
         import logging
         logging.warning(f"Failed to load page_refresh config: {e}, using defaults")
         return {
@@ -78,7 +71,6 @@ def get_page_refresh_config() -> Dict[str, int]:
 
 
 def get_data_source_urls() -> Dict[str, str]:
-    """获取数据源URL配置（单一来源：config.yaml）。"""
     config = load_yaml_config()
     configured = config.get('data_sources', {}).get('urls', {})
 
@@ -96,7 +88,6 @@ def get_data_source_urls() -> Dict[str, str]:
 
 
 def get_performance_chart_config() -> Dict[str, Any]:
-    """获取业绩图表配置。"""
     try:
         config = load_yaml_config()
         pc = config.get('performance_chart', {})
@@ -112,7 +103,6 @@ def get_performance_chart_config() -> Dict[str, Any]:
 
 
 def get_nav_sync_config() -> Dict[str, Any]:
-    """获取历史净值同步配置。"""
     try:
         config = load_yaml_config()
         ns = config.get('nav_sync', {})
@@ -126,7 +116,6 @@ def get_nav_sync_config() -> Dict[str, Any]:
 
 
 def get_server_config() -> Dict[str, Any]:
-    """获取服务器配置。"""
     try:
         config = load_yaml_config()
         return config.get('server', {})

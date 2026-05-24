@@ -1,0 +1,41 @@
+<div id="sector-selection">
+    <h3 style="padding: 20px 20px 10px 20px; margin: 0; font-size: 1.2rem;">选择板块查看基金列表</h3>
+    <div style="padding: 20px;">
+    {% for category, items in categorized_sectors %}
+        <div style="margin-bottom: 25px;">
+            <h4 style="margin: 0 0 10px 0; color: #666; font-size: 14px; font-weight: 600;">{{ category }}</h4>
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px;">
+            {% for idx, bk_name in items %}
+                <button onclick="loadSectorFunds('{{ idx }}')"
+                        style="padding: 10px; background: #fff; border: 1px solid #ddd;
+                               cursor: pointer; font-weight: 500; transition: all 0.2s;
+                               text-align: center; font-size: 13px; border-radius: 4px;"
+                        onmouseover="this.style.background='#0070e0'; this.style.color='#fff'; this.style.borderColor='#0070e0'"
+                        onmouseout="this.style.background='#fff'; this.style.color='#000'; this.style.borderColor='#ddd'">
+                    {{ bk_name }}
+                </button>
+            {% endfor %}
+            </div>
+        </div>
+    {% endfor %}
+    </div>
+</div>
+<div id="sector-funds-result"></div>
+<script>
+function loadSectorFunds(bkId) {
+    const resultDiv = document.getElementById('sector-funds-result');
+    resultDiv.innerHTML = '<p style="padding: 20px; text-align: center;">加载中...</p>';
+    resultDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    fetch('/fund/sector?bk_id=' + bkId)
+        .then(response => response.text())
+        .then(html => {
+            resultDiv.innerHTML = html;
+            autoColorize();
+            resultDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        })
+        .catch(error => {
+            resultDiv.innerHTML = '<p style="padding: 20px; color: red;">加载失败: ' + error + '</p>';
+        });
+}
+</script>

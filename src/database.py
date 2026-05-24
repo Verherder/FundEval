@@ -1,15 +1,21 @@
 # -*- coding: UTF-8 -*-
 
 import json
+import os
 import sqlite3
 from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
 
 import bcrypt
 from loguru import logger
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 class Database:
-    def __init__(self, db_path="cache/fund_data.db"):
+    def __init__(self, db_path=None):
+        if db_path is None:
+            db_path = str(_PROJECT_ROOT / "cache" / "fund_data.db")
         self.db_path = db_path
         self.init_database()
 

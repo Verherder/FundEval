@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}LanFund{% endblock %}</title>
+    <link rel="icon" href="/static/1.ico">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/pages.css">
+    {% block head_extra %}{% endblock %}
+</head>
+<body>
+    <!-- 顶部导航栏 -->
+    <nav class="top-navbar">
+        <div class="top-navbar-brand">
+            <img src="/static/1.ico" alt="Logo" class="navbar-logo">
+        </div>
+        <div class="top-navbar-quote" id="lyricsDisplay">
+            偶然与巧合, 舞动了蝶翼, 谁的心头风起 ————《如果我们不曾相遇》
+        </div>
+        <div class="top-navbar-menu">
+            <a href="https://github.com/lanZzV/fund" target="_blank" class="nav-star">点个赞</a>
+            <a href="https://github.com/lanZzV/fund/issues" target="_blank" class="nav-feedback">反馈</a>
+            {% if username %}
+            <span class="nav-user">🍎 {{ username }}</span>
+            <a href="/logout" class="nav-logout">退出登录</a>
+            {% endif %}
+        </div>
+    </nav>
+
+    <!-- 主容器 -->
+    <div class="main-container">
+        <!-- 汉堡菜单按钮 (移动端) -->
+        <button class="hamburger-menu" id="hamburgerMenu">
+            <span></span>
+            <span></span>
+            <span></span>
+        </button>
+
+        <!-- 左侧导航栏 -->
+        <div class="sidebar collapsed" id="sidebar">
+            <div class="sidebar-toggle" id="sidebarToggle">▶</div>
+            <a href="/portfolio" class="sidebar-item{% if active_page == 'portfolio' %} active{% endif %}">
+                <span class="sidebar-icon">💼</span>
+                <span>持仓基金</span>
+            </a>
+            <a href="/sectors" class="sidebar-item{% if active_page == 'sectors' %} active{% endif %}">
+                <span class="sidebar-icon">🏢</span>
+                <span>行业板块</span>
+            </a>
+        </div>
+
+        <!-- 内容区域 -->
+        <div class="content-area">
+            {% block content %}{% endblock %}
+        </div>
+    </div>
+
+    {% block modals %}{% endblock %}
+
+    <script src="/static/js/main.js?v=20260408c"></script>
+    <script src="/static/js/sidebar-nav.js"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

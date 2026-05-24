@@ -264,6 +264,7 @@
             --gh-accent-fg: #667eea;
             --gh-accent-secondary: #764ba2;
             --gh-accent-bg: #eef2ff;
+            --accent: #3b82f6;
             --gh-success-fg: #1a7f37;
             --gh-success-bg: #dafbe1;
             --gh-danger-fg: #d1242f;
@@ -776,6 +777,16 @@
 
         .btn:active {
             transform: translateY(0);
+        }
+
+        .btn-secondary {
+            background: var(--gh-btn-secondary-bg);
+            color: var(--gh-btn-secondary-text);
+            border: 1px solid var(--gh-border-primary);
+        }
+
+        .btn-secondary:hover {
+            background: var(--gh-btn-secondary-hover-bg);
         }
 
         .btn-primary {
@@ -1661,6 +1672,11 @@
 
 .summary-change.neutral {
     color: var(--gh-text-tertiary);
+}
+
+/* Page Header */
+.page-header h1 {
+    margin-bottom: 4px;
 }
 
 /* Content Body */

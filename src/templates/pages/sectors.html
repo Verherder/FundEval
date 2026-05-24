@@ -1,0 +1,108 @@
+{% extends "layouts/base.html" %}
+{% set active_page = 'sectors' %}
+
+{% block title %}行业板块 - LanFund{% endblock %}
+
+{% block content %}
+<!-- Tab 切换按钮 -->
+<div class="tab-buttons" style="display: flex; gap: 10px; margin-bottom: 20px;">
+    <button class="tab-button active" onclick="switchTab('sectors')" id="tab-btn-sectors">
+        🏢 行业板块
+    </button>
+    <button class="tab-button" onclick="switchTab('query')" id="tab-btn-query">
+        🔍 板块基金查询
+    </button>
+</div>
+
+<!-- 行业板块 Tab -->
+<div id="tab-sectors" class="tab-content active">
+    <div class="page-header">
+        <h1 style="display: flex; align-items: center;">
+            🏢 行业板块
+            <div style="margin-left: 15px; display: flex; align-items: center; gap: 10px;">
+                <button id="refreshBtn-sectors" onclick="refreshCurrentPage()" class="refresh-button">🔄 刷新</button>
+                <span id="lastRefreshTime-sectors" style="font-size: 0.85rem; color: #666; min-width: 60px;"></span>
+            </div>
+        </h1>
+        <p>查看各行业板块的市场表现</p>
+    </div>
+    <div class="content-card">
+        {{ sectors_content | safe }}
+    </div>
+</div>
+
+<!-- 板块基金查询 Tab -->
+<div id="tab-query" class="tab-content">
+    <div class="page-header">
+        <h1 style="display: flex; align-items: center;">
+            🔍 板块基金查询
+            <div style="margin-left: 15px; display: flex; align-items: center; gap: 10px;">
+                <button id="refreshBtn-sectors-query" onclick="refreshCurrentPage()" class="refresh-button">🔄 刷新</button>
+                <span id="lastRefreshTime-sectors" style="font-size: 0.85rem; color: #666; min-width: 60px;"></span>
+            </div>
+        </h1>
+        <p>查询特定板块的基金产品</p>
+    </div>
+    <div class="content-card">
+        {{ select_fund_content | safe }}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function switchTab(tabName) {
+        document.querySelectorAll('.tab-content').forEach(tab => {
+            tab.classList.remove('active');
+        });
+
+        document.querySelectorAll('.tab-button').forEach(btn => {
+            btn.classList.remove('active');
+        });
+
+        document.getElementById('tab-' + tabName).classList.add('active');
+        document.getElementById('tab-btn-' + tabName).classList.add('active');
+    }
+
+    function autoColorize() {
+        const cells = document.querySelectorAll('.style-table td');
+        cells.forEach(cell => {
+            if (cell.querySelector('.fund-position-amount-cell') || cell.querySelector('.fund-position-gain-cell')) {
+                return;
+            }
+            const text = cell.textContent.trim();
+            const cleanText = text.replace(/[%,亿万手]/g, '');
+            const val = parseFloat(cleanText);
+
+            if (!isNaN(val)) {
+                if (text.includes('%') || text.includes('涨跌')) {
+                    if (text.includes('-')) {
+                        cell.classList.add('negative');
+                    } else if (val > 0) {
+                        cell.classList.add('positive');
+                    }
+                } else if (text.startsWith('-')) {
+                    cell.classList.add('negative');
+                } else if (text.startsWith('+')) {
+                    cell.classList.add('positive');
+                }
+            }
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const firstTabBtn = document.querySelector('.tab-button');
+        if (firstTabBtn) {
+            firstTabBtn.classList.add('active');
+        }
+
+        {% include 'partials/lyrics-carousel.html' %}
+
+        requestAnimationFrame(function() {
+            setTimeout(function() {
+                autoColorize();
+            }, 0);
+        });
+    });
+</script>
+{% endblock %}

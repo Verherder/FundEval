@@ -1,0 +1,24 @@
+// 歌词轮播
+const lyrics = [
+    '总要有一首我的歌, 大声唱过, 再看天地辽阔 ————《一颗苹果》',
+    '苍狗又白云, 身旁有了你, 匆匆轮回又有何惧 ————《如果我们不曾相遇》',
+    '活着其实很好, 再吃一颗苹果 ————《一颗苹果》',
+    '偶然与巧合, 舞动了蝶翼, 谁的心头风起 ————《如果我们不曾相遇》'
+];
+let currentLyricIndex = 0;
+const lyricsElement = document.getElementById('lyricsDisplay');
+
+currentLyricIndex = Math.floor(Math.random() * lyrics.length);
+if (lyricsElement) {
+    lyricsElement.textContent = lyrics[currentLyricIndex];
+
+    setInterval(function() {
+        lyricsElement.style.opacity = '0';
+
+        setTimeout(function() {
+            currentLyricIndex = (currentLyricIndex + 1) % lyrics.length;
+            lyricsElement.textContent = lyrics[currentLyricIndex];
+            lyricsElement.style.opacity = '1';
+        }, 500);
+    }, 10000);
+}

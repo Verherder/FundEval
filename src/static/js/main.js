@@ -3154,6 +3154,15 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    const transactionModal = document.getElementById('transactionModal');
+    if (transactionModal) {
+        transactionModal.addEventListener('click', function(e) {
+            if (e.target === transactionModal) {
+                closeTransactionModal();
+            }
+        });
+    }
+
     const tradeInput = document.getElementById('tradeModalInput');
     if (tradeInput) {
         tradeInput.addEventListener('keypress', function(e) {

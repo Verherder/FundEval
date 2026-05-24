@@ -1,0 +1,20 @@
+<div class="table-container">
+    <table class="style-table">
+        <thead>
+            <tr>
+                {% for i in range(title | length) %}
+                <th{% if sortable_columns and i in sortable_columns %} class="sortable" onclick="sortTable(this.closest('table'), {{ i }})"{% endif %}>{{ title[i] }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in data %}
+            <tr>
+                {% for cell in row %}
+                <td>{{ cell | safe }}</td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>

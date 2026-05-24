@@ -1,0 +1,38 @@
+{
+  "_comment": "匿名化样例：GET /api/fund/performance-chart-data 响应体形状",
+  "chart_data": {
+    "labels": ["2026-01-02", "2026-02-01", "2026-03-01", "2026-04-01", "2026-05-01"],
+    "growth": [0.0, 2.15, -0.82, 4.31, 6.02],
+    "net_values": [1.0, 1.0215, 1.0133, 1.0569, 1.0602],
+    "benchmark_label": "沪深300",
+    "benchmark_growth": [0.0, 1.2, 0.5, 3.8, 4.1],
+    "latest_net_value": 1.0602,
+    "latest_net_value_date": "2026-05-01",
+    "from_cache": true,
+    "date_interval": "SINCE_ESTABLISHMENT",
+    "interval_label": "成立以来",
+    "available_intervals": [
+      ["ONE_MONTH", "近1月"],
+      ["SINCE_ESTABLISHMENT", "成立以来"]
+    ],
+    "establishment_date": "2018-06-15",
+    "growth_source": "local_nav",
+    "trade_markers": [
+      {
+        "type": "buy",
+        "marker_type": "buy",
+        "x": "2026-02-01",
+        "y": 2.15,
+        "amount": 1000.0,
+        "shares": 950.12,
+        "net_value": 1.0215,
+        "tx_time": "2026-02-01 14:30:00"
+      }
+    ],
+    "holding_return_pct": [0.0, 1.8, 0.9, 3.5, 5.2]
+  },
+  "fund_info": {
+    "code": "000001",
+    "name": "示例成长混合A"
+  }
+}
