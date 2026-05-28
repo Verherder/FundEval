@@ -20,7 +20,7 @@ class MarketService:
     """Service for market data operations.
 
     Args:
-        get_lan_fund_fn: Callable returning a LanFund instance for the current request.
+        get_lan_fund_fn: Callable returning a MiniFund instance for the current request.
     """
 
     def __init__(self, get_lan_fund_fn):

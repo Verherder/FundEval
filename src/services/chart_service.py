@@ -10,7 +10,7 @@ import requests
 
 from loguru import logger
 
-from src.services.metrics import safe_float, safe_int, build_clear_cycles
+from src.services.metrics import safe_float, safe_int, build_clear_cycles, parse_tx_datetime
 from src.services.nav_service import nav_backfill_effective_end_date, _build_backfill_request_segments
 from src.services.transaction_service import _extract_net_value_and_date
 from src.trading_calendar import is_cn_sse_trading_day, iter_cn_sse_trading_days
@@ -169,6 +169,37 @@ class ChartService:
         if isinstance(establishment_date, datetime.date) and start_date < establishment_date:
             start_date = establishment_date
         return start_date
+
+    def _sync_transaction_nav_points(self, user_id, fund_code):
+        """Use confirmed transaction NAVs to fill chart-date gaps before rendering markers."""
+        transactions = self._transaction_repo.get_fund_transactions(user_id, fund_code) or []
+        wrote_count = 0
+
+        for tx in transactions:
+            tx_type = str(tx.get('tx_type', '')).strip().lower()
+            if tx_type not in ('buy', 'sell'):
+                continue
+
+            tx_dt = parse_tx_datetime(tx.get('tx_time'))
+            if tx_dt is None:
+                continue
+
+            nav_value = safe_float(tx.get('net_value'), None)
+            tx_date = tx_dt.date().isoformat()
+            existing_nav = safe_float(self._nav_repo.get_fund_nav_by_date(fund_code, tx_date), None)
+            ensured_nav = self._nav_service.ensure_fund_nav_by_date(
+                user_id,
+                fund_code,
+                tx_date,
+                fallback_nav=nav_value,
+                fallback_source='transaction_nav',
+            )
+            if (existing_nav is None or existing_nav <= 0) and ensured_nav is not None and ensured_nav > 0:
+                wrote_count += 1
+
+        if wrote_count > 0:
+            logger.info(f"交易净值补齐业绩曲线【{fund_code}】: wrote={wrote_count}")
+        return wrote_count
 
     def build_local_performance_chart_data(self, user_id, fund_code, fund_name,
                                             date_interval=DEFAULT_PERFORMANCE_CHART_INTERVAL,
@@ -359,6 +390,8 @@ class ChartService:
             'fund_name': user_funds[fund_code]['fund_name']
         }
 
+        self._sync_transaction_nav_points(user_id, fund_code)
+
         chart_data = self.build_local_performance_chart_data(
             user_id=user_id,
             fund_code=fund_code,
@@ -498,6 +531,8 @@ class ChartService:
             'fund_key': user_funds[fund_code]['fund_key'],
             'fund_name': user_funds[fund_code]['fund_name']
         }
+
+        self._sync_transaction_nav_points(user_id, fund_code)
 
         perf_data = self.build_local_performance_chart_data(
             user_id=user_id,

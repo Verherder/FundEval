@@ -14,7 +14,7 @@ class FundService:
         db: Database connection.
         fund_repo: FundRepo instance.
         transaction_repo: TransactionRepo instance.
-        get_lan_fund_fn: Callable returning a LanFund instance for the current request.
+        get_lan_fund_fn: Callable returning a MiniFund instance for the current request.
         chart_service: ChartService instance (for quote lookups during settlement).
     """
 

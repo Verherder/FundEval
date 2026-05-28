@@ -17,7 +17,7 @@
 |------|------|------|
 | `fund_server.py` | 4648 行 | 52 路由 + **51** 个 `_` 前缀私有函数 |
 | `importlib.reload(fund)` | **27** 处 | 均在 `fund_server.py`，阶段 4 清零 |
-| `src/fund.py` | 2895 行 | `LanFund` + **`python src/fund.py` CLI** 入口 |
+| `src/fund.py` | 2895 行 | `MiniFund` + **`python src/fund.py` CLI** 入口 |
 | `src/module_html.py` | 5810 行 | 其中 `get_css_style`≈994 行、`get_javascript_code`≈1540 行 |
 | 根目录 `static/css/style.css` | 2053 行 | 与 module_html 内联 CSS **重复** |
 | 根目录 `static/js/main.js` | 4149 行 | 页面已外链 JS，部分路径仍内联注入 |
@@ -80,7 +80,7 @@ src/templates/
 | 现状 | 目标 |
 |------|------|
 | `get_portfolio_page_html()` 巨型 f-string | `pages/portfolio.html` + partials |
-| `fund.LanFund.fund_html()` 返回 HTML | `build_portfolio_context()` → presenter |
+| `fund.MiniFund.fund_html()` 返回 HTML | `build_portfolio_context()` → presenter |
 | `/api/tab/<id>` 返回 `*_html()` 字符串 | `render_template('tabs/xxx.html', **ctx)` |
 | `enhance_fund_tab_content()` | 份额等写入 ctx，模板展示 |
 | `module_html.py` | **阶段 5.4 删除**（见门禁） |
@@ -89,7 +89,7 @@ src/templates/
 
 ## `fund.py` 与 `fund_server.py` 边界（避免双轨）
 
-| 时点 | `fund_server.py` | `fund.py`（`LanFund`） |
+| 时点 | `fund_server.py` | `fund.py`（`MiniFund`） |
 |------|------------------|------------------------|
 | **阶段 5 结束时** | 不再 `import module_html`；Tab/页面走 presenter | **删除全部 `*_html`** |
 | **阶段 8 结束时** | 业务在 `services/*`；reload 已在阶段 4 为 0 | service 只调 **数据方法** 或 `market_service` |
@@ -246,14 +246,14 @@ FundEval/
 
 ---
 
-### 阶段 4：LanFund 请求单例（1 天）— PR #5
+### 阶段 4：MiniFund 请求单例（1 天）— PR #5
 
 **目标**：27 处 `importlib.reload(fund)` → `get_lan_fund(user_id)`（[ADR-003](decisions/003-flask-g-lanfund-singleton.md)）
 
 ```python
-def get_lan_fund(user_id: int) -> LanFund:
+def get_lan_fund(user_id: int) -> MiniFund:
     if "lan_fund" not in g:
-        g.lan_fund = LanFund(user_id=user_id, db=current_app.extensions["db"])
+        g.lan_fund = MiniFund(user_id=user_id, db=current_app.extensions["db"])
         g.lan_fund.load_cache()
     return g.lan_fund
 ```
@@ -338,7 +338,7 @@ rg -c "get_table_html|module_html" src/ --type py          # 0
 
 ---
 
-### 阶段 9：LanFund 瘦身 + CLI（2 天）— PR #21
+### 阶段 9：MiniFund 瘦身 + CLI（2 天）— PR #21
 
 - `fund.py`：仅 HTTP、行情、`CACHE_MAP`、`run()`；**无 HTML**
 - `src/cli/main.py`；**不改动** `ai_analyzer`
@@ -417,7 +417,7 @@ rg -c "get_table_html|module_html" src/ --type py          # 0
 1. P0 checklist 每 PR 必跑  
 2. Feature Flag 仅 `use_blueprints`（阶段 10）  
 3. 合并 XIRR 前 pytest 锁定双实现  
-4. CLI `LanFund.run()` 语义不变  
+4. CLI `MiniFund.run()` 语义不变  
 5. `services/` 禁止 HTML；仅 `presenters/` + `templates/`  
 
 ---
@@ -461,7 +461,7 @@ rg -c "def \w+_html" src/fund.py            # 阶段 5.3 后 → 0
 | 1 | 死代码删除 | 待开始 |
 | 2 | 数据与配置 | 待开始 |
 | 3 | 静态迁移去重 | 待开始 |
-| 4 | LanFund 单例 | 待开始 |
+| 4 | MiniFund 单例 | 待开始 |
 | 5 | 展示层分离 | 待开始 |
 | 6 | 工具与指标 | 待开始 |
 | 7 | Repository | 待开始 |

@@ -1,5 +1,5 @@
 # -*- coding: UTF-8 -*-
-"""板块到东方财富板块代码的映射 — 从 fund.LanFund.select_fund 的 bk_map 提取。"""
+"""板块到东方财富板块代码的映射 — 从 fund.MiniFund.select_fund 的 bk_map 提取。"""
 
 BK_MAP = {
     "光模块": "BK000651",

@@ -6,7 +6,7 @@
 
 ## 背景
 
-`src/ai_analyzer.py`（约 1510 行）通过 `fund.py` 的 `LanFund.run(with_ai=True)` / `ai_analysis()` 调用。
+`src/ai_analyzer.py`（约 1510 行）通过 `fund.py` 的 `MiniFund.run(with_ai=True)` / `ai_analysis()` 调用。
 
 审计结论：
 

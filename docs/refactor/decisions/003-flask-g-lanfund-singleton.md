@@ -6,7 +6,7 @@
 
 ## 背景
 
-`fund_server.py` 中有 **27** 处 `importlib.reload(fund)`，随后构造 `LanFund`。意图是开发时热更新 `fund.py`，但：
+`fund_server.py` 中有 **27** 处 `importlib.reload(fund)`，随后构造 `MiniFund`。意图是开发时热更新 `fund.py`，但：
 
 - 增加每次请求开销与不可预测状态
 - 后续重构 `fund_server` 时易误触 reload 语义
@@ -20,12 +20,12 @@
 
 ```python
 from flask import g, current_app
-from src.fund import LanFund
+from src.fund import MiniFund
 
-def get_lan_fund(user_id: int) -> LanFund:
+def get_lan_fund(user_id: int) -> MiniFund:
     if "lan_fund" not in g:
         db = current_app.extensions["db"]
-        lan = LanFund(user_id=user_id, db=db)
+        lan = MiniFund(user_id=user_id, db=db)
         lan.load_cache()
         g.lan_fund = lan
     return g.lan_fund
@@ -36,7 +36,7 @@ def get_lan_fund(user_id: int) -> LanFund:
 ```python
 # 前
 importlib.reload(fund)
-my_fund = fund.LanFund(user_id=user_id, db=db)
+my_fund = fund.MiniFund(user_id=user_id, db=db)
 
 # 后
 my_fund = get_lan_fund(user_id)
@@ -45,7 +45,7 @@ my_fund = get_lan_fund(user_id)
 **规则**：
 
 - 开发环境仅 Werkzeug `use_reloader` 重启进程（已 `exclude_patterns` 排除 `cache/`），**禁止** `importlib.reload(fund)`。
-- **后台线程**（日志清理等）无 Flask 请求上下文：不得调用 `get_lan_fund`；若需 `LanFund` 则显式 `LanFund(db=db)` 或只传 `user_id` 调 service。
+- **后台线程**（日志清理等）无 Flask 请求上下文：不得调用 `get_lan_fund`；若需 `MiniFund` 则显式 `MiniFund(db=db)` 或只传 `user_id` 调 service。
 - 无 `user_id` 的少数路由（若存在）：保持显式构造，不塞进 `g`。
 - 门禁：`rg "importlib.reload" fund_server.py` → **0**；可选 `tests/test_lan_fund_session.py` 断言同请求内 `id(g.lan_fund)` 不变。
 

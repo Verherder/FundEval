@@ -102,8 +102,8 @@ def enhance_fund_tab_content(content, shares_map=None):
 
                 <!-- 左上角品牌标识 -->
                 <div class="showoff-brand-corner">
-                    <img src="/static/1.ico" alt="Lan Fund" class="brand-logo" onerror="this.style.display='none'">
-                    <span class="brand-name">Lan Fund</span>
+                    <img src="/static/1.ico" alt="MiniFund" class="brand-logo" onerror="this.style.display='none'">
+                    <span class="brand-name">MiniFund</span>
                 </div>
 
                 <!-- 卡片背景装饰 -->

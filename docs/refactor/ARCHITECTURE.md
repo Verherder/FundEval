@@ -2,7 +2,7 @@
 
 ## 一句话概览
 
-请求从 **run.py** 进入，经 **Flask 应用工厂** 创建 app，由 **4 个 Blueprint** 分发路由，路由调用 **6 个 Service** 处理业务逻辑，Service 通过 **3 个渠道** 读写数据：4 个 Repository（本地数据库）、LanFund（远程行情抓取）、market_data 工具函数（百度/东方财富等源）。
+请求从 **run.py** 进入，经 **Flask 应用工厂** 创建 app，由 **4 个 Blueprint** 分发路由，路由调用 **6 个 Service** 处理业务逻辑，Service 通过 **3 个渠道** 读写数据：4 个 Repository（本地数据库）、MiniFund（远程行情抓取）、market_data 工具函数（百度/东方财富等源）。
 
 ---
 
@@ -77,12 +77,12 @@ get_nav_repo()        get_fund_service()
 
 每个 Blueprint 在模块顶部 `from src.dependencies import get_xxx`，路由函数内调用 getter 获取单例。
 
-### 3. LanFund 工厂（请求级单例）
+### 3. MiniFund 工厂（请求级单例）
 
 ```python
 def get_lan_fund(user_id=None):
     if not hasattr(g, "_lan_fund"):
-        g._lan_fund = LanFund(user_id=user_id, db=_db)
+        g._lan_fund = MiniFund(user_id=user_id, db=_db)
     return g._lan_fund
 ```
 
@@ -115,7 +115,7 @@ Blueprint 路由
     └── get_market_service() ────→ MarketService ──→ market_data 工具函数
 ```
 
-所有 Service 都持有 `get_lan_fund` 回调，用于需要远程抓取时获取 LanFund 实例。
+所有 Service 都持有 `get_lan_fund` 回调，用于需要远程抓取时获取 MiniFund 实例。
 
 ---
 
@@ -132,18 +132,18 @@ Blueprint 路由
 
 每个 Repo 构造时接收 `Database` 实例，方法返回 dict/list，不暴露 SQL 到上层。
 
-### LanFund（远程数据抓取）
+### MiniFund（远程数据抓取）
 
-`src/fund.py` 中的 `LanFund` 类承担**远程行情数据抓取**的职责：
+`src/fund.py` 中的 `MiniFund` 类承担**远程行情数据抓取**的职责：
 - 使用 `requests.Session` 抓取基金数据（天天基金等）
 - 使用 `curl_cffi` 模拟浏览器抓取百度行情
 - 管理 `CACHE_MAP` 缓存、板块分类等
 
-Blueprints 和 Services **不直接 import LanFund**，而是通过 `get_lan_fund(user_id)` 获取请求级实例。
+Blueprints 和 Services **不直接 import MiniFund**，而是通过 `get_lan_fund(user_id)` 获取请求级实例。
 
 ### market_data 工具函数
 
-`src/market_data.py` 提供无状态的行情抓取函数：`fetch_bk()`、`fetch_kx()`、`fetch_A()` 等。MarketService 封装这些函数，从 LanFund 获取 HTTP session 后传入。
+`src/market_data.py` 提供无状态的行情抓取函数：`fetch_bk()`、`fetch_kx()`、`fetch_A()` 等。MarketService 封装这些函数，从 MiniFund 获取 HTTP session 后传入。
 
 ### 其他支撑模块
 
@@ -183,7 +183,7 @@ api_market_bp.api_get_tab_data("fund")      # blueprints/api_market_bp.py
   ├── user_id = get_current_user_id()
   ├── market_service = get_market_service()
   ├── market_service.build_fund_table(user_id)
-  │     └── LanFund.build_fund_table()      # 抓取天天基金数据
+  │     └── MiniFund.build_fund_table()      # 抓取天天基金数据
   ├── fund_map = get_fund_repo().get_user_funds(user_id)
   └── enhance_fund_tab_content(content, shares_map)
 
@@ -208,9 +208,9 @@ api_fund_bp.api_portfolio_fund_table()      # blueprints/api_fund_bp.py
 
 模块级变量在 Python 中是天然的单例。`create_app()` 在模块导入时执行一次（Werkzeug reloader 会重载模块），不需要 `app.extensions` 字典的 key 管理。所有 Blueprint 直接 `from src.dependencies import get_xxx` 即可，无需 `current_app` 代理。
 
-### 为什么 LanFund 是请求级单例而不是全局单例？
+### 为什么 MiniFund 是请求级单例而不是全局单例？
 
-LanFund 持有 `user_id` 和 HTTP session，不同用户的请求需要不同的实例。Flask `g` 在请求结束时自动销毁，天然适合此场景。
+MiniFund 持有 `user_id` 和 HTTP session，不同用户的请求需要不同的实例。Flask `g` 在请求结束时自动销毁，天然适合此场景。
 
 ### 为什么 fund_server.py 还保留？
 

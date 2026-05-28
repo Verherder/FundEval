@@ -51,11 +51,12 @@ def _get_buy_effective_date(now_time=None):
 class TransactionService:
     """Service for fund transaction operations: buy, sell, backfill, CRUD."""
 
-    def __init__(self, fund_repo, transaction_repo, nav_repo, get_lan_fund_func):
+    def __init__(self, fund_repo, transaction_repo, nav_repo, get_lan_fund_func, nav_service=None):
         self._fund_repo = fund_repo
         self._transaction_repo = transaction_repo
         self._nav_repo = nav_repo
         self._get_lan_fund = get_lan_fund_func
+        self._nav_service = nav_service
 
     # ── net-value helpers ──────────────────────────────────────────────
 
@@ -179,11 +180,14 @@ class TransactionService:
 
         for _ in range(15):
             target_date = candidate_date.isoformat()
-            net_value = self._nav_repo.get_fund_nav_by_date(fund_code, target_date)
-            if net_value is None:
-                net_value = self._find_net_value_by_date_from_history_api(user_id, fund_code, target_date)
-                if net_value is not None and net_value > 0:
-                    self._nav_repo.upsert_fund_nav_history(fund_code, target_date, net_value, source='history_api')
+            if self._nav_service is not None:
+                net_value = self._nav_service.ensure_fund_nav_by_date(user_id, fund_code, target_date)
+            else:
+                net_value = self._nav_repo.get_fund_nav_by_date(fund_code, target_date)
+                if net_value is None:
+                    net_value = self._find_net_value_by_date_from_history_api(user_id, fund_code, target_date)
+                    if net_value is not None and net_value > 0:
+                        self._nav_repo.upsert_fund_nav_history(fund_code, target_date, net_value, source='history_api')
 
             if net_value is None:
                 net_value = self._find_net_value_by_date_from_trend(user_id, fund_code, target_date)
@@ -333,7 +337,10 @@ class TransactionService:
 
         net_value_missing = (net_value is None) or (str(net_value).strip() == "")
         if net_value_missing:
-            net_value = self._find_net_value_by_date_from_history_api(user_id, code, normalized_date)
+            if self._nav_service is not None:
+                net_value = self._nav_service.ensure_fund_nav_by_date(user_id, code, normalized_date)
+            else:
+                net_value = self._find_net_value_by_date_from_history_api(user_id, code, normalized_date)
             if net_value is None:
                 return {'success': False, 'message': '未查询到该日期净值，请手动输入净值后重试'}
         else:
@@ -343,6 +350,14 @@ class TransactionService:
                 return {'success': False, 'message': '净值格式错误'}
             if net_value <= 0:
                 return {'success': False, 'message': '净值必须大于0'}
+            if self._nav_service is not None:
+                net_value = self._nav_service.ensure_fund_nav_by_date(
+                    user_id,
+                    code,
+                    normalized_date,
+                    fallback_nav=net_value,
+                    fallback_source='transaction_manual',
+                ) or net_value
 
         net_buy_amount = float((Decimal(str(amount)) - Decimal(str(fee))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
         buy_shares = float((Decimal(str(net_buy_amount)) / Decimal(str(net_value))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
@@ -399,7 +414,10 @@ class TransactionService:
 
         net_value_missing = (net_value is None) or (str(net_value).strip() == "")
         if net_value_missing:
-            net_value = self._find_net_value_by_date_from_history_api(user_id, code, normalized_date)
+            if self._nav_service is not None:
+                net_value = self._nav_service.ensure_fund_nav_by_date(user_id, code, normalized_date)
+            else:
+                net_value = self._find_net_value_by_date_from_history_api(user_id, code, normalized_date)
             if net_value is None:
                 return {'success': False, 'message': '未查询到该日期净值，请手动输入净值后重试'}
         else:
@@ -409,6 +427,14 @@ class TransactionService:
                 return {'success': False, 'message': '净值格式错误'}
             if net_value <= 0:
                 return {'success': False, 'message': '净值必须大于0'}
+            if self._nav_service is not None:
+                net_value = self._nav_service.ensure_fund_nav_by_date(
+                    user_id,
+                    code,
+                    normalized_date,
+                    fallback_nav=net_value,
+                    fallback_source='transaction_manual',
+                ) or net_value
 
         if shares is None:
             return {'success': False, 'message': '请提供卖出份额'}
@@ -492,6 +518,14 @@ class TransactionService:
                 return {'success': False, 'message': '净值格式错误'}
             if normalized_net_value <= 0:
                 return {'success': False, 'message': '净值必须大于0'}
+            if self._nav_service is not None:
+                normalized_net_value = self._nav_service.ensure_fund_nav_by_date(
+                    user_id,
+                    code,
+                    normalized_date,
+                    fallback_nav=normalized_net_value,
+                    fallback_source='transaction_manual',
+                ) or normalized_net_value
 
         user_funds = self._fund_repo.get_user_funds(user_id)
         if code not in user_funds:
@@ -586,9 +620,21 @@ class TransactionService:
         except Exception:
             return {'success': False, 'message': '日期格式错误，请使用YYYY-MM-DD'}
 
-        net_value = self._find_net_value_by_date_from_history_api(user_id, code, normalized_date)
+        if self._nav_service is not None:
+            net_value = self._nav_service.ensure_fund_nav_by_date(user_id, code, normalized_date)
+        else:
+            net_value = self._find_net_value_by_date_from_history_api(user_id, code, normalized_date)
+
         if net_value is None:
             net_value = self._find_net_value_by_date_from_trend(user_id, code, normalized_date)
+            if net_value is not None and self._nav_service is not None:
+                net_value = self._nav_service.ensure_fund_nav_by_date(
+                    user_id,
+                    code,
+                    normalized_date,
+                    fallback_nav=net_value,
+                    fallback_source='trend',
+                ) or net_value
 
         if net_value is None:
             return {
@@ -708,6 +754,15 @@ class TransactionService:
         if parsed_dt is None:
             return {'success': False, 'message': '交易时间格式错误'}
         tx_time = parsed_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+        if self._nav_service is not None and tx_type in ('buy', 'sell', 'dividend') and net_value is not None and net_value > 0:
+            net_value = self._nav_service.ensure_fund_nav_by_date(
+                user_id,
+                code,
+                parsed_dt.date().isoformat(),
+                fallback_nav=net_value,
+                fallback_source='transaction_manual',
+            ) or net_value
 
         result = self._transaction_repo.update_fund_transaction_and_recalculate(
             user_id=user_id,

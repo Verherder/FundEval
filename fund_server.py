@@ -80,18 +80,18 @@ nav_repo = NavRepo(db)
 
 
 def get_lan_fund(user_id=None):
-    """返回当前请求的 LanFund 单例（存储在 Flask g 上）。
+    """返回当前请求的 MiniFund 单例（存储在 Flask g 上）。
 
     每次请求首次调用时创建新实例，同一请求内重复调用返回同一实例。
     修改 fund.py 后重启进程即可，不再通过 importlib 热更新。
     """
     if not hasattr(g, "_lan_fund"):
-        g._lan_fund = fund.LanFund(user_id=user_id, db=db)
+        g._lan_fund = fund.MiniFund(user_id=user_id, db=db)
     return g._lan_fund
 
-tx_service = TransactionService(fund_repo, transaction_repo, nav_repo, get_lan_fund)
-import_service = ImportService(fund_repo, transaction_repo, nav_repo, get_lan_fund, tx_service)
 nav_service = NavService(db, fund_repo, nav_repo, get_lan_fund)
+tx_service = TransactionService(fund_repo, transaction_repo, nav_repo, get_lan_fund, nav_service)
+import_service = ImportService(fund_repo, transaction_repo, nav_repo, get_lan_fund, tx_service)
 chart_service = ChartService(db, fund_repo, nav_repo, transaction_repo, nav_service, get_lan_fund)
 fund_service = FundService(db, fund_repo, transaction_repo, get_lan_fund, chart_service)
 market_service = MarketService(get_lan_fund)

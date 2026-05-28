@@ -31,7 +31,7 @@
 |------|------|----------|
 | module_html.py | 5810 | Python内嵌995行CSS+1540行JS+HTML字符串，无法维护 |
 | fund_server.py | 4648 | 上帝文件：HTTP路由+业务逻辑+数据库+日志清理全混在一起 |
-| fund.py | 2895 | LanFund类2895行，fund_html方法379行含9个内嵌函数 |
+| fund.py | 2895 | MiniFund类2895行，fund_html方法379行含9个内嵌函数 |
 
 **核心问题**：
 - 分层缺失：路由直接操作数据库，无Service层
@@ -74,7 +74,7 @@ FundEval/
 │   │   ├── css/style.css      # CSS（从get_css_style迁移）
 │   │   └── js/main.js         # JS（从get_javascript_code迁移）
 │   ├── database.py            # 数据库访问（精简后）
-│   ├── fund.py                # LanFund类（精简后）
+│   ├── fund.py                # MiniFund类（精简后）
 │   ├── module_html.py         # HTML生成（精简后）
 │   └── web/
 │       └── app.py             # Flask应用工厂
@@ -94,12 +94,12 @@ FundEval/
 | 1 | 死代码删除 | `module_html.py` ≤2600 行 | 低 |
 | 2 | 数据与配置 | `src/data/`、`src/config/` | 低 |
 | 3 | 静态迁移去重 | `static/`、`templates/` → `src/` | 中 |
-| 4 | LanFund 单例 | `get_lan_fund()`，reload → 0 | 低 |
+| 4 | MiniFund 单例 | `get_lan_fund()`，reload → 0 | 低 |
 | 5 | 展示层分离 | Jinja 模板 + presenters，`module_html.py` → 0 | 中 |
 | 6 | 工具与指标 | `financial.py`、`metrics.py`、`cache.py` | 低 |
 | 7 | Repository | 4 个 repo 替代直连 db | 中 |
 | 8 | Service 层 | 6 个子阶段，业务逻辑迁出路由 | 高 |
-| 9 | LanFund 瘦身 | `fund.py` <1200 行 + CLI | 中 |
+| 9 | MiniFund 瘦身 | `fund.py` <1200 行 + CLI | 中 |
 | 10 | Blueprint | `create_app()` + 4 个 Blueprint | 中 |
 | 11 | 收尾 | 文档更新、清理 re-export | 低 |
 
@@ -161,7 +161,7 @@ refactor:
 
 | 文件 | 行数 | 说明 |
 |------|------|------|
-| `src/fund.py` | 2895 | LanFund类 |
+| `src/fund.py` | 2895 | MiniFund类 |
 | `src/module_html.py` | 5810 | HTML生成 |
 | `src/database.py` | 1444 | 数据库访问 |
 | `fund_server.py` | 4648 | Flask入口 |

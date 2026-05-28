@@ -1444,6 +1444,7 @@ document.addEventListener('DOMContentLoaded', function() {
         let estimatedGain = 0;
         let actualGain = 0;
         let settledValue = 0;
+        let estimatedValue = 0;
         let freshEstimateFundCount = 0;
 
         const parseFirstNumber = (text, opts = {}) => {
@@ -1501,6 +1502,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 const positionValue = parseFirstNumber(positionNode.textContent);
                 const estimatedGrowth = parseFirstNumber(estimateNode.textContent, { isPercent: true });
                 const estimateDate = String(estimateNode?.dataset?.estimateDate || '').trim();
+                const estimateReturn = parseFirstNumber(estimateNode?.dataset?.estimateReturn || '');
                 if (positionValue == null || positionValue <= 0) return;
 
                 // 日涨幅节点仅包含涨幅值，净值日期在同一td副文本中；
@@ -1522,9 +1524,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 // 解析日涨幅 (第五列，索引4)
                 const dayGrowthText = String(dayGrowthNode?.textContent || dayGrowthCell?.textContent || '').trim();
                 const dayGrowth = parseFirstNumber(dayGrowthText, { isPercent: true });
+                const dayReturnCell = cells[8];
+                const dayReturnText = String(dayReturnCell?.textContent || '').trim();
+                const dayReturn = dayReturnText.includes('--') ? null : parseFirstNumber(dayReturnText);
 
                 totalValue += positionValue;
-                const fundEstimatedGain = estimatedGrowth == null ? 0 : (positionValue * estimatedGrowth / 100);
                 if (estimatedGrowth != null && /^\d{4}-\d{2}-\d{2}$/.test(estimateDate) && estimateDate === todayDateKey) {
                     freshEstimateFundCount += 1;
                 }
@@ -1532,10 +1536,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     fundCode,
                     positionValue,
                     estimatedGrowth,
+                    estimateReturn,
                     estimateDate,
                     dayGrowth,
                     netValueDate,
-                    fundEstimatedGain,
+                    dayReturn,
                 });
 
                 // 获取板块数据
@@ -1547,10 +1552,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     name: fundName,
                     shares: shares,
                     positionValue: positionValue,
-                    estimatedGain: fundEstimatedGain,
-                    estimatedGainPct: estimatedGrowth,
+                    estimatedGain: 0,
+                    estimatedGainPct: 0,
+                    estimatedGainAvailable: false,
                     actualGain: 0,
                     actualGainPct: 0,
+                    actualGainAvailable: false,
                     sectors: sectors
                 });
             } catch (e) {
@@ -1560,35 +1567,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const totalHeldFundCount = heldFundRowsData.length;
         const actualTargetDateKey = heldFundRowsData
-            .filter(item => Number.isFinite(item.dayGrowth) && /^\d{4}-\d{2}-\d{2}$/.test(item.netValueDate))
+            .filter(item => Number.isFinite(item.dayReturn) && /^\d{4}-\d{2}-\d{2}$/.test(item.netValueDate))
             .map(item => item.netValueDate)
             .sort()
             .slice(-1)[0] || '';
-        let actualUpdatedFundCount = 0;
-
-        for (const rowItem of heldFundRowsData) {
-            estimatedGain += rowItem.fundEstimatedGain;
-            const isActualTargetDate = actualTargetDateKey && rowItem.netValueDate === actualTargetDateKey;
-            if (isActualTargetDate && Number.isFinite(rowItem.dayGrowth)) {
-                const rowActualGain = rowItem.positionValue * rowItem.dayGrowth / 100;
-                actualGain += rowActualGain;
-                settledValue += rowItem.positionValue;
-                actualUpdatedFundCount += 1;
-            }
-        }
-
-        for (const fund of fundDetailsData) {
-            const rowData = heldFundRowsData.find(item => item.fundCode === fund.code);
-            const isActualTargetDate = !!rowData && !!actualTargetDateKey && rowData.netValueDate === actualTargetDateKey;
-            if (isActualTargetDate && Number.isFinite(rowData.dayGrowth)) {
-                fund.actualGain = fund.positionValue * rowData.dayGrowth / 100;
-                fund.actualGainPct = rowData.dayGrowth;
-            } else {
-                fund.actualGain = 0;
-                fund.actualGainPct = 0;
-            }
-        }
-
         const latestEstimatedDateKeyFromRows = heldFundRowsData
             .filter(item => item.estimatedGrowth != null && /^\d{4}-\d{2}-\d{2}$/.test(item.estimateDate))
             .map(item => item.estimateDate)
@@ -1610,17 +1592,63 @@ document.addEventListener('DOMContentLoaded', function() {
         const displayDateKey = shouldKeepPreviousEstimateDate
             ? (previousAvailableDateKey || todayDateKey)
             : todayDateKey;
+        const estimateTargetDateKey = latestEstimatedDateKeyFromRows || '';
         const displayDayLabel = getDayLabelFromDateKey(displayDateKey);
         const actualDisplayDateKey = actualTargetDateKey || displayDateKey;
         const actualDisplayDayLabel = getDayLabelFromDateKey(actualDisplayDateKey);
         applyDailyGainLabels(displayDayLabel, actualDisplayDayLabel);
         updateToolbarEstimateTitle(displayDayLabel, actualDisplayDayLabel);
 
+        let estimatedUpdatedFundCount = 0;
+        let actualUpdatedFundCount = 0;
+
+        for (const rowItem of heldFundRowsData) {
+            const fund = fundDetailsData.find(item => item.code === rowItem.fundCode);
+            const hasTargetEstimate = !!estimateTargetDateKey
+                && rowItem.estimateDate === estimateTargetDateKey
+                && Number.isFinite(rowItem.estimatedGrowth)
+                && Number.isFinite(rowItem.estimateReturn);
+            if (hasTargetEstimate) {
+                const rowEstimatedGain = rowItem.estimateReturn;
+                estimatedGain += rowEstimatedGain;
+                estimatedValue += rowItem.positionValue;
+                estimatedUpdatedFundCount += 1;
+                if (fund) {
+                    fund.estimatedGain = rowEstimatedGain;
+                    fund.estimatedGainPct = rowItem.estimatedGrowth;
+                    fund.estimatedGainAvailable = true;
+                }
+            }
+
+            if (Number.isFinite(rowItem.dayReturn)) {
+                actualGain += rowItem.dayReturn;
+                settledValue += rowItem.positionValue;
+                actualUpdatedFundCount += 1;
+            }
+        }
+
+        for (const fund of fundDetailsData) {
+            const rowData = heldFundRowsData.find(item => item.fundCode === fund.code);
+            if (rowData && Number.isFinite(rowData.dayReturn)) {
+                fund.actualGain = rowData.dayReturn;
+                fund.actualGainPct = fund.positionValue > 0 ? (rowData.dayReturn / fund.positionValue * 100) : 0;
+                fund.actualGainAvailable = true;
+            } else {
+                fund.actualGain = 0;
+                fund.actualGainPct = 0;
+                fund.actualGainAvailable = false;
+            }
+        }
+
         if (totalHeldFundCount <= 0) {
             updateEstimatedGainNote('');
             updateActualGainNote('');
         } else {
-            if (displayDateKey !== todayDateKey) {
+            if (!estimateTargetDateKey) {
+                updateEstimatedGainNote(`预估收益待更新（0/${totalHeldFundCount}）`);
+            } else if (estimatedUpdatedFundCount < totalHeldFundCount) {
+                updateEstimatedGainNote(`预估收益部分更新（${estimatedUpdatedFundCount}/${totalHeldFundCount}），按${getDayLabelFromDateKey(estimateTargetDateKey)}估值统计`);
+            } else if (displayDateKey !== todayDateKey) {
                 updateEstimatedGainNote(`预估按${displayDayLabel}估值日期展示`);
             } else {
                 updateEstimatedGainNote('');
@@ -1645,13 +1673,14 @@ document.addEventListener('DOMContentLoaded', function() {
         window.summaryPanelsHasDetails = fundDetailsData.length > 0;
         applySummaryPanelsVisibility();
         initSummaryPanelsToggleByToolbarEstimate();
-        const estimatedGainPct = totalValue > 0 ? (estimatedGain / totalValue * 100) : 0;
+        const estimatedGainPct = estimatedValue > 0 ? (estimatedGain / estimatedValue * 100) : 0;
         const actualGainPct = settledValue > 0 ? (actualGain / settledValue * 100) : 0;
 
-        if (!shouldFreezeGainRefresh && totalValue > 0 && freshEstimateFundCount > 0) {
+        if (!shouldFreezeGainRefresh && totalValue > 0 && estimatedValue > 0 && freshEstimateFundCount > 0) {
             saveEstimateSnapshot({
                 dateKey: displayDateKey,
                 totalValue,
+                estimatedValue,
                 estimatedGain,
                 estimatedGainPct,
                 actualGain,
@@ -1671,6 +1700,9 @@ document.addEventListener('DOMContentLoaded', function() {
             estimatedGainPct: shouldFreezeGainRefresh && previousSnapshot
                 ? (Number(previousSnapshot.estimatedGainPct) || estimatedGainPct)
                 : estimatedGainPct,
+            estimatedValue: shouldFreezeGainRefresh && previousSnapshot
+                ? (Number(previousSnapshot.estimatedValue) || Number(previousSnapshot.totalValue) || estimatedValue)
+                : estimatedValue,
             actualGain,
             actualGainPct,
             settledValue,
@@ -1691,25 +1723,32 @@ document.addEventListener('DOMContentLoaded', function() {
         const estimatedGainEl = document.getElementById('estimatedGain');
         const estimatedGainPctEl = document.getElementById('estimatedGainPct');
         if (estimatedGainEl && estimatedGainPctEl) {
+            const hasEstimate = displayData.estimatedValue > 0;
             const estGainPct = displayData.estimatedGainPct;
             const estSign = displayData.estimatedGain >= 0 ? '+' : '';
             const estMoneySign = displayData.estimatedGain < 0 ? '-' : '+';
             const sensitiveSpan = estimatedGainEl.querySelector('.sensitive-value');
             if (sensitiveSpan) {
-                sensitiveSpan.className = displayData.estimatedGain >= 0 ? 'sensitive-value positive' : 'sensitive-value negative';
+                sensitiveSpan.className = hasEstimate
+                    ? (displayData.estimatedGain >= 0 ? 'sensitive-value positive' : 'sensitive-value negative')
+                    : 'sensitive-value';
             }
             const realValueSpan = estimatedGainEl.querySelector('.real-value');
             if (realValueSpan) {
-                realValueSpan.textContent = `${estMoneySign}¥${Math.abs(displayData.estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                realValueSpan.textContent = hasEstimate
+                    ? `${estMoneySign}¥${Math.abs(displayData.estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+                    : '--';
             }
-            estimatedGainPctEl.textContent = ` (${estSign}${estGainPct.toFixed(2)}%)`;
-            estimatedGainPctEl.style.color = displayData.estimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
+            estimatedGainPctEl.textContent = hasEstimate ? ` (${estSign}${estGainPct.toFixed(2)}%)` : ' (--)';
+            estimatedGainPctEl.style.color = hasEstimate
+                ? (displayData.estimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)')
+                : 'var(--text-dim)';
         }
 
         const toolbarEstimatedGainEl = document.getElementById('toolbarEstimatedGain');
         const toolbarEstimatedGainPctEl = document.getElementById('toolbarEstimatedGainPct');
         if (toolbarEstimatedGainEl && toolbarEstimatedGainPctEl) {
-            if (displayData.totalValue > 0) {
+            if (displayData.estimatedValue > 0) {
                 const estGainPct = displayData.estimatedGainPct;
                 const estSign = displayData.estimatedGain >= 0 ? '+' : '';
                 const estMoneySign = displayData.estimatedGain < 0 ? '-' : '+';
@@ -1750,9 +1789,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
                 const realValueSpan = actualGainEl.querySelector('.real-value');
                 if (realValueSpan) {
-                    realValueSpan.textContent = '¥0.00';
+                    realValueSpan.textContent = '--';
                 }
-                actualGainPctEl.textContent = ' (+0.00%)';
+                actualGainPctEl.textContent = ' (--)';
                 actualGainPctEl.style.color = 'var(--text-dim)';
             }
         }
@@ -1769,9 +1808,10 @@ document.addEventListener('DOMContentLoaded', function() {
             const tableBody = document.getElementById('fundDetailsTableBody');
             if (tableBody) {
                 tableBody.innerHTML = fundDetailsData.map(fund => {
-                    const hasEstimate = Number.isFinite(fund.estimatedGainPct);
-                    const estColor = fund.estimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
-                    const actColor = fund.actualGain >= 0 ? 'var(--up-color)' : 'var(--down-color)';
+                    const hasEstimate = fund.estimatedGainAvailable === true;
+                    const hasActual = fund.actualGainAvailable === true;
+                    const estColor = hasEstimate ? (fund.estimatedGain >= 0 ? 'var(--up-color)' : 'var(--down-color)') : 'var(--text-dim)';
+                    const actColor = hasActual ? (fund.actualGain >= 0 ? 'var(--up-color)' : 'var(--down-color)') : 'var(--text-dim)';
                     const estSign = fund.estimatedGain >= 0 ? '+' : '';
                     const actSign = fund.actualGain >= 0 ? '+' : '';
                     const estMoneySign = fund.estimatedGain < 0 ? '-' : '+';
@@ -1785,8 +1825,8 @@ document.addEventListener('DOMContentLoaded', function() {
                             <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); font-weight: 600; color: var(--text-main);"><span class="real-value">¥${fund.positionValue.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
                             <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${hasEstimate ? estColor : 'var(--text-dim)'}; font-weight: 500;"><span class="real-value">${hasEstimate ? `${estMoneySign}¥${Math.abs(fund.estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}` : '--'}</span><span class="hidden-value">****</span></td>
                             <td style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${hasEstimate ? estColor : 'var(--text-dim)'}; font-weight: 500;">${hasEstimate ? `${estSign}${fund.estimatedGainPct.toFixed(2)}%` : '--'}</td>
-                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${actColor}; font-weight: 500;"><span class="real-value">${actMoneySign}¥${Math.abs(fund.actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
-                            <td style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${actColor}; font-weight: 500;">${actSign}${fund.actualGainPct.toFixed(2)}%</td>
+                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${actColor}; font-weight: 500;"><span class="real-value">${hasActual ? `${actMoneySign}¥${Math.abs(fund.actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}` : '--'}</span><span class="hidden-value">****</span></td>
+                            <td style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${actColor}; font-weight: 500;">${hasActual ? `${actSign}${fund.actualGainPct.toFixed(2)}%` : '--'}</td>
                         </tr>
                     `;
                 }).join('');
@@ -1816,24 +1856,37 @@ document.addEventListener('DOMContentLoaded', function() {
             // Update estimated gain
             const summaryEstGain = document.getElementById('summaryEstGain');
             if (summaryEstGain) {
-                const estMoneySign = displayData.estimatedGain < 0 ? '-' : '+';
-                summaryEstGain.textContent = `${estMoneySign}¥${Math.abs(displayData.estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                if (displayData.estimatedValue > 0) {
+                    const estMoneySign = displayData.estimatedGain < 0 ? '-' : '+';
+                    summaryEstGain.textContent = `${estMoneySign}¥${Math.abs(displayData.estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                } else {
+                    summaryEstGain.textContent = '--';
+                }
             }
 
             // Update estimated change
             const summaryEstChange = document.getElementById('summaryEstChange');
             if (summaryEstChange) {
-                const estGainPct = displayData.estimatedGainPct;
-                const estSign = displayData.estimatedGain >= 0 ? '+' : '';
-                summaryEstChange.textContent = `${estSign}${estGainPct.toFixed(2)}%`;
-                summaryEstChange.className = 'summary-change ' + (displayData.estimatedGain >= 0 ? 'positive' : 'negative');
+                if (displayData.estimatedValue > 0) {
+                    const estGainPct = displayData.estimatedGainPct;
+                    const estSign = displayData.estimatedGain >= 0 ? '+' : '';
+                    summaryEstChange.textContent = `${estSign}${estGainPct.toFixed(2)}%`;
+                    summaryEstChange.className = 'summary-change ' + (displayData.estimatedGain >= 0 ? 'positive' : 'negative');
+                } else {
+                    summaryEstChange.textContent = '--';
+                    summaryEstChange.className = 'summary-change neutral';
+                }
             }
 
             // Update actual gain
             const summaryActualGain = document.getElementById('summaryActualGain');
             if (summaryActualGain) {
-                const actMoneySign = displayData.actualGain < 0 ? '-' : '+';
-                summaryActualGain.textContent = `${actMoneySign}¥${Math.abs(displayData.actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                if (displayData.settledValue > 0) {
+                    const actMoneySign = displayData.actualGain < 0 ? '-' : '+';
+                    summaryActualGain.textContent = `${actMoneySign}¥${Math.abs(displayData.actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                } else {
+                    summaryActualGain.textContent = '--';
+                }
             }
 
             // Update actual change
@@ -1845,7 +1898,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     summaryActualChange.textContent = `${actSign}${actGainPct.toFixed(2)}%`;
                     summaryActualChange.className = 'summary-change ' + (displayData.actualGain >= 0 ? 'positive' : 'negative');
                 } else {
-                    summaryActualChange.textContent = '0.00%';
+                    summaryActualChange.textContent = '--';
                     summaryActualChange.className = 'summary-change neutral';
                 }
             }
@@ -4054,8 +4107,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const actualGainEl = document.getElementById('actualGain');
         const actualGainText = actualGainEl?.querySelector('.real-value')?.textContent || '¥0.00';
+        const hasActualGain = !actualGainText.includes('--') && !actualGainText.includes('净值');
         const isActNegative = actualGainEl?.querySelector('.sensitive-value')?.classList.contains('negative') ?? false;
-        const actualGain = actualGainText.includes('净值') ? 0 :
+        const actualGain = !hasActualGain ? 0 :
             parseFloat(actualGainText.replace(/[¥,]/g, '')) * (isActNegative ? -1 : 1) || 0;
 
         // 格式化日期
@@ -4077,7 +4131,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const actGainEl = document.getElementById('showoffActualGain');
         const actMoneySign = actualGain < 0 ? '-' : '+';
-        actGainEl.textContent = actualGainText.includes('净值') ? '净值未更新' :
+        actGainEl.textContent = !hasActualGain ? '实际收益未更新' :
             (actMoneySign + '¥' + Math.abs(actualGain).toLocaleString('zh-CN',
             {minimumFractionDigits: 2, maximumFractionDigits: 2}));
         actGainEl.className = 'summary-value ' + (actualGain > 0 ? 'positive' :
@@ -4106,8 +4160,8 @@ document.addEventListener('DOMContentLoaded', function() {
             // 按实际收益降序排序（如果有实际收益），否则按预估收益排序
             const sorted = [...window.fundDetailsData].sort((a, b) => {
                 // 优先使用实际收益
-                const aGain = a.actualGain !== 0 ? a.actualGain : a.estimatedGain;
-                const bGain = b.actualGain !== 0 ? b.actualGain : b.estimatedGain;
+                const aGain = a.actualGainAvailable ? a.actualGain : a.estimatedGain;
+                const bGain = b.actualGainAvailable ? b.actualGain : b.estimatedGain;
                 return bGain - aGain;
             });
             return sorted.slice(0, 3);
@@ -4128,7 +4182,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         container.innerHTML = funds.map((fund, index) => {
             // 优先使用实际收益，如果没有实际收益则使用预估收益
-            const gain = fund.actualGain !== 0 ? fund.actualGain : (fund.estimatedGain || 0);
+            const gain = fund.actualGainAvailable ? fund.actualGain : (fund.estimatedGain || 0);
             const colorClass = gain >= 0 ? 'positive' : 'negative';
 
             return `

@@ -1,5 +1,5 @@
 # -*- coding: UTF-8 -*-
-"""Standalone fund table and position summary builders extracted from LanFund."""
+"""Standalone fund table and position summary builders extracted from MiniFund."""
 
 import datetime
 import re
@@ -12,6 +12,76 @@ from src.services.metrics import (
     parse_growth_percent,
     safe_float,
 )
+
+
+def _parse_date_text(date_text):
+    text = str(date_text or '').strip()
+    if not text:
+        return None
+    try:
+        if re.match(r"^\d{2}-\d{2}$", text):
+            text = f"{datetime.datetime.now().year}-{text}"
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", text):
+            return datetime.datetime.strptime(text, "%Y-%m-%d").date()
+    except Exception:
+        return None
+    return None
+
+
+def _get_prev_trading_nav(lan_fund, fund_code, target_date):
+    if not target_date or not lan_fund.db or not lan_fund.user_id:
+        return None
+    try:
+        from src.trading_calendar import iter_cn_sse_trading_days
+        trading_days = iter_cn_sse_trading_days(target_date - datetime.timedelta(days=7), target_date)
+    except Exception:
+        return None
+    previous_days = [day for day in trading_days if day < target_date]
+    if not previous_days:
+        return None
+    prev_date = previous_days[-1].strftime("%Y-%m-%d")
+    prev_nav = lan_fund.nav_repo.get_fund_nav_by_date(fund_code, prev_date)
+    if prev_nav is not None:
+        return prev_nav
+
+    fetch_history = getattr(lan_fund, '_fetch_history_nav_map_by_date_range', None)
+    if not callable(fetch_history):
+        return None
+
+    fund_data = lan_fund.CACHE_MAP.get(fund_code, {}) if isinstance(lan_fund.CACHE_MAP, dict) else {}
+    fund_key = fund_data.get('fund_key') if isinstance(fund_data, dict) else None
+    if not fund_key:
+        return None
+
+    target_date_text = target_date.strftime("%Y-%m-%d")
+    remote_nav_map = fetch_history(fund_key, prev_date, target_date_text) or {}
+    for nav_date, nav_value in remote_nav_map.items():
+        lan_fund.nav_repo.upsert_fund_nav_history(
+            fund_code, nav_date, nav_value, "history_api_prev_nav_on_table"
+        )
+
+    return lan_fund.nav_repo.get_fund_nav_by_date(fund_code, prev_date)
+
+
+def _split_two_part_display(value):
+    text = str(value or '').strip()
+    if not text:
+        return text, ''
+    if ' ' in text:
+        first, second = text.split(' ', 1)
+        return first.strip(), second.strip()
+    return text, ''
+
+
+def _growth_color(value):
+    growth = parse_growth_percent(value)
+    if growth is None:
+        return "var(--text-main)"
+    if growth < 0:
+        return "var(--down-color)"
+    if growth > 0:
+        return "var(--up-color)"
+    return "var(--text-main)"
 
 
 def build_fund_table(lan_fund):
@@ -87,6 +157,20 @@ def build_fund_table(lan_fund):
         estimate2_time = row[11] if len(row) > 11 else "N/A"
         estimate2_date = row[12] if len(row) > 12 else ""
 
+        consecutive_days_text, consecutive_rate_text = _split_two_part_display(consecutive_info)
+        consecutive_rate_color = _growth_color(consecutive_rate_text)
+        consecutive_cell = (
+            f"{consecutive_days_text}"
+            f"<br><span style='font-size:11px;color:{consecutive_rate_color};font-weight:600;'>{consecutive_rate_text}</span>"
+        ) if consecutive_rate_text else consecutive_days_text
+
+        monthly_days_text, monthly_rate_text = _split_two_part_display(monthly_info)
+        monthly_rate_color = _growth_color(monthly_rate_text)
+        monthly_cell = (
+            f"{monthly_days_text}"
+            f"<br><span style='font-size:11px;color:{monthly_rate_color};font-weight:600;'>{monthly_rate_text}</span>"
+        ) if monthly_rate_text else monthly_days_text
+
         day_growth_val = parse_growth_percent(day_growth)
 
         display_net_value_date = net_value_date
@@ -134,8 +218,21 @@ def build_fund_table(lan_fund):
             diff2 = float(history_estimate2_val) - day_growth_val
             estimate2_diff_str = f" {format_diff_value(diff2)}"
 
+        estimate_growth_val = parse_growth_percent(forecast_growth)
+        estimate_return = None
+        if estimate_growth_val is not None and shares > 0:
+            estimate_target_date = _parse_date_text(estimate_date) or datetime.datetime.now().date()
+            estimate_prev_nav = _get_prev_trading_nav(lan_fund, code, estimate_target_date)
+            if estimate_prev_nav is not None and estimate_prev_nav > 0:
+                estimate_nav = float(estimate_prev_nav) * (1.0 + estimate_growth_val / 100.0)
+                estimate_return = shares * (estimate_nav - float(estimate_prev_nav))
+
+        estimate_return_attr = ""
+        if estimate_return is not None:
+            estimate_return_attr = f" data-estimate-return='{estimate_return:.6f}'"
+
         estimate1_cell = (
-            f"<span class='fund-estimate-cell' data-code='{code}' data-estimate-date='{estimate_date}' "
+            f"<span class='fund-estimate-cell' data-code='{code}' data-estimate-date='{estimate_date}'{estimate_return_attr} "
             f"style='cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看估值曲线'>{forecast_growth}</span>"
             f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{now_time}{estimate1_diff_str}</span>"
         )
@@ -153,45 +250,22 @@ def build_fund_table(lan_fund):
         current_nav = None
         prev_nav = None
         if net_value_date and lan_fund.db and lan_fund.user_id:
-            from src.trading_calendar import iter_cn_sse_trading_days
             today_date = datetime.datetime.now().date()
             today_str = today_date.strftime("%Y-%m-%d")
 
             if net_value_date == today_str:
                 current_nav = net_value_num
-                prev_trading_days = iter_cn_sse_trading_days(today_date - datetime.timedelta(days=7), today_date)
-                if len(prev_trading_days) >= 2:
-                    prev_date = prev_trading_days[-2].strftime("%Y-%m-%d")
-                    prev_nav = lan_fund.nav_repo.get_fund_nav_by_date(code, prev_date)
-                    if prev_nav is None:
-                        prev_nav = lan_fund.nav_repo.get_prev_fund_nav(code, prev_date)
-                    if prev_nav is None:
-                        prev_nav = lan_fund._fetch_prev_nav_from_cloud(code)
+                prev_nav = _get_prev_trading_nav(lan_fund, code, today_date)
             else:
-                try:
-                    if isinstance(net_value_date, str) and re.match(r"^\d{2}-\d{2}$", net_value_date):
-                        net_value_date_obj = datetime.datetime.strptime(f"{datetime.datetime.now().year}-{net_value_date}", "%Y-%m-%d").date()
-                    elif isinstance(net_value_date, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", net_value_date):
-                        net_value_date_obj = datetime.datetime.strptime(net_value_date, "%Y-%m-%d").date()
-                    else:
-                        net_value_date_obj = None
-                except Exception:
-                    net_value_date_obj = None
+                net_value_date_obj = _parse_date_text(net_value_date)
                 if net_value_date_obj:
-                    trading_days = iter_cn_sse_trading_days(net_value_date_obj - datetime.timedelta(days=7), net_value_date_obj)
-                    if len(trading_days) >= 2:
-                        current_nav = net_value_num
-                        prev_date = trading_days[-2].strftime("%Y-%m-%d")
-                        prev_nav = lan_fund.nav_repo.get_fund_nav_by_date(code, prev_date)
-                        if prev_nav is None:
-                            prev_nav = lan_fund.nav_repo.get_prev_fund_nav(code, prev_date)
-                        if prev_nav is None:
-                            prev_nav = lan_fund._fetch_prev_nav_from_cloud(code)
+                    current_nav = net_value_num
+                    prev_nav = _get_prev_trading_nav(lan_fund, code, net_value_date_obj)
 
         if current_nav is not None and prev_nav is not None and shares > 0:
             day_return = shares * (current_nav - prev_nav)
         else:
-            day_return = position_amount * day_growth_val / 100 if day_growth_val is not None else None
+            day_return = None
         day_return_display = format_money_value(day_return) if day_return is not None else "--"
         rows.append([
             star_html,
@@ -200,8 +274,8 @@ def build_fund_table(lan_fund):
             estimate1_cell,
             estimate2_cell,
             daygrowth_cell,
-            consecutive_info,
-            monthly_info,
+            consecutive_cell,
+            monthly_cell,
             day_return_display,
             position_amount_display,
             performance_display

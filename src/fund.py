@@ -45,6 +45,7 @@ from src.market_data import (
     fetch_timing_chart_data,
     fetch_volume_chart_data,
 )
+from src.trading_calendar import iter_cn_sse_trading_days
 
 # 加载环境变量
 load_dotenv()
@@ -88,7 +89,46 @@ def format_table_msg(table, tablefmt="pretty"):
     return tabulate(table, tablefmt=tablefmt, missingval="N/A")
 
 
-class LanFund:
+def normalize_nav_date_for_storage(nav_date_text, today=None):
+    """Normalize NAV date text to YYYY-MM-DD for fund_nav_history keys."""
+    text = str(nav_date_text or "").strip()
+    if not text:
+        return None
+
+    today = today or datetime.date.today()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            return datetime.date.fromisoformat(text).isoformat()
+        if re.fullmatch(r"\d{2}-\d{2}", text):
+            candidate = datetime.date.fromisoformat(f"{today.year}-{text}")
+            if candidate > today + datetime.timedelta(days=7):
+                candidate = datetime.date.fromisoformat(f"{today.year - 1}-{text}")
+            return candidate.isoformat()
+        if re.fullmatch(r"\d{8}", text):
+            return datetime.datetime.strptime(text, "%Y%m%d").date().isoformat()
+    except Exception:
+        return None
+    return None
+
+
+def previous_nav_trading_date(nav_date_text):
+    """Return the trading day immediately before a NAV date."""
+    nav_date = normalize_nav_date_for_storage(nav_date_text)
+    if not nav_date:
+        return None
+    try:
+        nav_date_obj = datetime.date.fromisoformat(nav_date)
+    except Exception:
+        return None
+
+    trading_days = iter_cn_sse_trading_days(nav_date_obj - datetime.timedelta(days=10), nav_date_obj)
+    previous_days = [day for day in trading_days if day < nav_date_obj]
+    if not previous_days:
+        return None
+    return previous_days[-1].isoformat()
+
+
+class MiniFund:
     CACHE_MAP = {}
 
     def __init__(self, user_id=None, db=None, initialize_remote=True):
@@ -269,15 +309,102 @@ class LanFund:
                 logger.warning(f"获取基金【{fund_code}】云端净值失败：响应格式异常")
                 return None
             nav_float = float(net_value[0])
-            nav_date = net_value_date[0]
+            nav_date = normalize_nav_date_for_storage(net_value_date[0])
+            if not nav_date:
+                logger.warning(f"获取基金【{fund_code}】云端净值失败：净值日期异常")
+                return None
             # 落库
-            if self.db and self.user_id:
+            if self.db is not None and self.user_id is not None and self.nav_repo is not None:
                 self.nav_repo.upsert_fund_nav_history(fund_code, nav_date, nav_float, "fund123")
             logger.info(f"云端获取基金【{fund_code}】净值成功: {nav_float}({nav_date})")
             return nav_float
         except Exception as e:
             logger.error(f"云端获取基金【{fund_code}】净值异常: {e}")
             return None
+
+    def _fetch_history_nav_map_by_date_range(self, fund_key, start_date, end_date):
+        """Fetch real NAV history from fund123 for a date range."""
+        result = {}
+        try:
+            start_obj = datetime.date.fromisoformat(str(start_date))
+            end_obj = datetime.date.fromisoformat(str(end_date))
+        except Exception:
+            return result
+        if start_obj > end_obj:
+            return result
+
+        api_url = DATA_SOURCE_URLS.get('fund123_history_net_value_api')
+        if not api_url or not fund_key:
+            return result
+
+        headers = {
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Connection": "keep-alive",
+            "Content-Type": "application/json",
+            "Origin": DATA_SOURCE_URLS['fund123_origin'],
+            "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+            "X-API-Key": "foobar",
+            "accept": "json"
+        }
+        payload = {
+            "productId": fund_key,
+            "startDate": start_obj.strftime("%Y%m%d"),
+            "endDate": end_obj.strftime("%Y%m%d"),
+            "pageNum": 1,
+            "pageSize": 50,
+        }
+
+        try:
+            response = self.session.post(
+                api_url,
+                params={"_csrf": self._csrf},
+                json=payload,
+                headers=headers,
+                timeout=10,
+                verify=False,
+            )
+            response_json = response.json()
+        except Exception as e:
+            logger.warning(f"刷新补齐历史净值请求失败【{fund_key} {start_date}~{end_date}】: {e}")
+            return result
+
+        if not response_json.get("success"):
+            return result
+
+        for item in response_json.get("list", []) or []:
+            nav_date = normalize_nav_date_for_storage(item.get("netValueDate"))
+            if not nav_date:
+                continue
+            try:
+                nav_value = float(item.get("netValue"))
+            except (TypeError, ValueError):
+                continue
+            if nav_value > 0:
+                result[nav_date] = round(nav_value, 4)
+        return result
+
+    def _ensure_recent_nav_history_on_refresh(self, fund_code, fund_key, latest_nav_date):
+        """Refresh missing real NAVs around the latest NAV date."""
+        if self.nav_repo is None:
+            return 0
+
+        latest_date = normalize_nav_date_for_storage(latest_nav_date)
+        prev_date = previous_nav_trading_date(latest_date)
+        if not latest_date or not prev_date:
+            return 0
+
+        latest_exists = self.nav_repo.get_fund_nav_by_date(fund_code, latest_date) is not None
+        prev_exists = self.nav_repo.get_fund_nav_by_date(fund_code, prev_date) is not None
+        if latest_exists and prev_exists:
+            return 0
+
+        nav_map = self._fetch_history_nav_map_by_date_range(fund_key, prev_date, latest_date)
+        wrote = 0
+        for nav_date, nav_value in nav_map.items():
+            if self.nav_repo.upsert_fund_nav_history(fund_code, nav_date, nav_value, "history_api_recent_refresh"):
+                wrote += 1
+        return wrote
 
     def save_cache(self):
         """
@@ -549,8 +676,14 @@ class LanFund:
                 netValue = re.findall(r'"netValue":"(.*?)"', response.text)[0]
                 netValueDate = re.findall(r'"netValueDate":"(.*?)"', response.text)[0]
                 # 先落库净值，再拼装显示字符串
-                if self.db and self.user_id:
-                    self.nav_repo.upsert_fund_nav_history(fund, netValueDate, float(netValue), "fund123")
+                normalized_net_value_date = normalize_nav_date_for_storage(netValueDate)
+                if self.db is not None and self.user_id is not None and self.nav_repo is not None and normalized_net_value_date:
+                    net_value_float = float(netValue)
+                    self.nav_repo.upsert_fund_nav_history(
+                        fund, normalized_net_value_date, net_value_float, "fund123_latest"
+                    )
+                    self._ensure_recent_nav_history_on_refresh(fund, fund_key, normalized_net_value_date)
+                netValueDate = normalized_net_value_date or netValueDate
                 netValue = netValue + f"({netValueDate})"
                 url = DATA_SOURCE_URLS['fund123_curves_api']
                 params = {
@@ -747,14 +880,7 @@ class LanFund:
                     # 合并连涨天数和连涨幅
                     consecutive_info = f"{consecutive_count}天 {consecutive_growth}"
                     # 合并近30天涨跌和总涨幅
-                    if is_return:
-                        rate_color = "var(--down-color)" if "-" in montly_growth_rate else "var(--up-color)"
-                        monthly_info = (
-                            f"<span style='color: var(--up-color) !important; font-weight: 600;'>{montly_growth_day}/{montly_growth_day_count}</span> "
-                            f"<span style='color: {rate_color} !important; font-weight: 600;'>{montly_growth_rate}</span>"
-                        )
-                    else:
-                        monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
+                    monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
                     self.result.append([
                         fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, netValueDate, consecutive_info,
                         monthly_info, estimateDate, estimate2Growth, estimate2Time, estimate2Date
@@ -1048,7 +1174,7 @@ class LanFund:
                     self.ai_analysis(deep_mode=deep_mode, fast_mode=fast_mode)
         finally:
             elapsed = (time.perf_counter() - start) * 1000
-            print(f"[FUNC] LanFund.run total_elapsed_ms={elapsed:.1f}")
+            print(f"[FUNC] MiniFund.run total_elapsed_ms={elapsed:.1f}")
 
     def get_market_info(self, is_return=False):
         return fetch_market_info(self.baidu_session, is_return)
@@ -1076,7 +1202,7 @@ class LanFund:
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='LanFund')
+    parser = argparse.ArgumentParser(description='MiniFund')
     parser.add_argument('-a', '--add', action='store_true', help='添加基金代码')
     parser.add_argument("-d", "--delete", action="store_true", help="删除基金代码")
     parser.add_argument("-c", "--hold", action="store_true", help="添加持有基金标注")
@@ -1092,7 +1218,7 @@ if __name__ == '__main__':
     parser.add_argument("-W", "--with-ai", action="store_true", help="AI分析")
     args = parser.parse_args()
 
-    lan_fund = LanFund()
+    lan_fund = MiniFund()
     # 只有指定了 -o 参数时才传入 report_dir，否则传入 None 表示不保存报告
     report_dir = args.output if args.output is not None else None
     lan_fund.run(args.add, args.delete, args.hold, args.not_hold, report_dir, args.deep, args.fast, args.with_ai,

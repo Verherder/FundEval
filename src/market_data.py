@@ -1,8 +1,8 @@
 # -*- coding: UTF-8 -*-
-"""Standalone market data functions extracted from LanFund.
+"""Standalone market data functions extracted from MiniFund.
 
 Each function takes explicit parameters (session, is_return, etc.) so both
-LanFund (CLI) and MarketService (web) can use them without coupling.
+MiniFund (CLI) and MarketService (web) can use them without coupling.
 """
 
 import datetime

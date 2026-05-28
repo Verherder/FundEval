@@ -23,10 +23,10 @@ _market_service = None
 
 
 def get_lan_fund(user_id=None):
-    """Return per-request LanFund singleton stored on Flask g."""
+    """Return per-request MiniFund singleton stored on Flask g."""
     if not hasattr(g, "_lan_fund"):
         import src.fund as fund
-        g._lan_fund = fund.LanFund(user_id=user_id, db=_db)
+        g._lan_fund = fund.MiniFund(user_id=user_id, db=_db)
     return g._lan_fund
 
 
@@ -52,9 +52,9 @@ def init_dependencies(db):
     _transaction_repo = TransactionRepo(db)
     _nav_repo = NavRepo(db)
 
-    _tx_service = TransactionService(_fund_repo, _transaction_repo, _nav_repo, get_lan_fund)
-    _import_service = ImportService(_fund_repo, _transaction_repo, _nav_repo, get_lan_fund, _tx_service)
     _nav_service = NavService(db, _fund_repo, _nav_repo, get_lan_fund)
+    _tx_service = TransactionService(_fund_repo, _transaction_repo, _nav_repo, get_lan_fund, _nav_service)
+    _import_service = ImportService(_fund_repo, _transaction_repo, _nav_repo, get_lan_fund, _tx_service)
     _chart_service = ChartService(db, _fund_repo, _nav_repo, _transaction_repo, _nav_service, get_lan_fund)
     _fund_service = FundService(db, _fund_repo, _transaction_repo, get_lan_fund, _chart_service)
     _market_service = MarketService(get_lan_fund)

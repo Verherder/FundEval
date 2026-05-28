@@ -418,7 +418,7 @@ class NavService:
         if not api_url:
             return result
 
-        my_fund = fund.LanFund(user_id=user_id, db=self._db)
+        my_fund = fund.MiniFund(user_id=user_id, db=self._db)
 
         headers = {
             "Accept-Language": "zh-CN,zh;q=0.9",
@@ -497,6 +497,43 @@ class NavService:
         )
 
         return result
+
+    def ensure_fund_nav_by_date(self, user_id, fund_code, nav_date, fallback_nav=None, fallback_source='fallback'):
+        """Ensure one fund NAV date exists locally, fetching or seeding it when missing."""
+        target_date = self.parse_iso_date(nav_date)
+        if target_date is None:
+            return None
+
+        target_text = target_date.isoformat()
+        local_nav = safe_float(self._nav_repo.get_fund_nav_by_date(fund_code, target_text), None)
+        if local_nav is not None and local_nav > 0:
+            return round(local_nav, 4)
+
+        if target_date <= nav_backfill_effective_end_date():
+            remote_nav_map = self.fetch_history_nav_map_by_date_range(user_id, fund_code, target_text, target_text)
+            remote_nav = safe_float(remote_nav_map.get(target_text), None) if remote_nav_map else None
+            if remote_nav is not None and remote_nav > 0:
+                remote_nav = round(remote_nav, 4)
+                self._nav_repo.upsert_fund_nav_history(
+                    fund_code,
+                    target_text,
+                    remote_nav,
+                    source='history_api_on_demand',
+                )
+                return remote_nav
+
+        fallback_value = safe_float(fallback_nav, None)
+        if fallback_value is not None and fallback_value > 0:
+            fallback_value = round(fallback_value, 4)
+            self._nav_repo.upsert_fund_nav_history(
+                fund_code,
+                target_text,
+                fallback_value,
+                source=fallback_source,
+            )
+            return fallback_value
+
+        return None
 
     def sync_nav_history_for_curve(self, user_id, fund_code, expected_dates: List[datetime.date]):
         """根据业绩/收益曲线需求补齐本地净值（含新鲜度与缺口段判断）。"""
