@@ -1471,6 +1471,28 @@ document.addEventListener('DOMContentLoaded', function() {
         };
 
         const todayDateKey = formatDateKey(new Date());
+        const getRowEstimateData = (estimateNode, estimate2Node) => {
+            const estimate1 = {
+                growth: parseFirstNumber(estimateNode?.textContent || '', { isPercent: true }),
+                date: String(estimateNode?.dataset?.estimateDate || '').trim(),
+                returnValue: parseFirstNumber(estimateNode?.dataset?.estimateReturn || ''),
+                source: 'estimate1'
+            };
+            if (
+                Number.isFinite(estimate1.growth)
+                && /^\d{4}-\d{2}-\d{2}$/.test(estimate1.date)
+                && Number.isFinite(estimate1.returnValue)
+            ) {
+                return estimate1;
+            }
+
+            return {
+                growth: parseFirstNumber(estimate2Node?.textContent || '', { isPercent: true }),
+                date: String(estimate2Node?.dataset?.estimate2Date || '').trim(),
+                returnValue: parseFirstNumber(estimate2Node?.dataset?.estimate2Return || ''),
+                source: 'estimate2'
+            };
+        };
 
         const heldFundRowsData = [];
         // 存储每个基金的详细涨跌信息
@@ -1497,12 +1519,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 const positionNode = row.querySelector(`.fund-position-amount-cell[data-code="${fundCode}"]`);
                 const estimateNode = row.querySelector(`.fund-estimate-cell[data-code="${fundCode}"]`);
+                const estimate2Node = row.querySelector(`.fund-estimate2-cell[data-code="${fundCode}"]`);
                 if (!positionNode) return;
 
                 const positionValue = parseFirstNumber(positionNode.textContent);
-                const estimatedGrowth = parseFirstNumber(estimateNode.textContent, { isPercent: true });
-                const estimateDate = String(estimateNode?.dataset?.estimateDate || '').trim();
-                const estimateReturn = parseFirstNumber(estimateNode?.dataset?.estimateReturn || '');
+                const estimateData = getRowEstimateData(estimateNode, estimate2Node);
+                const estimatedGrowth = estimateData.growth;
+                const estimateDate = estimateData.date;
+                const estimateReturn = estimateData.returnValue;
+                const estimateSource = estimateData.source;
                 if (positionValue == null || positionValue <= 0) return;
 
                 // 日涨幅节点仅包含涨幅值，净值日期在同一td副文本中；
@@ -1529,7 +1554,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 const dayReturn = dayReturnText.includes('--') ? null : parseFirstNumber(dayReturnText);
 
                 totalValue += positionValue;
-                if (estimatedGrowth != null && /^\d{4}-\d{2}-\d{2}$/.test(estimateDate) && estimateDate === todayDateKey) {
+                if (
+                    Number.isFinite(estimatedGrowth)
+                    && Number.isFinite(estimateReturn)
+                    && /^\d{4}-\d{2}-\d{2}$/.test(estimateDate)
+                    && estimateDate === todayDateKey
+                ) {
                     freshEstimateFundCount += 1;
                 }
                 heldFundRowsData.push({
@@ -1538,6 +1568,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     estimatedGrowth,
                     estimateReturn,
                     estimateDate,
+                    estimateSource,
                     dayGrowth,
                     netValueDate,
                     dayReturn,
@@ -1572,7 +1603,12 @@ document.addEventListener('DOMContentLoaded', function() {
             .sort()
             .slice(-1)[0] || '';
         const latestEstimatedDateKeyFromRows = heldFundRowsData
-            .filter(item => item.estimatedGrowth != null && /^\d{4}-\d{2}-\d{2}$/.test(item.estimateDate))
+            .filter(item => (
+                Number.isFinite(item.estimatedGrowth)
+                && Number.isFinite(item.estimateReturn)
+                && /^\d{4}-\d{2}-\d{2}$/.test(item.estimateDate)
+                && (item.estimateSource !== 'estimate2' || item.estimateDate === todayDateKey)
+            ))
             .map(item => item.estimateDate)
             .sort()
             .slice(-1)[0] || '';
@@ -1604,10 +1640,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
         for (const rowItem of heldFundRowsData) {
             const fund = fundDetailsData.find(item => item.code === rowItem.fundCode);
+            const hasValidEstimate = Number.isFinite(rowItem.estimatedGrowth)
+                && Number.isFinite(rowItem.estimateReturn)
+                && /^\d{4}-\d{2}-\d{2}$/.test(rowItem.estimateDate);
             const hasTargetEstimate = !!estimateTargetDateKey
-                && rowItem.estimateDate === estimateTargetDateKey
-                && Number.isFinite(rowItem.estimatedGrowth)
-                && Number.isFinite(rowItem.estimateReturn);
+                && hasValidEstimate
+                && (
+                    (rowItem.estimateSource === 'estimate2' && rowItem.estimateDate === todayDateKey)
+                    || (rowItem.estimateSource !== 'estimate2' && rowItem.estimateDate === estimateTargetDateKey)
+                );
             if (hasTargetEstimate) {
                 const rowEstimatedGain = rowItem.estimateReturn;
                 estimatedGain += rowEstimatedGain;

@@ -63,6 +63,25 @@ def _get_prev_trading_nav(lan_fund, fund_code, target_date):
     return lan_fund.nav_repo.get_fund_nav_by_date(fund_code, prev_date)
 
 
+def _calc_estimate_return(lan_fund, fund_code, shares, estimate_growth, estimate_date_text):
+    if estimate_growth is None or shares <= 0:
+        return None
+
+    estimate_target_date = _parse_date_text(estimate_date_text) or datetime.datetime.now().date()
+    estimate_prev_nav = _get_prev_trading_nav(lan_fund, fund_code, estimate_target_date)
+    if estimate_prev_nav is None or estimate_prev_nav <= 0:
+        return None
+
+    estimate_nav = float(estimate_prev_nav) * (1.0 + estimate_growth / 100.0)
+    return shares * (estimate_nav - float(estimate_prev_nav))
+
+
+def _calc_estimate_return_from_nav(shares, current_nav, estimate_growth):
+    if estimate_growth is None or shares <= 0 or current_nav <= 0:
+        return None
+    return shares * current_nav * (estimate_growth / 100.0)
+
+
 def _split_two_part_display(value):
     text = str(value or '').strip()
     if not text:
@@ -219,13 +238,18 @@ def build_fund_table(lan_fund):
             estimate2_diff_str = f" {format_diff_value(diff2)}"
 
         estimate_growth_val = parse_growth_percent(forecast_growth)
-        estimate_return = None
-        if estimate_growth_val is not None and shares > 0:
-            estimate_target_date = _parse_date_text(estimate_date) or datetime.datetime.now().date()
-            estimate_prev_nav = _get_prev_trading_nav(lan_fund, code, estimate_target_date)
-            if estimate_prev_nav is not None and estimate_prev_nav > 0:
-                estimate_nav = float(estimate_prev_nav) * (1.0 + estimate_growth_val / 100.0)
-                estimate_return = shares * (estimate_nav - float(estimate_prev_nav))
+        estimate_return = _calc_estimate_return(
+            lan_fund, code, shares, estimate_growth_val, estimate_date
+        )
+        has_summary_estimate1 = (
+            estimate_return is not None
+            and isinstance(estimate_date, str)
+            and re.match(r"^\d{4}-\d{2}-\d{2}$", estimate_date)
+        )
+        estimate2_growth_val = parse_growth_percent(estimate2_growth)
+        estimate2_return = None
+        if not has_summary_estimate1:
+            estimate2_return = _calc_estimate_return_from_nav(shares, net_value_num, estimate2_growth_val)
 
         estimate_return_attr = ""
         if estimate_return is not None:
@@ -236,8 +260,12 @@ def build_fund_table(lan_fund):
             f"style='cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' title='点击查看估值曲线'>{forecast_growth}</span>"
             f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{now_time}{estimate1_diff_str}</span>"
         )
+        estimate2_return_attr = ""
+        if estimate2_return is not None:
+            estimate2_return_attr = f" data-estimate2-return='{estimate2_return:.6f}'"
+
         estimate2_cell = (
-            f"<span class='fund-estimate2-cell' data-code='{code}' data-estimate2-date='{estimate2_date}' "
+            f"<span class='fund-estimate2-cell' data-code='{code}' data-estimate2-date='{estimate2_date}'{estimate2_return_attr} "
             f"style='font-weight:500;'>{estimate2_growth}</span>"
             f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{estimate2_time}{estimate2_diff_str}</span>"
         )

@@ -37,6 +37,27 @@ def test_estimated_return_uses_prev_nav_and_does_not_store_estimated_nav():
     fund_obj.nav_repo.upsert_fund_nav_history.assert_not_called()
 
 
+def test_estimated_return_falls_back_to_estimate2_when_estimate1_missing():
+    fund_obj = _FakeMiniFund(forecast_growth="N/A", estimate2_growth="2.00%")
+    fund_obj.nav_repo.get_fund_nav_by_date.return_value = 1.1
+
+    _titles, rows, _sortable = build_fund_table(fund_obj)
+
+    assert "data-estimate-return=" not in rows[0][3]
+    assert "data-estimate2-return='2.400000'" in rows[0][4]
+
+
+def test_estimate2_return_uses_current_nav_for_overseas_fund_update_time():
+    fund_obj = _FakeMiniFund(forecast_growth="N/A", estimate2_growth="2.00%", estimate2_date="2024-01-06")
+    fund_obj.nav_repo.get_fund_nav_by_date.return_value = None
+    fund_obj.nav_repo.get_prev_fund_nav.return_value = 1.1
+
+    _titles, rows, _sortable = build_fund_table(fund_obj)
+
+    assert "data-estimate2-return='2.400000'" in rows[0][4]
+    fund_obj.nav_repo.get_prev_fund_nav.assert_not_called()
+
+
 def test_daily_return_does_not_use_latest_nav_as_missing_prev_nav():
     fund_obj = _FakeMiniFund()
     fund_obj.nav_repo.get_fund_nav_by_date.return_value = None
@@ -49,8 +70,10 @@ def test_daily_return_does_not_use_latest_nav_as_missing_prev_nav():
 
 
 class _FakeMiniFund:
-    def __init__(self, forecast_growth="0.00%"):
+    def __init__(self, forecast_growth="0.00%", estimate2_growth="0.00%", estimate2_date="2024-01-03"):
         self.forecast_growth = forecast_growth
+        self.estimate2_growth = estimate2_growth
+        self.estimate2_date = estimate2_date
         self.CACHE_MAP = {
             "000001": {
                 "fund_name": "测试基金",
@@ -79,15 +102,15 @@ class _FakeMiniFund:
             "1天 1.00%",
             "1/1 1.00%",
             "2024-01-03",
-            "0.00%",
+            self.estimate2_growth,
             "15:00",
-            "2024-01-03",
+            self.estimate2_date,
         ]]
 
 
 def test_missing_prev_nav_is_backfilled_from_history_api_for_estimated_return():
     fund_obj = _FakeMiniFund(forecast_growth="2.00%")
-    fund_obj.nav_repo.get_fund_nav_by_date.side_effect = [None, 1.1, 1.1]
+    fund_obj.nav_repo.get_fund_nav_by_date.side_effect = [None, 1.1, 1.1, 1.1]
     fund_obj._fetch_history_nav_map_by_date_range.return_value = {"2024-01-02": 1.1}
 
     _titles, rows, _sortable = build_fund_table(fund_obj)
