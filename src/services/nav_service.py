@@ -118,7 +118,18 @@ class NavService:
 
             my_fund = self._get_lan_fund(user_id=user_id)
             api_url = api_tpl.format(fund=fund_code)
-            response = my_fund.session.get(api_url, timeout=10, verify=False)
+            response = my_fund._request_with_retries(
+                "GET",
+                api_url,
+                headers={
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Connection": "close",
+                    "Referer": fund.DATA_SOURCE_URLS['fund123_fund_page'],
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+                    "accept": "application/json,text/plain,*/*",
+                },
+                verify=False,
+            )
 
             date_text = None
             try:
@@ -422,7 +433,7 @@ class NavService:
 
         headers = {
             "Accept-Language": "zh-CN,zh;q=0.9",
-            "Connection": "keep-alive",
+            "Connection": "close",
             "Content-Type": "application/json",
             "Origin": fund.DATA_SOURCE_URLS['fund123_origin'],
             "Referer": fund.DATA_SOURCE_URLS['fund123_fund_page'],
@@ -453,12 +464,12 @@ class NavService:
                     "pageSize": page_size,
                 }
                 try:
-                    response = my_fund.session.post(
+                    response = my_fund._request_with_retries(
+                        "POST",
                         api_url,
                         params={"_csrf": my_fund._csrf},
                         json=payload,
                         headers=headers,
-                        timeout=10,
                         verify=False,
                     )
                     response_json = response.json()

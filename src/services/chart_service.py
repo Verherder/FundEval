@@ -309,13 +309,12 @@ class ChartService:
         fund_name = fund_data['fund_name']
 
         my_fund = self._get_lan_fund(user_id=user_id)
-        session = my_fund.session
         csrf = my_fund._csrf
         DATA_SOURCE_URLS = get_data_source_urls()
 
         headers = {
             "Accept-Language": "zh-CN,zh;q=0.9",
-            "Connection": "keep-alive",
+            "Connection": "close",
             "Content-Type": "application/json",
             "Origin": DATA_SOURCE_URLS['fund123_origin'],
             "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
@@ -339,12 +338,12 @@ class ChartService:
 
         chart_data = {'labels': [], 'growth': [], 'net_values': []}
         try:
-            response = session.post(
+            response = my_fund._request_with_retries(
+                "POST",
                 url,
                 headers=headers,
                 params=params,
                 json=data,
-                timeout=10,
                 verify=False,
             )
             if response.json()["success"]:

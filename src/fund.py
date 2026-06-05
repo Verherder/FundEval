@@ -63,6 +63,9 @@ PERFORMANCE_CHART_INTERVALS = {
 }
 
 sem = threading.Semaphore(5)
+FUND123_REQUEST_TIMEOUT = (5, 20)
+FUND123_REQUEST_RETRIES = 3
+FUND123_RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 
 urllib3.disable_warnings()
 try:
@@ -172,6 +175,35 @@ class MiniFund:
             except Exception as e:
                 logger.error(f"初始化失败(网络或接口问题，不影响登录等基础功能): {e}")
 
+    def _request_with_retries(self, method, url, *, retries=FUND123_REQUEST_RETRIES, **kwargs):
+        """Run a fund123-style request with bounded retry/backoff for flaky upstream connections."""
+        timeout = kwargs.pop("timeout", FUND123_REQUEST_TIMEOUT)
+        last_response = None
+        last_error = None
+
+        for attempt in range(1, retries + 1):
+            try:
+                response = self.session.request(method, url, timeout=timeout, **kwargs)
+                if response.status_code not in FUND123_RETRY_STATUS_CODES:
+                    return response
+
+                last_response = response
+                logger.warning(
+                    f"请求 {url} 返回 {response.status_code}，准备重试 "
+                    f"({attempt}/{retries})"
+                )
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                logger.warning(f"请求 {url} 失败，准备重试 ({attempt}/{retries}): {e}")
+
+            if attempt < retries:
+                time.sleep((0.6 * (2 ** (attempt - 1))) + random.uniform(0, 0.25))
+
+        if last_response is not None:
+            last_response.raise_for_status()
+            return last_response
+        raise last_error
+
     def load_cache(self):
         """加载缓存数据，优先数据库；数据库为空时从 fund_map.json 迁移。"""
         if self.user_id is not None and self.db is not None:
@@ -224,16 +256,16 @@ class MiniFund:
                 return None
 
             url = api_tpl.format(fund=fund_code)
-            response = self.session.get(
+            response = self._request_with_retries(
+                "GET",
                 url,
                 headers={
                     "Accept-Language": "zh-CN,zh;q=0.9",
-                    "Connection": "keep-alive",
+                    "Connection": "close",
                     "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
                     "accept": "application/json,text/plain,*/*"
                 },
-                timeout=10,
                 verify=False,
             )
 
@@ -290,17 +322,18 @@ class MiniFund:
         """
         try:
             url = DATA_SOURCE_URLS['fund123_matiaria_tpl'].format(fund=fund_code)
-            response = self.session.get(
+            response = self._request_with_retries(
+                "GET",
                 url,
                 headers={
                     "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Connection": "close",
                     "Origin": DATA_SOURCE_URLS['fund123_origin'],
                     "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
                     "X-API-Key": "foobar",
                     "accept": "json"
                 },
-                timeout=10,
                 verify=False,
             )
             net_value = re.findall(r'"netValue":"(.*?)"', response.text)
@@ -339,7 +372,7 @@ class MiniFund:
 
         headers = {
             "Accept-Language": "zh-CN,zh;q=0.9",
-            "Connection": "keep-alive",
+            "Connection": "close",
             "Content-Type": "application/json",
             "Origin": DATA_SOURCE_URLS['fund123_origin'],
             "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
@@ -356,12 +389,12 @@ class MiniFund:
         }
 
         try:
-            response = self.session.post(
+            response = self._request_with_retries(
+                "POST",
                 api_url,
                 params={"_csrf": self._csrf},
                 json=payload,
                 headers=headers,
-                timeout=10,
                 verify=False,
             )
             response_json = response.json()
@@ -425,16 +458,16 @@ class MiniFund:
         """
         # fund123: 获取 csrf
         try:
-            res = self.session.get(
+            res = self._request_with_retries(
+                "GET",
                 DATA_SOURCE_URLS['fund123_fund_page'],
                 headers={
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
                     "Accept-Language": "zh-CN,zh;q=0.9",
-                    "Connection": "keep-alive",
+                    "Connection": "close",
                     "Upgrade-Insecure-Requests": "1",
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
                 },
-                timeout=10,
                 verify=False,
             )
             csrf_matches = re.findall('\"csrf\":\"(.*?)\"', res.text)
@@ -456,7 +489,7 @@ class MiniFund:
             try:
                 headers = {
                     "Accept-Language": "zh-CN,zh;q=0.9",
-                    "Connection": "keep-alive",
+                    "Connection": "close",
                     "Content-Type": "application/json",
                     "Origin": DATA_SOURCE_URLS['fund123_origin'],
                     "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
@@ -471,12 +504,12 @@ class MiniFund:
                 data = {
                     "fundCode": code
                 }
-                response = self.session.post(
+                response = self._request_with_retries(
+                    "POST",
                     url,
                     headers=headers,
                     params=params,
                     json=data,
-                    timeout=10,
                     verify=False,
                 )
                 if response.json()["success"]:
@@ -652,7 +685,7 @@ class MiniFund:
 
                 headers = {
                     "Accept-Language": "zh-CN,zh;q=0.9",
-                    "Connection": "keep-alive",
+                    "Connection": "close",
                     "Content-Type": "application/json",
                     "Origin": DATA_SOURCE_URLS['fund123_origin'],
                     "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
@@ -664,17 +697,24 @@ class MiniFund:
                 # 这里直接从响应文本中提取 netValue / netValueDate，供基金列表、持仓金额、
                 # 以及 fund_server._get_latest_fund_quote() 复用。
                 url = DATA_SOURCE_URLS['fund123_matiaria_tpl'].format(fund=fund)
-                response = self.session.get(
+                response = self._request_with_retries(
+                    "GET",
                     url,
                     headers=headers,
-                    timeout=10,
                     verify=False,
                 )
-                dayOfGrowth = re.findall(r'"dayOfGrowth":"(.*?)"', response.text)[0]
+                day_growth_match = re.findall(r'"dayOfGrowth":"(.*?)"', response.text)
+                net_value_match = re.findall(r'"netValue":"(.*?)"', response.text)
+                net_value_date_match = re.findall(r'"netValueDate":"(.*?)"', response.text)
+                if not day_growth_match or not net_value_match or not net_value_date_match:
+                    logger.warning(f"查询基金代码【{fund}】详情响应格式异常，跳过该基金")
+                    return
+
+                dayOfGrowth = day_growth_match[0]
                 dayOfGrowth = str(round(float(dayOfGrowth), 2)) + "%"
 
-                netValue = re.findall(r'"netValue":"(.*?)"', response.text)[0]
-                netValueDate = re.findall(r'"netValueDate":"(.*?)"', response.text)[0]
+                netValue = net_value_match[0]
+                netValueDate = net_value_date_match[0]
                 # 先落库净值，再拼装显示字符串
                 normalized_net_value_date = normalize_nav_date_for_storage(netValueDate)
                 if self.db is not None and self.user_id is not None and self.nav_repo is not None and normalized_net_value_date:
@@ -693,19 +733,20 @@ class MiniFund:
                     "productId": fund_key,
                     "dateInterval": "ONE_MONTH"
                 }
-                response = self.session.post(
+                response = self._request_with_retries(
+                    "POST",
                     url,
                     headers=headers,
                     params=params,
                     json=data,
-                    timeout=10,
                     verify=False,
                 )
-                if not response.json()["success"]:
+                curves_json = response.json()
+                if not curves_json.get("success"):
                     logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
                     return
-                points = response.json()["points"]
-                points = [x for x in points if x["type"] == "fund"]
+                points = curves_json.get("points", [])
+                points = [x for x in points if x.get("type") == "fund"]
 
                 montly_growth = []
                 last_rate = None
@@ -721,42 +762,49 @@ class MiniFund:
                     last_rate = now_rate
 
                 montly_growth = montly_growth[::-1]
-                montly_growth_day = sum(1 for x in montly_growth if x[0] == "涨")
-                montly_growth_day_count = len(montly_growth)
-                consecutive_count = 1
-                start_rate = montly_growth[0].split(",")[1]
-                montly_growth_rate = str(round(round(float(start_rate), 4) * 100, 2)) + "%"
-                end_rate = 0
-                for i in montly_growth[1:]:
-                    if i[0] == montly_growth[0][0]:
-                        consecutive_count += 1
-                    else:
-                        end_rate = i.split(",")[1]
-                        break
+                if montly_growth:
+                    montly_growth_day = sum(1 for x in montly_growth if x[0] == "涨")
+                    montly_growth_day_count = len(montly_growth)
+                    consecutive_count = 1
+                    start_rate = montly_growth[0].split(",")[1]
+                    montly_growth_rate = str(round(round(float(start_rate), 4) * 100, 2)) + "%"
+                    end_rate = 0
+                    for i in montly_growth[1:]:
+                        if i[0] == montly_growth[0][0]:
+                            consecutive_count += 1
+                        else:
+                            end_rate = i.split(",")[1]
+                            break
 
-                montly_growth_day = str(montly_growth_day)
-                if "-" in montly_growth_rate:
-                    if not is_return:
-                        montly_growth_day = "\033[1;32m" + montly_growth_day
-                else:
-                    if not is_return:
-                        montly_growth_day = "\033[1;31m" + montly_growth_day
+                    montly_growth_day = str(montly_growth_day)
+                    if "-" in montly_growth_rate:
+                        if not is_return:
+                            montly_growth_day = "\033[1;32m" + montly_growth_day
+                    else:
+                        if not is_return:
+                            montly_growth_day = "\033[1;31m" + montly_growth_day
 
-                consecutive_growth = str(round(round(float(start_rate) - float(end_rate), 4) * 100, 2)) + "%"
-                if montly_growth[0][0] == "跌":
-                    if not is_return:
-                        consecutive_count = "\033[1;32m" + str(-consecutive_count)
-                        consecutive_growth = "\033[1;32m" + str(consecutive_growth)
+                    consecutive_growth = str(round(round(float(start_rate) - float(end_rate), 4) * 100, 2)) + "%"
+                    if montly_growth[0][0] == "跌":
+                        if not is_return:
+                            consecutive_count = "\033[1;32m" + str(-consecutive_count)
+                            consecutive_growth = "\033[1;32m" + str(consecutive_growth)
+                        else:
+                            consecutive_count = str(-consecutive_count)
+                            consecutive_growth = str(consecutive_growth)
                     else:
-                        consecutive_count = str(-consecutive_count)
-                        consecutive_growth = str(consecutive_growth)
+                        if not is_return:
+                            consecutive_count = "\033[1;31m" + str(consecutive_count)
+                            consecutive_growth = "\033[1;31m" + str(consecutive_growth)
+                        else:
+                            consecutive_count = str(consecutive_count)
+                            consecutive_growth = str(consecutive_growth)
                 else:
-                    if not is_return:
-                        consecutive_count = "\033[1;31m" + str(consecutive_count)
-                        consecutive_growth = "\033[1;31m" + str(consecutive_growth)
-                    else:
-                        consecutive_count = str(consecutive_count)
-                        consecutive_growth = str(consecutive_growth)
+                    montly_growth_day = "N/A"
+                    montly_growth_day_count = 0
+                    montly_growth_rate = "N/A"
+                    consecutive_count = "N/A"
+                    consecutive_growth = "N/A"
 
                 url = DATA_SOURCE_URLS['fund123_intraday_api']
                 params = {
@@ -772,22 +820,28 @@ class MiniFund:
                     "format": True,
                     "source": "WEALTHBFFWEB"
                 }
-                response = self.session.post(
-                    url,
-                    headers=headers,
-                    params=params,
-                    json=data,
-                    timeout=10,
-                    verify=False,
-                )
+                intraday_json = {"success": False, "list": []}
+                try:
+                    response = self._request_with_retries(
+                        "POST",
+                        url,
+                        headers=headers,
+                        params=params,
+                        json=data,
+                        verify=False,
+                    )
+                    intraday_json = response.json()
+                except Exception as e:
+                    logger.warning(f"查询基金代码【{fund}】实时估值失败，使用 N/A: {e}")
+
                 estimate2Growth = "N/A"
                 estimate2Time = "N/A"
                 estimate2Date = ""
                 try:
                     fundgz_url = DATA_SOURCE_URLS['fundgz_js_tpl'].format(fund=fund)
-                    fundgz_resp = self.session.get(
+                    fundgz_resp = self._request_with_retries(
+                        "GET",
                         fundgz_url,
-                        timeout=10,
                         verify=False,
                     )
                     payload_match = re.search(r"jsonpgz\((.*)\);?\s*$", fundgz_resp.text.strip())
@@ -820,13 +874,13 @@ class MiniFund:
                 except Exception:
                     pass
 
-                if response.json()["success"]:
-                    if not response.json()["list"]:
+                if intraday_json.get("success"):
+                    if not intraday_json.get("list"):
                         now_time = "N/A"
                         forecastGrowth = "N/A"
                         estimateDate = ""
                     else:
-                        fund_info = response.json()["list"][-1]
+                        fund_info = intraday_json["list"][-1]
                         quote_dt = datetime.datetime.fromtimestamp(fund_info["time"] / 1000)
                         now_time = quote_dt.strftime("%H:%M")
                         estimateDate = quote_dt.strftime("%Y-%m-%d")
@@ -886,7 +940,29 @@ class MiniFund:
                         monthly_info, estimateDate, estimate2Growth, estimate2Time, estimate2Date
                     ])
                 else:
-                    logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
+                    now_time = "N/A"
+                    forecastGrowth = "N/A"
+                    estimateDate = ""
+                    if not is_return:
+                        if "-" in dayOfGrowth:
+                            dayOfGrowth = "\033[1;32m" + dayOfGrowth
+                        else:
+                            dayOfGrowth = "\033[1;31m" + dayOfGrowth
+                    if self.CACHE_MAP[fund].get("is_hold", False):
+                        fund_name = "⭐ " + fund_name
+                    sectors = self.CACHE_MAP[fund].get("sectors", [])
+                    if sectors:
+                        sector_display = ", ".join(sectors)
+                        if is_return:
+                            fund_name = f"{fund_name} <span style='color: #8b949e; font-size: 12px;'>🏷️ {sector_display}</span>"
+                        else:
+                            fund_name = f"({sector_display}) {fund_name}"
+                    consecutive_info = f"{consecutive_count}天 {consecutive_growth}"
+                    monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
+                    self.result.append([
+                        fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, netValueDate, consecutive_info,
+                        monthly_info, estimateDate, estimate2Growth, estimate2Time, estimate2Date
+                    ])
             except Exception as e:
                 logger.error(f"查询基金代码【{fund}】失败: {e}")
 
@@ -974,14 +1050,14 @@ class MiniFund:
                             f"{detail['shares']:,.2f}",
                             f"¥{detail['position_value']:,.2f}",
                             f"{est_color}{est_sign}¥{detail['estimated_gain']:,.2f}\033[0m",
-                            f"{est_color}{est_sign}{detail['estimated_gain_pct']:.2f}%\033[0m",
                             f"{act_color}{act_sign}¥{detail['actual_gain']:,.2f}\033[0m",
+                            f"{est_color}{est_sign}{detail['estimated_gain_pct']:.2f}%\033[0m",
                             f"{act_color}{act_sign}{detail['actual_gain_pct']:.2f}%\033[0m",
                         ])
 
                     for line_msg in format_table_msg([
-                        ["基金代码", "基金名称", "持仓份额", "持仓市值", "预估收益", "预估涨跌", "实际收益",
-                        "实际涨跌"],
+                        ["基金代码", "基金名称", "持仓份额", "持仓市值", "预估收益", "实际收益", "预估涨跌",
+                         "实际涨跌"],
                         *table_data
                     ]).split("\n"):
                         logger.info(line_msg)

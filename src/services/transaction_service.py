@@ -119,7 +119,7 @@ class TransactionService:
 
         headers = {
             "Accept-Language": "zh-CN,zh;q=0.9",
-            "Connection": "keep-alive",
+            "Connection": "close",
             "Content-Type": "application/json",
             "Origin": fund.DATA_SOURCE_URLS['fund123_origin'],
             "Referer": fund.DATA_SOURCE_URLS['fund123_fund_page'],
@@ -137,12 +137,12 @@ class TransactionService:
         }
 
         try:
-            response = my_fund.session.post(
+            response = my_fund._request_with_retries(
+                "POST",
                 api_url,
                 params={"_csrf": my_fund._csrf},
                 json=payload,
                 headers=headers,
-                timeout=10,
                 verify=False,
             )
             response_json = response.json()
