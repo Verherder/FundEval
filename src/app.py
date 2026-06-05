@@ -209,7 +209,7 @@ class FilteredWSGIRequestLogger:
         return self.app(environ, start_response)
 
 
-def create_app():
+def create_app(db=None):
     """Create and configure the Flask application."""
     _setup_logging()
     _setup_environment()
@@ -221,7 +221,8 @@ def create_app():
     _server_cfg = get_server_config()
     app.secret_key = _server_cfg.get("secret_key", "luobobo")
 
-    db = Database()
+    if db is None:
+        db = Database()
     init_dependencies(db)
 
     from src.blueprints.auth_bp import auth_bp

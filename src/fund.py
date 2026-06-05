@@ -35,15 +35,8 @@ from src.repositories.fund_repo import FundRepo
 from src.repositories.nav_repo import NavRepo
 from src.config.yaml_config import get_data_source_urls
 from src.market_data import (
-    fetch_A,
     fetch_bk,
-    fetch_kx,
-    fetch_market_chart_data,
-    fetch_market_info,
     fetch_select_fund,
-    fetch_seven_A,
-    fetch_timing_chart_data,
-    fetch_volume_chart_data,
 )
 from src.trading_calendar import iter_cn_sse_trading_days
 
@@ -142,24 +135,6 @@ class MiniFund:
 
         # 普通 HTTP 会话使用requests（fund123）
         self.session = requests.Session()
-        # 百度行情等使用 curl_cffi，会抛 CurlError/Timeout，需要全局容错
-        # self.baidu_session = curl_requests.Session(impersonate="chrome")
-        self.baidu_session = requests.Session()
-        self.baidu_session.headers = {
-            "accept": "application/vnd.finance-web.v1+json",
-            "accept-language": "zh-CN,zh;q=0.9",
-            "acs-token": "1769925606098_1770001866425_B6lkFxZg0PzQhmCXjMfTJUxYBn+en+J7W6a8XGyGMqfxPfIv2RgeZG8wimRzlhAxlZlErxq7wN5rVnCfPj6s/UNiA1a1hfyItpnMrru1lzDxUcicsi2ngKjmVCdUfqRZTcHPnfDWrt4phJcS7Ue+Sh6Ru/GVG+1McDUmf/d52zDv5Q6QM7CAJfHDqsCMP65SNjo63Xljm+aAIzDzKErfG+LOR706MJaZGY2o/hGcESyOy3FcWv+pYNFUjpV3M5sMFNEDa50fWh4J9PZpQDxDQLNhr9LSYunQUxe6wtNEGds85p9V6/yU6v+jA9q0h9/OyQJ/ZuD1lP0VPEACEc4qJvfItxhuK9MfKM+j6Spc/N6Qomh6pZYt6iLJjJp652xIqZurCmxem2Z3Vqu+mcZ9FN1l0qU6dx4hkaTZk3850FE/n6YW+HL74Mp8L+YR/Q2VMV3ARkSzPHgOS9iA6rBAaBiJf2Ni/BTHNSyFxJJjazI=",
-            "origin": DATA_SOURCE_URLS['gushitong_origin'],
-            "priority": "u=1, i",
-            "referer": DATA_SOURCE_URLS['gushitong_referer'],
-            "sec-ch-ua": "\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"",
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": "\"Windows\"",
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-site",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
-        }
         self._csrf = ""
         self.report_dir = None  # 默认不输出报告文件（需通过 -o 参数指定）
         self.result = []
@@ -1240,11 +1215,7 @@ class MiniFund:
                 self.add_code(codes)
                 logger.success("添加基金代码成功")
             else:
-                self.kx()
                 self.bk()
-                self.seven_A()
-                self.A()
-                self.get_market_info()
                 self.search_code()
                 if with_ai:
                     self.ai_analysis(deep_mode=deep_mode, fast_mode=fast_mode)
@@ -1252,29 +1223,8 @@ class MiniFund:
             elapsed = (time.perf_counter() - start) * 1000
             print(f"[FUNC] MiniFund.run total_elapsed_ms={elapsed:.1f}")
 
-    def get_market_info(self, is_return=False):
-        return fetch_market_info(self.baidu_session, is_return)
-
-    def get_market_chart_data(self):
-        return fetch_market_chart_data(self.baidu_session)
-
-    def get_volume_chart_data(self):
-        return fetch_volume_chart_data(self.baidu_session)
-
-    def get_timing_chart_data(self):
-        return fetch_timing_chart_data(self.baidu_session)
-
     def bk(self, is_return=False):
         return fetch_bk(is_return)
-
-    def kx(self, is_return=False, count=10):
-        return fetch_kx(self.baidu_session, is_return, count)
-
-    def A(self, is_return=False):
-        return fetch_A(self.baidu_session, is_return)
-
-    def seven_A(self, is_return=False):
-        return fetch_seven_A(self.baidu_session, is_return)
 
 
 if __name__ == '__main__':

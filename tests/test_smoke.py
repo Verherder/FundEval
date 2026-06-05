@@ -15,25 +15,25 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def test_db(monkeypatch):
-    """Replace fund_server.db with an in-memory Database for every test.
+    """Create an in-memory Database for every test.
 
     Runs automatically (autouse=True) so no @pytest.mark.usefixtures needed.
     """
-    import fund_server
     from src.database import Database
 
     db = Database(":memory:")
-    monkeypatch.setattr(fund_server, "db", db)
     return db
 
 
 @pytest.fixture
-def client():
+def client(test_db):
     """Flask test client."""
-    import fund_server
-    fund_server.app.config["TESTING"] = True
-    fund_server.app.config["SECRET_KEY"] = "test-smoke-key"
-    return fund_server.app.test_client()
+    from src.app import create_app
+
+    app = create_app(db=test_db)
+    app.config["TESTING"] = True
+    app.config["SECRET_KEY"] = "test-smoke-key"
+    return app.test_client()
 
 
 @pytest.fixture

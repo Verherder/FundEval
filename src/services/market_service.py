@@ -1,18 +1,11 @@
 # -*- coding: UTF-8 -*-
-"""Market service — market indices, sectors, news, and chart data."""
+"""Market service — sectors, sector funds, and fund table data."""
 
 import requests
 
 from src.market_data import (
-    fetch_A,
     fetch_bk,
-    fetch_kx,
-    fetch_market_chart_data,
-    fetch_market_info,
     fetch_select_fund,
-    fetch_seven_A,
-    fetch_timing_chart_data,
-    fetch_volume_chart_data,
 )
 
 
@@ -26,27 +19,12 @@ class MarketService:
     def __init__(self, get_lan_fund_fn):
         self._get_lan_fund = get_lan_fund_fn
 
-    def _baidu_session(self, user_id):
-        return self._get_lan_fund(user_id=user_id).baidu_session
-
     # ------------------------------------------------------------------
     # Tab data
     # ------------------------------------------------------------------
 
-    def get_kx_news_raw(self, user_id):
-        return fetch_kx(self._baidu_session(user_id), is_return=True)
-
-    def get_market_info_raw(self, user_id):
-        return fetch_market_info(self._baidu_session(user_id), is_return=True)
-
     def get_bk_data_raw(self, user_id=None):
         return fetch_bk(is_return=True)
-
-    def get_seven_a_data_raw(self, user_id):
-        return fetch_seven_A(self._baidu_session(user_id), is_return=True)
-
-    def get_a_share_data_raw(self, user_id):
-        return fetch_A(self._baidu_session(user_id), is_return=True)
 
     def build_fund_table(self, user_id):
         """Return (titles, rows, sortable_columns) for fund table."""
@@ -59,16 +37,6 @@ class MarketService:
         from src.data.sectors import MAJOR_CATEGORIES
 
         return MAJOR_CATEGORIES
-
-    # ------------------------------------------------------------------
-    # Chart data
-    # ------------------------------------------------------------------
-
-    def get_timing_chart_data(self, user_id):
-        return fetch_timing_chart_data(self._baidu_session(user_id))
-
-    def get_volume_chart_data(self, user_id):
-        return fetch_volume_chart_data(self._baidu_session(user_id))
 
     # ------------------------------------------------------------------
     # External API data

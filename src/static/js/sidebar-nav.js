@@ -21,12 +21,8 @@ class SidebarNavigation {
 
     // Mapping from section ID to actual DOM element ID
     this.sectionIdMap = {
-      'news': 'kx',
-      'indices': 'marker',
       'gold-realtime': 'real_time_gold',
       'gold-history': 'gold',
-      'volume': 'seven_A',
-      'timing': 'A',
       'funds': 'fund',  // Special case - uses holdingsSection and watchlistSection
       'sectors': 'bk',
       'query': 'select_fund'
@@ -77,12 +73,8 @@ class SidebarNavigation {
 
     // Update section title
     const titles = {
-      'news': '7*24快讯',
-      'indices': '全球指数',
       'gold-realtime': '实时贵金属',
       'gold-history': '历史金价',
-      'volume': '成交量趋势',
-      'timing': '上证分时',
       'funds': '自选基金',
       'sectors': '行业板块',
       'query': '板块基金查询'

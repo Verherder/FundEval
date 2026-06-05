@@ -3447,12 +3447,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     // 只更新数据，不重新加载页面
                     await fetchSectorsData();
                     break;
-                case '/market-indices':
-                    await fetchMarketIndicesData();
-                    break;
-                case '/market':
-                    await fetchNewsData();
-                    break;
                 default:
                     console.log('No refresh handler for path:', path);
             }
@@ -3627,30 +3621,6 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
-    // Market indices page data fetch
-    async function fetchMarketIndicesData() {
-        try {
-            // Fetch global indices
-            const indicesRes = await fetch('/api/indices/global');
-            const indicesResult = await indicesRes.json();
-
-            // Fetch volume data
-            const volumeRes = await fetch('/api/indices/volume');
-            const volumeResult = await volumeRes.json();
-
-            if (indicesResult.success) {
-                updateGlobalIndicesTable(indicesResult.data);
-            }
-            if (volumeResult.success) {
-                updateVolumeChart(volumeResult.data);
-            }
-
-            autoColorize();
-        } catch (e) {
-            console.error('Failed to refresh market indices:', e);
-        }
-    }
-
     // Precious metals page data fetch
     async function fetchPreciousMetalsData() {
         let hasAnySuccess = false;
@@ -3797,69 +3767,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     refreshBtn2.style.background = 'var(--accent)';  // 恢复到蓝色，不是白色
                 }
             }, 2000);
-        }
-    }
-
-    // News page data fetch
-    async function fetchNewsData() {
-        try {
-            const newsRes = await fetch('/api/news/7x24');
-            const newsResult = await newsRes.json();
-
-            if (newsResult.success) {
-                updateNewsTable(newsResult.data);
-            }
-
-            autoColorize();
-        } catch (e) {
-            console.error('Failed to refresh news:', e);
-        }
-    }
-
-    // Update functions (placeholders - to be implemented based on page structure)
-    function updateTimingChart(data) {
-        // Update timing chart if chart instance exists
-        if (window.timingChartInstance && data.labels && data.labels.length > 0) {
-            window.timingChartInstance.data.labels = data.labels;
-            window.timingChartInstance.data.datasets[0].data = data.change_pcts || data.prices;
-            window.timingChartInstance.update();
-
-            // Update title
-            const titleEl = document.getElementById('timingChartTitle');
-            if (titleEl && data.current_price !== undefined) {
-                const changePct = data.change_pct || 0;
-                const color = changePct >= 0 ? '#f44336' : '#4caf50';
-                titleEl.style.color = color;
-                titleEl.innerHTML = '📉 上证分时 <span style="font-size:0.9em;">' +
-                    (changePct >= 0 ? '+' : '') + changePct.toFixed(2) + '% (' +
-                    data.current_price.toFixed(2) + ')</span>';
-            }
-        }
-    }
-
-    function updateGlobalIndicesTable(data) {
-        // Find and update the global indices table
-        const table = document.querySelector('.style-table');
-        if (table && data) {
-            const tbody = table.querySelector('tbody');
-            if (tbody) {
-                tbody.innerHTML = data.map(item => `
-                    <tr>
-                        <td>${item.name}</td>
-                        <td>${item.value}</td>
-                        <td>${item.change}</td>
-                    </tr>
-                `).join('');
-            }
-        }
-    }
-
-    function updateVolumeChart(data) {
-        // Update volume chart if exists
-        if (window.volumeChartInstance && data.labels && data.labels.length > 0) {
-            window.volumeChartInstance.data.labels = data.labels;
-            window.volumeChartInstance.data.datasets[0].data = data.total || [];
-            window.volumeChartInstance.update();
         }
     }
 
@@ -4029,32 +3936,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 `).join('');
                 // 更新后重新着色
                 autoColorize();
-            }
-        }
-    }
-
-    function updateNewsTable(data) {
-        const table = document.querySelector('.style-table');
-        if (table && data) {
-            const tbody = table.querySelector('tbody');
-            if (tbody) {
-                tbody.innerHTML = data.map(item => {
-                    // 为利好/利空添加颜色类
-                    let sourceClass = '';
-                    if (item.source === '利好') {
-                        sourceClass = 'positive';
-                    } else if (item.source === '利空') {
-                        sourceClass = 'negative';
-                    }
-
-                    return `
-                    <tr>
-                        <td>${item.time}</td>
-                        <td class="${sourceClass}">${item.source}</td>
-                        <td>${item.content}</td>
-                    </tr>
-                    `;
-                }).join('');
             }
         }
     }

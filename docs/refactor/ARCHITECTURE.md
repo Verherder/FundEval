@@ -2,7 +2,7 @@
 
 ## 一句话概览
 
-请求从 **run.py** 进入，经 **Flask 应用工厂** 创建 app，由 **4 个 Blueprint** 分发路由，路由调用 **6 个 Service** 处理业务逻辑，Service 通过 **3 个渠道** 读写数据：4 个 Repository（本地数据库）、MiniFund（远程行情抓取）、market_data 工具函数（百度/东方财富等源）。
+请求从 **run.py** 进入，经 **Flask 应用工厂** 创建 app，由 **4 个 Blueprint** 分发路由，路由调用 **6 个 Service** 处理业务逻辑，Service 通过 **3 个渠道** 读写数据：4 个 Repository（本地数据库）、MiniFund（远程基金抓取）、market_data 工具函数（东方财富等源）。
 
 ---
 
@@ -23,7 +23,7 @@ run.py  (30 行)
         └── FilteredWSGIRequestLogger  # 静态资源不刷日志
 ```
 
-`fund_server.py` 仍然可用，通过环境变量 `REFACTOR_USE_BLUEPRINTS=true` 可切换到同一套 Blueprint 架构。日常开发使用 `python run.py`。
+`fund_server.py` 仍然可用，但只是兼容入口，直接复用同一套 `create_app()` + Blueprint 架构。日常开发使用 `python run.py`。
 
 ---
 
@@ -34,7 +34,7 @@ run.py  (30 行)
 | `auth_bp` | `blueprints/auth_bp.py` | 无 | 登录/注册/登出 | 3 |
 | `pages_bp` | `blueprints/pages_bp.py` | 无 | SSR 页面渲染（portfolio、sectors 等） | 7 |
 | `api_fund_bp` | `blueprints/api_fund_bp.py` | `/api` | 基金 CRUD、交易、图表、导入导出 | ~25 |
-| `api_market_bp` | `blueprints/api_market_bp.py` | `/api` | 行情 tab、指数、快讯、板块、分时图 | ~14 |
+| `api_market_bp` | `blueprints/api_market_bp.py` | `/api` | 行情 tab、板块、指数净值同步、刷新配置 | ~6 |
 
 **URL 前缀不冲突**：`auth_bp` 和 `pages_bp` 均无前缀但路由规则不重叠（`/login`、`/portfolio` 等互不相同），`api_fund_bp` 和 `api_market_bp` 共享 `/api` 前缀但端点路径也不重叠。
 
@@ -135,8 +135,8 @@ Blueprint 路由
 ### MiniFund（远程数据抓取）
 
 `src/fund.py` 中的 `MiniFund` 类承担**远程行情数据抓取**的职责：
-- 使用 `requests.Session` 抓取基金数据（天天基金等）
-- 使用 `curl_cffi` 模拟浏览器抓取百度行情
+- 使用 `requests.Session` 抓取基金数据（fund123、fundgz 等）
+- 通过统一的超时和重试封装处理上游连接抖动
 - 管理 `CACHE_MAP` 缓存、板块分类等
 
 Blueprints 和 Services **不直接 import MiniFund**，而是通过 `get_lan_fund(user_id)` 获取请求级实例。
@@ -214,7 +214,7 @@ MiniFund 持有 `user_id` 和 HTTP session，不同用户的请求需要不同�
 
 ### 为什么 fund_server.py 还保留？
 
-向后兼容。`fund_server.py` 包含原有的所有路由注册代码，设置 `REFACTOR_USE_BLUEPRINTS=true` 后委托给 `create_app()`。后续可直接删除 `fund_server.py`，只保留 `run.py`。
+向后兼容。`fund_server.py` 不再包含重复路由注册代码，只导入 `create_app()` 并暴露 `app`，让旧命令和 `fund_server:app` 引用继续可用。后续可直接删除 `fund_server.py`，只保留 `run.py`。
 
 ### Blueprint 内的 `user_id` 传递方式
 

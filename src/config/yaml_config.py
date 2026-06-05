@@ -13,13 +13,6 @@ REQUIRED_DATA_SOURCE_URL_KEYS = [
     'fund123_intraday_api',
     'fund123_history_net_value_api',
     'fundgz_js_tpl',
-    # baidu
-    'gushitong_origin',
-    'gushitong_referer',
-    'baidu_getbanner_tpl',
-    'baidu_getquotation_api',
-    'baidu_expressnews_tpl',
-    'baidu_metrictrend_api',
     # eastmoney
     'eastmoney_fundguide_api',
     'eastmoney_fundguide_referer',

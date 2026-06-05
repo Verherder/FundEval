@@ -18,15 +18,6 @@ data_sources:
     # 历史净值（可指定起止日期查询）
     fund123_history_net_value_api: "https://www.fund123.cn/api/fund/queryFundHistoryNetValueList"
 
-    # baidu
-    gushitong_origin: "https://gushitong.baidu.com"
-    gushitong_referer: "https://gushitong.baidu.com/"
-    baidu_index_warmup: "https://gushitong.baidu.com/index/ab-000001"
-    baidu_getbanner_tpl: "https://finance.pae.baidu.com/api/getbanner?market={market}&finClientType=pc"
-    baidu_getquotation_api: "https://finance.pae.baidu.com/vapi/v1/getquotation"
-    baidu_expressnews_tpl: "https://finance.pae.baidu.com/selfselect/expressnews?rn={count}&pn=0&tag=A股&finClientType=pc"
-    baidu_metrictrend_api: "https://finance.pae.baidu.com/sapi/v1/metrictrend"
-
     # eastmoney
     eastmoney_fundguide_api: "https://fund.eastmoney.com/data/FundGuideapi.aspx"
     eastmoney_fundguide_referer: "https://fund.eastmoney.com/daogou/"
