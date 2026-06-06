@@ -26,9 +26,9 @@ class MarketService:
     def get_bk_data_raw(self, user_id=None):
         return fetch_bk(is_return=True)
 
-    def build_fund_table(self, user_id):
+    def build_fund_table(self, user_id, cancel_event=None):
         """Return (titles, rows, sortable_columns) for fund table."""
-        return self._get_lan_fund(user_id=user_id).build_fund_table()
+        return self._get_lan_fund(user_id=user_id).build_fund_table(cancel_event=cancel_event)
 
     def get_select_fund(self, user_id=None, bk_id=None):
         return fetch_select_fund(bk_id=bk_id, is_return=True)

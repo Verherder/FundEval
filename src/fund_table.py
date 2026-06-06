@@ -103,12 +103,12 @@ def _growth_color(value):
     return "var(--text-main)"
 
 
-def build_fund_table(lan_fund):
+def build_fund_table(lan_fund, cancel_event=None):
     """Build fund table rows for web display.
 
     Returns (titles, rows, sortable_columns).
     """
-    result = lan_fund.search_code(True) or []
+    result = lan_fund.search_code(True, cancel_event=cancel_event) or []
 
     def has_active_position(fund_code):
         return safe_float(lan_fund.CACHE_MAP.get(fund_code, {}).get('shares', 0), 0.0) > 0
@@ -248,7 +248,9 @@ def build_fund_table(lan_fund):
         )
         estimate2_growth_val = parse_growth_percent(estimate2_growth)
         estimate2_return = None
-        if not has_summary_estimate1:
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        has_today_estimate2 = estimate2_date == today
+        if not has_summary_estimate1 and has_today_estimate2:
             estimate2_return = _calc_estimate_return_from_nav(shares, net_value_num, estimate2_growth_val)
 
         estimate_return_attr = ""

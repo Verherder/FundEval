@@ -1374,6 +1374,14 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!raw) return null;
             const parsed = JSON.parse(raw);
             if (!parsed || typeof parsed !== 'object') return null;
+            const todayDateKey = formatDateKey(new Date());
+            const snapshotDateKey = String(parsed.dateKey || '');
+            const savedAt = Number(parsed.savedAt || 0);
+            const maxAgeMs = 2 * 60 * 60 * 1000;
+            if (snapshotDateKey !== todayDateKey || !Number.isFinite(savedAt) || Date.now() - savedAt > maxAgeMs) {
+                localStorage.removeItem('portfolioEstimateSnapshot');
+                return null;
+            }
             return parsed;
         } catch (_) {
             return null;
@@ -1445,7 +1453,6 @@ document.addEventListener('DOMContentLoaded', function() {
         let actualGain = 0;
         let settledValue = 0;
         let estimatedValue = 0;
-        let freshEstimateFundCount = 0;
 
         const parseFirstNumber = (text, opts = {}) => {
             const { isPercent = false } = opts;
@@ -1554,14 +1561,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 const dayReturn = dayReturnText.includes('--') ? null : parseFirstNumber(dayReturnText);
 
                 totalValue += positionValue;
-                if (
-                    Number.isFinite(estimatedGrowth)
-                    && Number.isFinite(estimateReturn)
-                    && /^\d{4}-\d{2}-\d{2}$/.test(estimateDate)
-                    && estimateDate === todayDateKey
-                ) {
-                    freshEstimateFundCount += 1;
-                }
                 heldFundRowsData.push({
                     fundCode,
                     positionValue,
@@ -1602,33 +1601,40 @@ document.addEventListener('DOMContentLoaded', function() {
             .map(item => item.netValueDate)
             .sort()
             .slice(-1)[0] || '';
-        const latestEstimatedDateKeyFromRows = heldFundRowsData
+        const estimateDateCounts = new Map();
+        heldFundRowsData
             .filter(item => (
                 Number.isFinite(item.estimatedGrowth)
                 && Number.isFinite(item.estimateReturn)
                 && /^\d{4}-\d{2}-\d{2}$/.test(item.estimateDate)
                 && (item.estimateSource !== 'estimate2' || item.estimateDate === todayDateKey)
             ))
-            .map(item => item.estimateDate)
+            .forEach(item => {
+                estimateDateCounts.set(item.estimateDate, (estimateDateCounts.get(item.estimateDate) || 0) + 1);
+            });
+        const estimateMajorityThreshold = totalHeldFundCount / 2;
+        const estimateTargetDateKey = Array.from(estimateDateCounts.entries())
+            .filter(([, count]) => count > estimateMajorityThreshold)
+            .map(([dateKey]) => dateKey)
             .sort()
             .slice(-1)[0] || '';
+        const estimateTargetFundCount = estimateTargetDateKey ? (estimateDateCounts.get(estimateTargetDateKey) || 0) : 0;
         const previousSnapshot = getEstimateSnapshot();
 
         const now = new Date();
         const isBefore0930 = now.getHours() < 9 || (now.getHours() === 9 && now.getMinutes() < 30);
         const isBefore15 = now.getHours() < 15;
-        const hasFreshEstimateData = latestEstimatedDateKeyFromRows === todayDateKey && freshEstimateFundCount > 0;
-        const shouldFreezeGainRefresh = isBefore15 && totalHeldFundCount > 0 && !hasFreshEstimateData;
+        const hasFreshEstimateData = estimateTargetDateKey === todayDateKey && estimateTargetFundCount > estimateMajorityThreshold;
+        const shouldFreezeGainRefresh = isBefore15 && totalHeldFundCount > 0 && !estimateTargetDateKey && !hasFreshEstimateData;
         const previousAvailableDateKey =
-            (previousSnapshot && /^\d{4}-\d{2}-\d{2}$/.test(previousSnapshot.dateKey || '') ? previousSnapshot.dateKey : '')
-            || latestEstimatedDateKeyFromRows
+            estimateTargetDateKey
+            || (previousSnapshot && /^\d{4}-\d{2}-\d{2}$/.test(previousSnapshot.dateKey || '') ? previousSnapshot.dateKey : '')
             || '';
 
-        const shouldKeepPreviousEstimateDate = isBefore0930 || latestEstimatedDateKeyFromRows !== todayDateKey;
+        const shouldKeepPreviousEstimateDate = isBefore0930 || estimateTargetDateKey !== todayDateKey;
         const displayDateKey = shouldKeepPreviousEstimateDate
             ? (previousAvailableDateKey || todayDateKey)
             : todayDateKey;
-        const estimateTargetDateKey = latestEstimatedDateKeyFromRows || '';
         const displayDayLabel = getDayLabelFromDateKey(displayDateKey);
         const actualDisplayDateKey = actualTargetDateKey || displayDateKey;
         const actualDisplayDayLabel = getDayLabelFromDateKey(actualDisplayDateKey);
@@ -1645,10 +1651,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 && /^\d{4}-\d{2}-\d{2}$/.test(rowItem.estimateDate);
             const hasTargetEstimate = !!estimateTargetDateKey
                 && hasValidEstimate
-                && (
-                    (rowItem.estimateSource === 'estimate2' && rowItem.estimateDate === todayDateKey)
-                    || (rowItem.estimateSource !== 'estimate2' && rowItem.estimateDate === estimateTargetDateKey)
-                );
+                && rowItem.estimateDate === estimateTargetDateKey
+                && (rowItem.estimateSource !== 'estimate2' || rowItem.estimateDate === todayDateKey);
             if (hasTargetEstimate) {
                 const rowEstimatedGain = rowItem.estimateReturn;
                 estimatedGain += rowEstimatedGain;
@@ -1686,7 +1690,12 @@ document.addEventListener('DOMContentLoaded', function() {
             updateActualGainNote('');
         } else {
             if (!estimateTargetDateKey) {
-                updateEstimatedGainNote(`预估收益待更新（0/${totalHeldFundCount}）`);
+                const latestEstimateDateKey = Array.from(estimateDateCounts.keys()).sort().slice(-1)[0] || '';
+                const latestEstimateCount = latestEstimateDateKey ? (estimateDateCounts.get(latestEstimateDateKey) || 0) : 0;
+                const suffix = latestEstimateDateKey
+                    ? `，最新${getDayLabelFromDateKey(latestEstimateDateKey)}仅${latestEstimateCount}/${totalHeldFundCount}，未过半`
+                    : '';
+                updateEstimatedGainNote(`预估收益待更新（0/${totalHeldFundCount}）${suffix}`);
             } else if (estimatedUpdatedFundCount < totalHeldFundCount) {
                 updateEstimatedGainNote(`预估收益部分更新（${estimatedUpdatedFundCount}/${totalHeldFundCount}），按${getDayLabelFromDateKey(estimateTargetDateKey)}估值统计`);
             } else if (displayDateKey !== todayDateKey) {
@@ -1717,7 +1726,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const estimatedGainPct = estimatedValue > 0 ? (estimatedGain / estimatedValue * 100) : 0;
         const actualGainPct = settledValue > 0 ? (actualGain / settledValue * 100) : 0;
 
-        if (!shouldFreezeGainRefresh && totalValue > 0 && estimatedValue > 0 && freshEstimateFundCount > 0) {
+        if (!shouldFreezeGainRefresh && totalValue > 0 && estimatedValue > 0 && estimateTargetDateKey === todayDateKey) {
             saveEstimateSnapshot({
                 dateKey: displayDateKey,
                 totalValue,
@@ -3327,6 +3336,8 @@ document.addEventListener('DOMContentLoaded', function() {
     let refreshInterval;
     let REFRESH_INTERVAL = 60000; // 默认 60 秒（毫秒）
     let lastRefreshTime = null; // 记录最后刷新时间
+    let activeRefreshController = null;
+    let activeRefreshId = '';
 
     // 初始化刷新配置（从后端API读取）
     async function initRefreshConfig() {
@@ -3391,7 +3402,9 @@ document.addEventListener('DOMContentLoaded', function() {
             clearInterval(refreshInterval);
         }
         refreshInterval = setInterval(() => {
-            refreshCurrentPage();
+            if (!activeRefreshController) {
+                refreshCurrentPage();
+            }
         }, REFRESH_INTERVAL);
         console.log(`Auto-refresh started (${REFRESH_INTERVAL}ms interval)`);
     }
@@ -3425,48 +3438,74 @@ document.addEventListener('DOMContentLoaded', function() {
                 break;
         }
         
-        // 如果按钮已禁用，说明已经在刷新中，拒絕重複點擊
-        if (refreshBtn && refreshBtn.disabled) {
-            console.log('Refresh already in progress, ignoring click');
+        if (activeRefreshController) {
+            console.log('Stopping refresh in progress');
+            const stoppingRefreshId = activeRefreshId;
+            if (stoppingRefreshId && path === '/portfolio') {
+                fetch('/api/portfolio/fund-table/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ refresh_id: stoppingRefreshId }),
+                    keepalive: true
+                }).catch((e) => console.warn('Failed to notify backend refresh stop:', e));
+            }
+            activeRefreshController.abort();
+            if (refreshBtn) {
+                refreshBtn.innerHTML = '⏹ 正在停止...';
+            }
             return;
         }
 
         // 注意：按钮状态的管理由各个 fetch 函数来处理
         // 这里只负责调用对应的数据更新函数
+        activeRefreshController = new AbortController();
+        activeRefreshId = (window.crypto && typeof window.crypto.randomUUID === 'function')
+            ? window.crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
         try {
             console.log(`Refreshing ${path}`);
             switch (path) {
                 case '/portfolio':
-                    await fetchPortfolioData();
+                    await fetchPortfolioData(activeRefreshController.signal);
                     break;
                 case '/precious-metals':
                     // 只更新数据，不重新加载页面
-                    await fetchPreciousMetalsData();
+                    await fetchPreciousMetalsData(activeRefreshController.signal);
                     break;
                 case '/sectors':
                     // 只更新数据，不重新加载页面
-                    await fetchSectorsData();
+                    await fetchSectorsData(activeRefreshController.signal);
                     break;
                 default:
                     console.log('No refresh handler for path:', path);
             }
         } catch (e) {
-            console.error('Refresh failed:', e);
+            if (e && e.name === 'AbortError') {
+                console.log('Refresh aborted');
+            } else {
+                console.error('Refresh failed:', e);
+            }
+        } finally {
+            activeRefreshController = null;
+            activeRefreshId = '';
         }
     }
 
     // Portfolio page data fetch (更新基金表格和持仓统计)
-    async function fetchPortfolioData() {
+    async function fetchPortfolioData(signal) {
         const refreshBtn = document.getElementById('refreshBtn-portfolio');
         try {
             // 显示加载状态
             if (refreshBtn) {
-                refreshBtn.disabled = true;
-                refreshBtn.innerHTML = '⏳ 更新中...';
+                refreshBtn.disabled = false;
+                refreshBtn.innerHTML = '⏳ 更新中，点击停止';
             }
 
             // 1. 获取最新的基金表格
-            const tableResponse = await fetch('/api/portfolio/fund-table');
+            const tableResponse = await fetch('/api/portfolio/fund-table', {
+                signal,
+                headers: activeRefreshId ? { 'X-Refresh-Id': activeRefreshId } : {}
+            });
             if (!tableResponse.ok) {
                 throw new Error(`Failed to fetch fund table: ${tableResponse.status}`);
             }
@@ -3508,7 +3547,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
 
             // 3. 获取最新的份额数据
-            const fundDataResponse = await fetch('/api/fund/data');
+            const fundDataResponse = await fetch('/api/fund/data', { signal });
             if (!fundDataResponse.ok) {
                 throw new Error(`Failed to fetch fund data: ${fundDataResponse.status}`);
             }
@@ -3597,6 +3636,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 throw new Error('calculatePositionSummary function not found');
             }
         } catch (e) {
+            if (e && e.name === 'AbortError') {
+                console.log('Portfolio refresh aborted');
+                if (refreshBtn) {
+                    refreshBtn.innerHTML = '⏹ 已停止';
+                    setTimeout(() => {
+                        refreshBtn.innerHTML = '🔄 刷新';
+                        refreshBtn.disabled = false;
+                        refreshBtn.style.background = '';
+                    }, 1000);
+                }
+                return;
+            }
             console.error('Failed to refresh portfolio data:', e);
             if (refreshBtn) {
                 refreshBtn.innerHTML = '❌ 更新失败';
@@ -3612,7 +3663,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 setTimeout(() => {
                     if (!refreshBtn.disabled) return;
                     refreshBtn.disabled = false;
-                    if (refreshBtn.innerHTML === '⏳ 更新中...') {
+                    if (refreshBtn.innerHTML === '⏳ 更新中，点击停止') {
                         refreshBtn.innerHTML = '🔄 刷新';
                     }
                     refreshBtn.style.background = '';
@@ -3622,7 +3673,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // Precious metals page data fetch
-    async function fetchPreciousMetalsData() {
+    async function fetchPreciousMetalsData(signal) {
         let hasAnySuccess = false;
         const refreshBtn = document.getElementById('refreshBtn-metals');
         
@@ -3634,11 +3685,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
         try {
             // Fetch real-time gold prices
-            const realtimeRes = await fetch('/api/gold/real-time');
+            const realtimeRes = await fetch('/api/gold/real-time', { signal });
             const realtimeResult = await realtimeRes.json();
 
             // Fetch gold history
-            const historyRes = await fetch('/api/gold/history');
+            const historyRes = await fetch('/api/gold/history', { signal });
             const historyResult = await historyRes.json();
 
             if (realtimeResult.success) {
@@ -3673,6 +3724,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 throw new Error('Failed to fetch any precious metals data');
             }
         } catch (e) {
+            if (e && e.name === 'AbortError') {
+                console.log('Precious metals refresh aborted');
+                if (refreshBtn) {
+                    refreshBtn.innerHTML = '⏹ 已停止';
+                    setTimeout(() => {
+                        refreshBtn.innerHTML = '🔄 刷新';
+                        refreshBtn.disabled = false;
+                        refreshBtn.style.background = '';
+                    }, 1000);
+                }
+                return;
+            }
             console.error('Failed to refresh precious metals:', e);
             if (refreshBtn) {
                 refreshBtn.innerHTML = '❌ 更新失败';
@@ -3687,7 +3750,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // Sectors page data fetch
-    async function fetchSectorsData() {
+    async function fetchSectorsData(signal) {
         try {
             // 获取两个 tab 中可能存在的刷新按钮
             const refreshBtn1 = document.getElementById('refreshBtn-sectors');
@@ -3704,7 +3767,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
 
             // Fetch sectors data
-            const sectorsRes = await fetch('/api/sectors');
+            const sectorsRes = await fetch('/api/sectors', { signal });
             const sectorsResult = await sectorsRes.json();
 
             if (sectorsResult.success) {

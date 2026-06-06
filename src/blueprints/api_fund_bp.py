@@ -2,6 +2,7 @@
 """Fund API routes — CRUD, transactions, charts, portfolio data."""
 
 import time
+import threading
 
 from flask import Blueprint, jsonify, render_template, request, send_file
 from loguru import logger
@@ -24,6 +25,27 @@ from src.services.chart_service import (
 from src.tab_enhancers import enhance_fund_tab_content
 
 api_fund_bp = Blueprint("api_fund", __name__, url_prefix="/api")
+
+_PORTFOLIO_REFRESH_EVENTS = {}
+_PORTFOLIO_REFRESH_EVENTS_LOCK = threading.Lock()
+
+
+def _get_portfolio_refresh_event(refresh_id):
+    if not refresh_id:
+        return None
+    with _PORTFOLIO_REFRESH_EVENTS_LOCK:
+        event = _PORTFOLIO_REFRESH_EVENTS.get(refresh_id)
+        if event is None:
+            event = threading.Event()
+            _PORTFOLIO_REFRESH_EVENTS[refresh_id] = event
+        return event
+
+
+def _pop_portfolio_refresh_event(refresh_id):
+    if not refresh_id:
+        return
+    with _PORTFOLIO_REFRESH_EVENTS_LOCK:
+        _PORTFOLIO_REFRESH_EVENTS.pop(refresh_id, None)
 
 
 # ------------------------------------------------------------------
@@ -511,10 +533,14 @@ def api_fund_list():
 @api_fund_bp.route("/portfolio/fund-table", methods=["GET"])
 @login_required
 def api_portfolio_fund_table():
+    refresh_id = str(request.headers.get("X-Refresh-Id") or request.args.get("refresh_id") or "").strip()
+    cancel_event = _get_portfolio_refresh_event(refresh_id)
     try:
         user_id = get_current_user_id()
         get_fund_service().settle_pending_buys(user_id)
-        titles, rows, sortable_columns = get_market_service().build_fund_table(user_id)
+        titles, rows, sortable_columns = get_market_service().build_fund_table(user_id, cancel_event=cancel_event)
+        if cancel_event is not None and cancel_event.is_set():
+            return jsonify({"success": False, "cancelled": True, "message": "刷新已停止"}), 499
         fund_table_html = render_template(
             "partials/data_table.html", title=titles, data=rows, sortable_columns=sortable_columns
         )
@@ -525,6 +551,21 @@ def api_portfolio_fund_table():
     except Exception as e:
         logger.error(f"获取基金表格失败: {e}")
         return jsonify({"success": False, "message": f"获取基金表格失败: {str(e)}"}), 500
+    finally:
+        _pop_portfolio_refresh_event(refresh_id)
+
+
+@api_fund_bp.route("/portfolio/fund-table/stop", methods=["POST"])
+@login_required
+def api_portfolio_fund_table_stop():
+    body = request.get_json(silent=True) or {}
+    refresh_id = str(body.get("refresh_id") or request.headers.get("X-Refresh-Id") or "").strip()
+    if not refresh_id:
+        return jsonify({"success": False, "message": "缺少 refresh_id"}), 400
+    cancel_event = _get_portfolio_refresh_event(refresh_id)
+    cancel_event.set()
+    logger.info(f"收到组合刷新停止请求: refresh_id={refresh_id}")
+    return jsonify({"success": True, "cancelled": True})
 
 
 # ------------------------------------------------------------------

@@ -4,6 +4,7 @@ import argparse
 import datetime
 import json
 import os
+import queue
 import random
 import re
 import threading
@@ -55,7 +56,8 @@ PERFORMANCE_CHART_INTERVALS = {
     "SINCE_ESTABLISHMENT": "成立以来",
 }
 
-sem = threading.Semaphore(5)
+FUND_REFRESH_WORKER_COUNT = 10
+sem = threading.Semaphore(FUND_REFRESH_WORKER_COUNT)
 FUND123_REQUEST_TIMEOUT = (5, 20)
 FUND123_REQUEST_RETRIES = 3
 FUND123_RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -652,8 +654,16 @@ class MiniFund:
                 logger.error(f"删除板块标记【{code}】失败: {e}")
         self.save_cache()
 
-    def search_one_code(self, fund, fund_data, is_return):
+    def search_one_code(self, fund, fund_data, is_return, cancel_event=None):
         with sem:
+            def is_cancelled():
+                if cancel_event is not None and cancel_event.is_set():
+                    logger.info(f"刷新已停止，跳过基金代码【{fund}】后续请求")
+                    return True
+                return False
+
+            if is_cancelled():
+                return
             try:
                 fund_key = fund_data["fund_key"]
                 fund_name = fund_data["fund_name"]
@@ -678,6 +688,8 @@ class MiniFund:
                     headers=headers,
                     verify=False,
                 )
+                if is_cancelled():
+                    return
                 day_growth_match = re.findall(r'"dayOfGrowth":"(.*?)"', response.text)
                 net_value_match = re.findall(r'"netValue":"(.*?)"', response.text)
                 net_value_date_match = re.findall(r'"netValueDate":"(.*?)"', response.text)
@@ -716,6 +728,8 @@ class MiniFund:
                     json=data,
                     verify=False,
                 )
+                if is_cancelled():
+                    return
                 curves_json = response.json()
                 if not curves_json.get("success"):
                     logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
@@ -797,6 +811,8 @@ class MiniFund:
                 }
                 intraday_json = {"success": False, "list": []}
                 try:
+                    if is_cancelled():
+                        return
                     response = self._request_with_retries(
                         "POST",
                         url,
@@ -813,12 +829,16 @@ class MiniFund:
                 estimate2Time = "N/A"
                 estimate2Date = ""
                 try:
+                    if is_cancelled():
+                        return
                     fundgz_url = DATA_SOURCE_URLS['fundgz_js_tpl'].format(fund=fund)
                     fundgz_resp = self._request_with_retries(
                         "GET",
                         fundgz_url,
                         verify=False,
                     )
+                    if is_cancelled():
+                        return
                     payload_match = re.search(r"jsonpgz\((.*)\);?\s*$", fundgz_resp.text.strip())
                     if payload_match:
                         payload = json.loads(payload_match.group(1))
@@ -848,6 +868,11 @@ class MiniFund:
                                     pass
                 except Exception:
                     pass
+                if estimate2Date and estimate2Date != today:
+                    logger.debug(f"基金代码【{fund}】估值2日期过期: {estimate2Date}，当前日期: {today}")
+                    estimate2Growth = "N/A"
+                    estimate2Time = "N/A"
+                    estimate2Date = ""
 
                 if intraday_json.get("success"):
                     if not intraday_json.get("list"):
@@ -941,14 +966,36 @@ class MiniFund:
             except Exception as e:
                 logger.error(f"查询基金代码【{fund}】失败: {e}")
 
-    def search_code(self, is_return=False):
+    def search_code(self, is_return=False, cancel_event=None):
         self._cache_dirty = False
         self.result = []
-        threads = []
+        task_queue = queue.Queue()
         for fund, fund_data in self.CACHE_MAP.items():
-            t = threading.Thread(target=self.search_one_code, args=(fund, fund_data, is_return))
-            threads.append(t)
+            if cancel_event is not None and cancel_event.is_set():
+                logger.info("刷新已停止，后续基金不再发起请求")
+                break
+            task_queue.put((fund, fund_data))
 
+        def worker():
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                try:
+                    fund, fund_data = task_queue.get_nowait()
+                except queue.Empty:
+                    return
+                try:
+                    if cancel_event is not None and cancel_event.is_set():
+                        return
+                    self.search_one_code(fund, fund_data, is_return, cancel_event)
+                finally:
+                    task_queue.task_done()
+
+        worker_count = min(FUND_REFRESH_WORKER_COUNT, task_queue.qsize())
+        threads = [
+            threading.Thread(target=worker, name=f"fund-refresh-worker-{idx + 1}")
+            for idx in range(worker_count)
+        ]
         for t in threads:
             t.start()
         for t in threads:
@@ -1110,9 +1157,9 @@ class MiniFund:
         self.save_cache()
         logger.info("\n份额修改完成")
 
-    def build_fund_table(self):
+    def build_fund_table(self, cancel_event=None):
         from src.fund_table import build_fund_table
-        return build_fund_table(self)
+        return build_fund_table(self, cancel_event=cancel_event)
 
     def select_fund(self, bk_id=None, is_return=False):
         return fetch_select_fund(bk_id, is_return)

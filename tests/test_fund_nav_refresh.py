@@ -38,7 +38,8 @@ def test_estimated_return_uses_prev_nav_and_does_not_store_estimated_nav():
 
 
 def test_estimated_return_falls_back_to_estimate2_when_estimate1_missing():
-    fund_obj = _FakeMiniFund(forecast_growth="N/A", estimate2_growth="2.00%")
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    fund_obj = _FakeMiniFund(forecast_growth="N/A", estimate2_growth="2.00%", estimate2_date=today)
     fund_obj.nav_repo.get_fund_nav_by_date.return_value = 1.1
 
     _titles, rows, _sortable = build_fund_table(fund_obj)
@@ -48,7 +49,8 @@ def test_estimated_return_falls_back_to_estimate2_when_estimate1_missing():
 
 
 def test_estimate2_return_uses_current_nav_for_overseas_fund_update_time():
-    fund_obj = _FakeMiniFund(forecast_growth="N/A", estimate2_growth="2.00%", estimate2_date="2024-01-06")
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    fund_obj = _FakeMiniFund(forecast_growth="N/A", estimate2_growth="2.00%", estimate2_date=today)
     fund_obj.nav_repo.get_fund_nav_by_date.return_value = None
     fund_obj.nav_repo.get_prev_fund_nav.return_value = 1.1
 
@@ -56,6 +58,15 @@ def test_estimate2_return_uses_current_nav_for_overseas_fund_update_time():
 
     assert "data-estimate2-return='2.400000'" in rows[0][4]
     fund_obj.nav_repo.get_prev_fund_nav.assert_not_called()
+
+
+def test_stale_estimate2_date_does_not_produce_summary_return():
+    fund_obj = _FakeMiniFund(forecast_growth="N/A", estimate2_growth="2.00%", estimate2_date="2024-01-06")
+
+    _titles, rows, _sortable = build_fund_table(fund_obj)
+
+    assert "data-estimate-return=" not in rows[0][3]
+    assert "data-estimate2-return=" not in rows[0][4]
 
 
 def test_daily_return_does_not_use_latest_nav_as_missing_prev_nav():
@@ -90,7 +101,7 @@ class _FakeMiniFund:
         self._fetch_history_nav_map_by_date_range = MagicMock(return_value={})
         self._fetch_prev_nav_from_cloud = MagicMock(return_value=1.2)
 
-    def search_code(self, is_return=False):
+    def search_code(self, is_return=False, cancel_event=None):
         return [[
             "000001",
             "测试基金",
@@ -120,3 +131,13 @@ def test_missing_prev_nav_is_backfilled_from_history_api_for_estimated_return():
     fund_obj.nav_repo.upsert_fund_nav_history.assert_any_call(
         "000001", "2024-01-02", 1.1, "history_api_prev_nav_on_table"
     )
+
+
+def test_build_fund_table_passes_cancel_event_to_search_code():
+    cancel_event = MagicMock()
+    fund_obj = _FakeMiniFund()
+    fund_obj.search_code = MagicMock(return_value=[])
+
+    build_fund_table(fund_obj, cancel_event=cancel_event)
+
+    fund_obj.search_code.assert_called_once_with(True, cancel_event=cancel_event)
