@@ -63,6 +63,31 @@ def get_page_refresh_config() -> Dict[str, int]:
         }
 
 
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        normalized = int(value)
+        if normalized > 0:
+            return normalized
+    except (TypeError, ValueError):
+        pass
+    return default
+
+
+def get_fund_refresh_config() -> Dict[str, int]:
+    try:
+        config = load_yaml_config()
+        fund_refresh = config.get('fund_refresh', {})
+        return {
+            'request_batch_size': _positive_int(fund_refresh.get('request_batch_size'), 5)
+        }
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to load fund_refresh config: {e}, using defaults")
+        return {
+            'request_batch_size': 5
+        }
+
+
 def get_data_source_urls() -> Dict[str, str]:
     config = load_yaml_config()
     configured = config.get('data_sources', {}).get('urls', {})

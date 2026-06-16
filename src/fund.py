@@ -34,7 +34,7 @@ from src.services.metrics import (
 from src.utils.financial import solve_xirr, xnpv
 from src.repositories.fund_repo import FundRepo
 from src.repositories.nav_repo import NavRepo
-from src.config.yaml_config import get_data_source_urls
+from src.config.yaml_config import get_data_source_urls, get_fund_refresh_config
 from src.market_data import (
     fetch_bk,
     fetch_select_fund,
@@ -45,6 +45,7 @@ from src.trading_calendar import iter_cn_sse_trading_days
 load_dotenv()
 
 DATA_SOURCE_URLS = get_data_source_urls()
+FUND_REFRESH_CONFIG = get_fund_refresh_config()
 
 PERFORMANCE_CHART_INTERVALS = {
     "ONE_MONTH": "近1月",
@@ -56,7 +57,7 @@ PERFORMANCE_CHART_INTERVALS = {
     "SINCE_ESTABLISHMENT": "成立以来",
 }
 
-FUND_REFRESH_WORKER_COUNT = 10
+FUND_REFRESH_WORKER_COUNT = FUND_REFRESH_CONFIG.get('request_batch_size', 5)
 sem = threading.Semaphore(FUND_REFRESH_WORKER_COUNT)
 FUND123_REQUEST_TIMEOUT = (5, 20)
 FUND123_REQUEST_RETRIES = 3

@@ -37,6 +37,11 @@ page_refresh:
   # 自动刷新间隔时长（毫秒）
   auto_refresh_interval: 300000  # 5 分钟
 
+# 基金刷新配置
+fund_refresh:
+  # 单次刷新同时请求的基金数量
+  request_batch_size: 10
+
 # 服务器配置
 server:
   host: "0.0.0.0"
