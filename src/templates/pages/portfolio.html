@@ -599,7 +599,10 @@ function renderFundRowChart(canvas, chartData, chartType = 'estimate') {
         fill: !isPerformanceChart,
         tension: 0.4,
         pointRadius: 0,
-        pointHoverRadius: 4,
+        pointHoverRadius: isPerformanceChart ? 6 : 4,
+        pointHoverBackgroundColor: fundCurveColor,
+        pointHoverBorderColor: '#ffffff',
+        pointHoverBorderWidth: isPerformanceChart ? 2 : 1,
         borderWidth: 2,
         spanGaps: true
     }];
@@ -794,6 +797,32 @@ function renderFundRowChart(canvas, chartData, chartType = 'estimate') {
         }
     };
 
+    if (isPerformanceChart && Chart.Tooltip && Chart.Tooltip.positioners) {
+        Chart.Tooltip.positioners.fundPerformancePoint = function(elements, eventPosition) {
+            const fundDatasetIndex = this.chart.data.datasets.findIndex(
+                dataset => dataset && dataset.label === '基金业绩'
+            );
+            const fundMeta = fundDatasetIndex >= 0
+                ? this.chart.getDatasetMeta(fundDatasetIndex)
+                : null;
+            const fundPoints = fundMeta && Array.isArray(fundMeta.data)
+                ? fundMeta.data.filter(point => point && !point.skip)
+                : [];
+
+            if (fundPoints.length > 0 && eventPosition) {
+                const anchor = fundPoints.reduce((nearest, point) => {
+                    return Math.abs(point.x - eventPosition.x) < Math.abs(nearest.x - eventPosition.x)
+                        ? point
+                        : nearest;
+                }, fundPoints[0]);
+                return anchor.tooltipPosition();
+            }
+
+            if (!elements || elements.length === 0) return false;
+            return elements[0].element.tooltipPosition();
+        };
+    }
+
     const chartConfig = {
         type: 'line',
         plugins: [clearCycleLabelPlugin],
@@ -805,12 +834,15 @@ function renderFundRowChart(canvas, chartData, chartType = 'estimate') {
             responsive: true,
             maintainAspectRatio: false,
             interaction: {
-                mode: isPerformanceChart ? 'nearest' : 'index',
-                intersect: isPerformanceChart,
+                mode: 'index',
+                intersect: false,
+                axis: 'x',
             },
             plugins: {
                 legend: { display: false },
                 tooltip: {
+                    position: isPerformanceChart ? 'fundPerformancePoint' : 'average',
+                    caretPadding: 6,
                     filter: function(context) {
                         if (!isProfitChart) return true;
                         return context.dataset && context.dataset.label === '累计收益';
@@ -853,9 +885,12 @@ function renderFundRowChart(canvas, chartData, chartType = 'estimate') {
                                     return baseLines;
                                 }
                                 if (dataValue === null || dataValue === undefined) {
-                                    return datasetLabel + ': --';
+                                    return datasetLabel + '：--';
                                 }
-                                return datasetLabel + ': ' + (dataValue >= 0 ? '+' : '') + dataValue.toFixed(2) + '%';
+                                const performanceLabel = datasetLabel === '基金业绩'
+                                    ? '基金业绩'
+                                    : datasetLabel;
+                                return performanceLabel + '：' + (dataValue >= 0 ? '+' : '') + dataValue.toFixed(2) + '%';
                             }
                             if (isProfitChart) {
                                 const pointProfit = Number(profitValues[index]);
