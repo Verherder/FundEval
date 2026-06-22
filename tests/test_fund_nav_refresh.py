@@ -5,7 +5,7 @@ import datetime
 from unittest.mock import MagicMock
 
 from src.fund import normalize_nav_date_for_storage
-from src.fund_table import build_fund_table
+from src.fund_table import build_fund_table, calculate_position_summary
 
 
 def test_normalize_nav_date_for_storage_expands_short_date():
@@ -25,6 +25,64 @@ def test_daily_return_uses_nav_delta_and_shares_when_prev_nav_exists():
     assert "¥10.00" in rows[0][8]
     fund_obj.nav_repo.get_fund_nav_by_date.assert_any_call("000001", "2024-01-02")
     fund_obj._fetch_prev_nav_from_cloud.assert_not_called()
+
+
+def test_daily_return_uses_shares_before_nav_date():
+    fund_obj = _FakeMiniFund()
+    fund_obj.CACHE_MAP["000001"]["shares"] = 150
+    fund_obj.db.get_fund_transactions.return_value = [
+        {
+            "tx_type": "buy",
+            "shares": 100,
+            "tx_time": "2024-01-01 15:00:00",
+        },
+        {
+            "tx_type": "buy",
+            "shares": 50,
+            "tx_time": "2024-01-03 15:00:00",
+        },
+    ]
+    fund_obj.nav_repo.get_fund_nav_by_date.return_value = 1.1
+
+    _titles, rows, _sortable = build_fund_table(fund_obj)
+
+    assert "¥10.00" in rows[0][8]
+    assert "¥15.00" not in rows[0][8]
+
+
+def test_position_summary_actual_gain_uses_shares_before_nav_date():
+    today = datetime.date.today()
+    prior_day = today - datetime.timedelta(days=2)
+    result = [[
+        "000001",
+        "测试基金",
+        "15:00",
+        f"1.2000({today.isoformat()})",
+        "0.00%",
+        "10.00%",
+        today.isoformat(),
+        "1天 10.00%",
+        "1/1 10.00%",
+    ]]
+    cache_map = {"000001": {"shares": 150}}
+    db = MagicMock()
+    db.get_fund_transactions.return_value = [
+        {
+            "tx_type": "buy",
+            "shares": 100,
+            "tx_time": f"{prior_day.isoformat()} 15:00:00",
+        },
+        {
+            "tx_type": "buy",
+            "shares": 50,
+            "tx_time": f"{today.isoformat()} 15:00:00",
+        },
+    ]
+
+    summary = calculate_position_summary(result, cache_map, db=db, user_id=1)
+
+    assert summary["actual_gain"] == 12.0
+    assert summary["settled_value"] == 120.0
 
 
 def test_estimated_return_uses_prev_nav_and_does_not_store_estimated_nav():

@@ -1099,7 +1099,7 @@ class MiniFund:
     def calculate_position_summary(self):
         """计算持仓统计信息（CLI 输出用，委托给独立函数）。"""
         from src.fund_table import calculate_position_summary
-        return calculate_position_summary(self.result, self.CACHE_MAP)
+        return calculate_position_summary(self.result, self.CACHE_MAP, self.db, self.user_id)
 
     def modify_shares(self):
         """修改基金持仓份额（CLI交互式）"""

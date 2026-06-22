@@ -9,6 +9,7 @@ from src.services.metrics import (
     format_diff_value,
     format_money_value,
     format_pct_value,
+    parse_tx_datetime,
     parse_growth_percent,
     safe_float,
 )
@@ -80,6 +81,37 @@ def _calc_estimate_return_from_nav(shares, current_nav, estimate_growth):
     if estimate_growth is None or shares <= 0 or current_nav <= 0:
         return None
     return shares * current_nav * (estimate_growth / 100.0)
+
+
+def _calc_shares_before_date(db, user_id, fund_code, target_date, fallback_shares):
+    if not db or user_id is None or target_date is None:
+        return safe_float(fallback_shares, 0.0)
+
+    try:
+        transactions = db.get_fund_transactions(user_id, fund_code) or []
+    except Exception:
+        return safe_float(fallback_shares, 0.0)
+
+    if not transactions:
+        return safe_float(fallback_shares, 0.0)
+
+    shares = 0.0
+    for tx in transactions:
+        tx_dt = parse_tx_datetime(tx.get('tx_time'))
+        if tx_dt is None or tx_dt.date() >= target_date:
+            continue
+
+        tx_shares = safe_float(tx.get('shares'), 0.0)
+        tx_type = str(tx.get('tx_type', '')).strip().lower()
+        if tx_type == 'buy':
+            shares += tx_shares
+        elif tx_type == 'sell':
+            shares -= tx_shares
+
+        if shares < 1e-8:
+            shares = 0.0
+
+    return shares
 
 
 def _split_two_part_display(value):
@@ -292,8 +324,11 @@ def build_fund_table(lan_fund, cancel_event=None):
                     current_nav = net_value_num
                     prev_nav = _get_prev_trading_nav(lan_fund, code, net_value_date_obj)
 
-        if current_nav is not None and prev_nav is not None and shares > 0:
-            day_return = shares * (current_nav - prev_nav)
+        if current_nav is not None and prev_nav is not None:
+            daily_shares = _calc_shares_before_date(
+                lan_fund.db, lan_fund.user_id, code, _parse_date_text(net_value_date), shares
+            )
+            day_return = daily_shares * (current_nav - prev_nav) if daily_shares > 0 else None
         else:
             day_return = None
         day_return_display = format_money_value(day_return) if day_return is not None else "--"
@@ -313,7 +348,7 @@ def build_fund_table(lan_fund, cancel_event=None):
     return titles, rows, [3, 4, 5, 6, 7, 8, 9]
 
 
-def calculate_position_summary(result, cache_map):
+def calculate_position_summary(result, cache_map, db=None, user_id=None):
     """Calculate position summary from fund search results.
 
     Args:
@@ -377,9 +412,12 @@ def calculate_position_summary(result, cache_map):
 
             fund_act_gain = 0
             if net_value_date == today:
-                fund_act_gain = position_value * day_growth / 100
+                daily_shares = _calc_shares_before_date(
+                    db, user_id, fund_code, _parse_date_text(net_value_date), shares
+                )
+                fund_act_gain = daily_shares * net_value * day_growth / 100 if daily_shares > 0 else 0
                 actual_gain += fund_act_gain
-                settled_value += position_value
+                settled_value += daily_shares * net_value
 
             fund_details.append({
                 'code': fund_code,
