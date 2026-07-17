@@ -1873,10 +1873,14 @@ document.addEventListener('DOMContentLoaded', function() {
                             <td style="padding: 10px; text-align: center; vertical-align: middle; color: var(--text-main); white-space: nowrap; min-width: 120px;">${fund.name}</td>
                             <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: var(--text-main);"><span class="real-value">${fund.shares.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
                             <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); font-weight: 600; color: var(--text-main);"><span class="real-value">¥${fund.positionValue.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span><span class="hidden-value">****</span></td>
-                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${hasEstimate ? estColor : 'var(--text-dim)'}; font-weight: 500;"><span class="real-value">${hasEstimate ? `${estMoneySign}¥${Math.abs(fund.estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}` : '--'}</span><span class="hidden-value">****</span></td>
-                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${actColor}; font-weight: 500;"><span class="real-value">${hasActual ? `${actMoneySign}¥${Math.abs(fund.actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}` : '--'}</span><span class="hidden-value">****</span></td>
-                            <td style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${hasEstimate ? estColor : 'var(--text-dim)'}; font-weight: 500;">${hasEstimate ? `${estSign}${fund.estimatedGainPct.toFixed(2)}%` : '--'}</td>
-                            <td style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${actColor}; font-weight: 500;">${hasActual ? `${actSign}${fund.actualGainPct.toFixed(2)}%` : '--'}</td>
+                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${hasEstimate ? estColor : 'var(--text-dim)'}; font-weight: 500;">
+                                <span class="real-value">${hasEstimate ? `${estMoneySign}¥${Math.abs(fund.estimatedGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}<br><span style="font-size:11px;font-weight:400;">${estSign}${fund.estimatedGainPct.toFixed(2)}%</span>` : '--'}</span>
+                                <span class="hidden-value">****</span>
+                            </td>
+                            <td class="sensitive-value" style="padding: 10px; text-align: center; vertical-align: middle; font-family: var(--font-mono); color: ${actColor}; font-weight: 500;">
+                                <span class="real-value">${hasActual ? `${actMoneySign}¥${Math.abs(fund.actualGain).toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}<br><span style="font-size:11px;font-weight:400;">${actSign}${fund.actualGainPct.toFixed(2)}%</span>` : '--'}</span>
+                                <span class="hidden-value">****</span>
+                            </td>
                         </tr>
                     `;
                 }).join('');

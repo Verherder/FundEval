@@ -1072,15 +1072,14 @@ class MiniFund:
                             detail['name'],
                             f"{detail['shares']:,.2f}",
                             f"¥{detail['position_value']:,.2f}",
-                            f"{est_color}{est_sign}¥{detail['estimated_gain']:,.2f}\033[0m",
-                            f"{act_color}{act_sign}¥{detail['actual_gain']:,.2f}\033[0m",
-                            f"{est_color}{est_sign}{detail['estimated_gain_pct']:.2f}%\033[0m",
-                            f"{act_color}{act_sign}{detail['actual_gain_pct']:.2f}%\033[0m",
+                            f"{est_color}{est_sign}¥{detail['estimated_gain']:,.2f}\n"
+                            f"{est_sign}{detail['estimated_gain_pct']:.2f}%\033[0m",
+                            f"{act_color}{act_sign}¥{detail['actual_gain']:,.2f}\n"
+                            f"{act_sign}{detail['actual_gain_pct']:.2f}%\033[0m",
                         ])
 
                     for line_msg in format_table_msg([
-                        ["基金代码", "基金名称", "持仓份额", "持仓市值", "预估收益", "实际收益", "预估涨跌",
-                         "实际涨跌"],
+                        ["基金代码", "基金名称", "持仓份额", "持仓市值", "预估收益", "实际收益"],
                         *table_data
                     ]).split("\n"):
                         logger.info(line_msg)
