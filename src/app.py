@@ -28,8 +28,9 @@ def _setup_logging():
         str(_PROJECT_ROOT / "cache" / "logs" / "fund_server.log"),
         level="INFO",
         encoding="utf-8",
-        rotation="10 MB",
+        rotation="00:00",
         retention="14 days",
+        compression="gz",
     )
 
 
@@ -237,7 +238,10 @@ def create_app(db=None):
 
     app.wsgi_app = FilteredWSGIRequestLogger(app.wsgi_app)
 
-    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    if (
+        os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+        or os.environ.get("FUNDEVAL_START_BACKGROUND_TASKS") == "1"
+    ):
         _start_log_cleanup_worker_if_needed()
 
     return app

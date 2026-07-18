@@ -23,7 +23,7 @@ run.py  (30 行)
         └── FilteredWSGIRequestLogger  # 静态资源不刷日志
 ```
 
-`fund_server.py` 仍然可用，但只是兼容入口，直接复用同一套 `create_app()` + Blueprint 架构。日常开发使用 `python run.py`。
+项目只保留 `run.py` 一个应用入口：开发环境使用 `python run.py`，生产环境由 Gunicorn 加载 `run:app`。
 
 ---
 
@@ -212,9 +212,9 @@ api_fund_bp.api_portfolio_fund_table()      # blueprints/api_fund_bp.py
 
 MiniFund 持有 `user_id` 和 HTTP session，不同用户的请求需要不同的实例。Flask `g` 在请求结束时自动销毁，天然适合此场景。
 
-### 为什么 fund_server.py 还保留？
+### 应用入口
 
-向后兼容。`fund_server.py` 不再包含重复路由注册代码，只导入 `create_app()` 并暴露 `app`，让旧命令和 `fund_server:app` 引用继续可用。后续可直接删除 `fund_server.py`，只保留 `run.py`。
+`run.py` 是唯一入口，并通过 `src.app.create_app()` 创建应用。旧的 `fund_server.py` 兼容入口已经删除，避免开发和部署使用不同入口。
 
 ### Blueprint 内的 `user_id` 传递方式
 

@@ -3,11 +3,8 @@
 
 import json
 import random
-import time
 
 import requests
-from loguru import logger
-from tabulate import tabulate
 
 from src.data.bk_map import BK_MAP
 from src.config.yaml_config import get_data_source_urls
@@ -15,15 +12,11 @@ from src.config.yaml_config import get_data_source_urls
 DATA_SOURCE_URLS = get_data_source_urls()
 
 
-def format_table_msg(table, tablefmt="pretty"):
-    return tabulate(table, tablefmt=tablefmt, missingval="N/A")
-
-
 # ------------------------------------------------------------------
 # Sector / board data
 # ------------------------------------------------------------------
 
-def fetch_bk(is_return=False):
+def fetch_bk():
     """Fetch Eastmoney sector/board data."""
     bk_result = []
     try:
@@ -51,25 +44,10 @@ def fetch_bk(is_return=False):
             data = response.json()["data"]
             for bk in data["diff"]:
                 ratio = str(bk["f3"]) + "%"
-                if not is_return:
-                    if "-" in ratio:
-                        ratio = "\033[1;32m" + ratio
-                    else:
-                        ratio = "\033[1;31m" + ratio
                 add_market_cap = bk["f62"]
                 add_market_cap = str(round(add_market_cap / 100000000, 2)) + "亿"
-                if not is_return:
-                    if "-" in add_market_cap:
-                        add_market_cap = "\033[1;32m" + add_market_cap
-                    else:
-                        add_market_cap = "\033[1;31m" + add_market_cap
                 add_market_cap2 = bk["f84"]
                 add_market_cap2 = str(round(add_market_cap2 / 100000000, 2)) + "亿"
-                if not is_return:
-                    if "-" in add_market_cap2:
-                        add_market_cap2 = "\033[1;32m" + add_market_cap2
-                    else:
-                        add_market_cap2 = "\033[1;31m" + add_market_cap2
                 bk_result.append([
                     bk["f14"],
                     ratio,
@@ -83,56 +61,30 @@ def fetch_bk(is_return=False):
 
     bk_result = sorted(
         bk_result,
-        key=lambda x: float(x[1].split("m")[-1].replace("%", "")) if x[3] != "N/A" else -99,
+        key=lambda x: float(x[1].replace("%", "")) if x[3] != "N/A" else -99,
         reverse=True
     )
-    if is_return:
-        return bk_result
-    if bk_result:
-        logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 行业板块:")
-        for line_msg in format_table_msg([
-            [
-                "板块名称", "今日涨跌幅", "今日主力净流入", "今日主力净流入占比", "今日小单净流入", "今日小单流入占比"
-            ],
-            *bk_result
-        ]).split("\n"):
-            logger.info(line_msg)
+    return bk_result
 
 
 # ------------------------------------------------------------------
 # Fund selection by sector
 # ------------------------------------------------------------------
 
-def fetch_select_fund(bk_id=None, is_return=False):
+def fetch_select_fund(bk_id=None):
     """Fetch funds by sector from Eastmoney API."""
-    if not is_return:
-        logger.critical("板块基金查询功能")
     bk_map = BK_MAP
     bk_list = list(bk_map.keys())
 
-    if is_return and bk_id is None:
+    if bk_id is None:
         return {"bk_map": bk_map, "bk_list": bk_list}
 
-    results = []
-    id_map = {}
-    for i in range(0, len(bk_list), 5):
-        tmp = bk_list[i:i + 5]
-        tmp = [str(i + 1 + j) + ". " + tmp[j] for j in range(len(tmp))]
-        for j in range(len(tmp)):
-            id_map[str(i + 1 + j)] = bk_map[bk_list[i + j]]
-        results.append(tmp)
+    id_map = {
+        str(index): bk_map[name]
+        for index, name in enumerate(bk_list, start=1)
+    }
 
-    if not is_return:
-        for line_msg in format_table_msg(results).split("\n"):
-            logger.info(line_msg)
-
-        logger.debug("请输入要查询的板块序号(单选):")
-        bk_id = input()
-        while bk_id not in id_map:
-            logger.error("输入有误, 请重新输入要查询的板块序号:")
-            bk_id = input()
-
-    if is_return and bk_id not in id_map:
+    if bk_id not in id_map:
         if bk_id in bk_map:
             bk_code = bk_map[bk_id]
         else:
@@ -199,20 +151,8 @@ def fetch_select_fund(bk_id=None, is_return=False):
             (data_list[24] or "---") + "%"
         ])
 
-    if is_return:
-        return {
-            "bk_id": bk_id,
-            "bk_name": list(bk_map.keys())[int(bk_id) - 1] if bk_id.isdigit() else bk_id,
-            "results": fund_results
-        }
-
-    logger.critical(f"板块【{bk_id}. {list(bk_map.keys())[int(bk_id) - 1]}】基金列表:")
-    for line_msg in format_table_msg([
-        [
-            "基金代码", "基金名称", "基金类型", "日期", "净值|日增长率", "近1周", "近1月", "近3月", "近6月",
-            "今年来", "近1年", "近2年", "近3年", "成立以来"
-        ],
-        *fund_results
-    ]).split("\n"):
-        logger.info(line_msg)
-
+    return {
+        "bk_id": bk_id,
+        "bk_name": list(bk_map.keys())[int(bk_id) - 1] if bk_id.isdigit() else bk_id,
+        "results": fund_results
+    }

@@ -60,12 +60,10 @@ pip install -r requirements.txt
 
 - `loguru` - 日志输出
 - `requests` - HTTP请求
-- `tabulate` - 表格格式化
-- `flask` - Web服务器（仅Web模式需要）
-- `curl-cffi` - 浏览器模拟请求
-- `langchain` - AI提示链框架（AI分析功能）
-- `langchain-openai` - OpenAI兼容API支持
-- `langchain-core` - LangChain核心组件
+- `flask` / `gunicorn` - Web应用与生产服务器
+- `bcrypt` - 用户密码哈希
+- `openpyxl` - Excel交易记录导入
+- `exchange_calendars` - 沪深交易日历
 
 ---
 
@@ -79,7 +77,46 @@ pip install -r requirements.txt
 python run.py
 ```
 
-默认地址：`http://localhost:8311/portfolio`
+开发环境默认地址以 `config.yaml` 的 `server.port` 为准。
+
+服务器部署使用 Gunicorn 管理脚本：
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+./scripts/start.sh
+./scripts/status.sh
+./scripts/restart.sh
+./scripts/stop.sh
+```
+
+完整安装、Nginx、启停和日志配置见 [服务器部署说明](docs/DEPLOYMENT.md)。
+
+运行日志位于 `cache/logs/`。可通过环境变量覆盖运行参数，例如：
+
+```bash
+FUNDEVAL_BIND=127.0.0.1:8312 FUNDEVAL_THREADS=12 ./scripts/restart.sh
+```
+
+### 日志归档
+
+应用日志每天零点自动归档为 gzip 文件，默认保留 14 天。Gunicorn 和交易导入日志通过脚本轮转：
+
+```bash
+./scripts/rotate_logs.sh
+```
+
+服务器上建议加入当前部署用户的 crontab，每天零点 10 分执行：
+
+```cron
+10 0 * * * /opt/FundEval/scripts/rotate_logs.sh >> /opt/FundEval/cache/logs/rotate.log 2>&1
+```
+
+将 `/opt/FundEval` 替换为实际部署目录。调整归档保留天数：
+
+```bash
+FUNDEVAL_LOG_RETENTION_DAYS=30 ./scripts/rotate_logs.sh
+```
 
 #### Web 操作功能
 
