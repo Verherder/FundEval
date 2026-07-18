@@ -42,6 +42,59 @@ def safe_int(value, default=0):
             return None
 
 
+def compute_nav_momentum(nav_map, max_changes=30):
+    """Compute recent up-day ratio and the latest consecutive NAV direction."""
+    valid_points = []
+    for nav_date, nav_value in sorted((nav_map or {}).items()):
+        value = safe_float(nav_value, None)
+        if value is not None and value > 0:
+            valid_points.append((str(nav_date), value))
+
+    points = valid_points[-(max_changes + 1):]
+    if len(points) < 2:
+        return {
+            "up_days": "N/A",
+            "change_days": 0,
+            "period_growth": "N/A",
+            "consecutive_count": "N/A",
+            "consecutive_growth": "N/A",
+        }
+
+    changes = []
+    for index in range(1, len(points)):
+        previous = points[index - 1][1]
+        current = points[index][1]
+        direction = 1 if current > previous else (-1 if current < previous else 0)
+        changes.append(direction)
+
+    up_days = sum(1 for direction in changes if direction > 0)
+    period_growth = (points[-1][1] / points[0][1] - 1.0) * 100.0
+
+    latest_direction = changes[-1]
+    if latest_direction == 0:
+        consecutive_count = 0
+        consecutive_growth = 0.0
+    else:
+        streak_length = 1
+        for direction in reversed(changes[:-1]):
+            if direction != latest_direction:
+                break
+            streak_length += 1
+        streak_start_index = len(points) - streak_length - 1
+        consecutive_growth = (
+            points[-1][1] / points[streak_start_index][1] - 1.0
+        ) * 100.0
+        consecutive_count = streak_length if latest_direction > 0 else -streak_length
+
+    return {
+        "up_days": up_days,
+        "change_days": len(changes),
+        "period_growth": f"{period_growth:.2f}%",
+        "consecutive_count": consecutive_count,
+        "consecutive_growth": f"{consecutive_growth:.2f}%",
+    }
+
+
 def quantize_shares_2(value):
     """Round shares to 2 decimal places."""
     try:

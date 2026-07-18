@@ -6,6 +6,7 @@ import re
 from loguru import logger
 
 from src.providers import Fund123EndpointBlockedError, FundGzClient
+from src.services.metrics import compute_nav_momentum
 
 
 class FundQuoteWorker:
@@ -71,12 +72,16 @@ class FundQuoteWorker:
                     owner._ensure_recent_nav_history_on_refresh(fund, fund_key, normalized_net_value_date)
                 netValueDate = normalized_net_value_date or netValueDate
                 netValue = netValue + f"({netValueDate})"
-                # 组合刷新只取净值和估值；业绩/趋势数据由图表接口在用户展开时按需加载。
-                montly_growth_day = "N/A"
-                montly_growth_day_count = 0
-                montly_growth_rate = "N/A"
-                consecutive_count = "N/A"
-                consecutive_growth = "N/A"
+                # 近期表现只读本地真实净值，不在列表刷新时请求远程趋势数据。
+                momentum = compute_nav_momentum(
+                    owner.nav_repo.get_fund_nav_history_range(fund)
+                    if owner.nav_repo is not None else {}
+                )
+                montly_growth_day = momentum["up_days"]
+                montly_growth_day_count = momentum["change_days"]
+                montly_growth_rate = momentum["period_growth"]
+                consecutive_count = momentum["consecutive_count"]
+                consecutive_growth = momentum["consecutive_growth"]
 
                 today = datetime.datetime.now().strftime("%Y-%m-%d")
                 now_time = "N/A"
