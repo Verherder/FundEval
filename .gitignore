@@ -9,6 +9,5 @@ CLAUDE.md
 *.DS_Store
 *.log
 package*.json
-cache/logs
-cache/fund_data.db
+cache/
 dist/
