@@ -40,6 +40,7 @@ from src.market_data import (
     fetch_select_fund,
 )
 from src.trading_calendar import iter_cn_sse_trading_days
+from src.providers import Fund123Client, FundGzClient
 
 # 加载环境变量
 load_dotenv()
@@ -148,6 +149,13 @@ class MiniFund:
         self._next_request_at = 0.0
         self._cooldown_until = 0.0
         self._csrf = ""
+        self._fund123_client = Fund123Client(
+            self._request_with_retries,
+            self._request_json_with_retries,
+            DATA_SOURCE_URLS,
+            lambda: self._csrf,
+        )
+        self._fundgz_client = FundGzClient(self._request_with_retries, DATA_SOURCE_URLS)
         self.report_dir = None  # 默认不输出报告文件（需通过 -o 参数指定）
         self.result = []
         self._cache_dirty = False
@@ -275,45 +283,19 @@ class MiniFund:
         """Fetch only the latest estimate point for portfolio refresh consumers."""
         if cancel_event is not None and cancel_event.is_set():
             return None
-        headers = {
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "Connection": "close",
-            "Content-Type": "application/json",
-            "Origin": DATA_SOURCE_URLS['fund123_origin'],
-            "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-            "X-API-Key": "foobar",
-            "accept": "json",
-        }
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
-        tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        _response, payload = self._request_json_with_retries(
-            "POST",
-            DATA_SOURCE_URLS['fund123_intraday_api'],
-            headers=headers,
-            params={"_csrf": self._csrf},
-            json={
-                "startTime": today,
-                "endTime": tomorrow,
-                "limit": 200,
-                "productId": fund_key,
-                "format": True,
-                "source": "WEALTHBFFWEB",
-            },
-            verify=False,
-        )
-        points = payload.get("list", []) if payload.get("success") else []
-        if not points:
-            return None
-        latest = points[-1]
-        quote_dt = datetime.datetime.fromtimestamp(latest["time"] / 1000)
-        return {
-            "growth": round(float(latest["forecastGrowth"]) * 100, 2),
-            "net_value": round(float(latest["forecastNetValue"]), 4),
-            "date": quote_dt.strftime("%Y-%m-%d"),
-            "time": quote_dt.strftime("%H:%M"),
-        }
+        client = getattr(self, "_fund123_client", None)
+        if client is None:
+            client = Fund123Client(
+                self._request_with_retries,
+                self._request_json_with_retries,
+                DATA_SOURCE_URLS,
+                lambda: getattr(self, "_csrf", ""),
+            )
+        return client.fetch_latest_estimate(fund_key)
+
+    def fetch_intraday_curve(self, fund_key):
+        """Fetch the full intraday curve only for the chart endpoint."""
+        return self._fund123_client.fetch_intraday_curve(fund_key)
 
     def load_cache(self):
         """加载缓存数据，优先数据库；数据库为空时从 fund_map.json 迁移。"""
@@ -880,46 +862,33 @@ class MiniFund:
                 try:
                     if is_cancelled():
                         return
-                    fundgz_url = DATA_SOURCE_URLS['fundgz_js_tpl'].format(fund=fund)
-                    fundgz_resp = self._request_with_retries(
-                        "GET",
-                        fundgz_url,
-                        verify=False,
-                    )
+                    fundgz_client = getattr(self, "_fundgz_client", None)
+                    if fundgz_client is None:
+                        fundgz_client = FundGzClient(self._request_with_retries, DATA_SOURCE_URLS)
+                    estimate2 = fundgz_client.fetch_latest_estimate(fund)
                     if is_cancelled():
                         return
-                    payload_match = re.search(r"jsonpgz\((.*)\);?\s*$", fundgz_resp.text.strip())
-                    if payload_match:
-                        payload = json.loads(payload_match.group(1))
-                        gszzl_raw = payload.get("gszzl")
-                        if gszzl_raw not in (None, "", "N/A"):
-                            estimate2Growth = f"{round(float(gszzl_raw), 2)}%"
-                        gztime_raw = str(payload.get("gztime") or "").strip()
-                        if gztime_raw:
-                            gz_parts = gztime_raw.split()
-                            if len(gz_parts) >= 2:
-                                estimate2Date = gz_parts[0]
-                                estimate2Time = gz_parts[1][:5]
-                                # 估值2收盘缓存（仅当时间为15:00时入库），用于后续与净值日实际涨幅比较
-                                try:
-                                    estimate2_dt = datetime.datetime.strptime(gztime_raw, "%Y-%m-%d %H:%M")
-                                    is_final_estimate2 = (estimate2_dt.hour == 15 and estimate2_dt.minute == 0)
-                                    if is_final_estimate2:
-                                        estimate2_key = estimate2_dt.strftime("%Y-%m-%d")
-                                        estimate2_val = round(float(gszzl_raw), 2)
-                                        fund_cache = self.CACHE_MAP.get(fund, {})
-                                        current_history2 = fund_cache.get("estimate_history_2", {})
-                                        new_history2 = {estimate2_key: estimate2_val}
-                                        if current_history2 != new_history2:
-                                            fund_cache["estimate_history_2"] = new_history2
-                                            self._cache_dirty = True
-                                except Exception:
-                                    pass
-                    else:
-                        logger.warning(
-                            f"基金【{fund}】最新估值响应格式异常: "
-                            f"status={fundgz_resp.status_code}, content_length={len(fundgz_resp.text or '')}"
-                        )
+                    if estimate2["growth"] is not None:
+                        estimate2Growth = f"{estimate2['growth']}%"
+                    estimate2Date = estimate2["date"]
+                    estimate2Time = estimate2["time"]
+                    gztime_raw = estimate2["quote_time"]
+                    if gztime_raw:
+                        # 估值2收盘缓存（仅当时间为15:00时入库），用于后续与净值日实际涨幅比较
+                        try:
+                            estimate2_dt = datetime.datetime.strptime(gztime_raw, "%Y-%m-%d %H:%M")
+                            is_final_estimate2 = (estimate2_dt.hour == 15 and estimate2_dt.minute == 0)
+                            if is_final_estimate2 and estimate2["growth"] is not None:
+                                estimate2_key = estimate2_dt.strftime("%Y-%m-%d")
+                                estimate2_val = estimate2["growth"]
+                                fund_cache = self.CACHE_MAP.get(fund, {})
+                                current_history2 = fund_cache.get("estimate_history_2", {})
+                                new_history2 = {estimate2_key: estimate2_val}
+                                if current_history2 != new_history2:
+                                    fund_cache["estimate_history_2"] = new_history2
+                                    self._cache_dirty = True
+                        except Exception:
+                            pass
                 except Exception as e:
                     logger.warning(f"基金【{fund}】最新估值请求失败: {e}")
                 if estimate2Date and estimate2Date != today:

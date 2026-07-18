@@ -6,15 +6,13 @@ import re
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
 
-import requests
-
 from loguru import logger
 
 from src.services.metrics import safe_float, safe_int, build_clear_cycles, parse_tx_datetime
 from src.services.nav_service import nav_backfill_effective_end_date, _build_backfill_request_segments
 from src.services.transaction_service import _extract_net_value_and_date
 from src.trading_calendar import is_cn_sse_trading_day, iter_cn_sse_trading_days
-from src.config.yaml_config import get_data_source_urls, get_performance_chart_config
+from src.config.yaml_config import get_performance_chart_config
 
 # ── module-level constants (moved from fund_server.py) ────────────────
 
@@ -320,64 +318,15 @@ class ChartService:
         fund_key = fund_data['fund_key']
         fund_name = fund_data['fund_name']
 
-        my_fund = self._get_lan_fund(user_id=user_id)
-        csrf = my_fund._csrf
-        DATA_SOURCE_URLS = get_data_source_urls()
-
-        headers = {
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "Connection": "close",
-            "Content-Type": "application/json",
-            "Origin": DATA_SOURCE_URLS['fund123_origin'],
-            "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-            "X-API-Key": "foobar",
-            "accept": "json"
-        }
-
-        url = DATA_SOURCE_URLS['fund123_intraday_api']
-        params = {"_csrf": csrf}
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
-        tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        data = {
-            "startTime": today,
-            "endTime": tomorrow,
-            "limit": 200,
-            "productId": fund_key,
-            "format": True,
-            "source": "WEALTHBFFWEB"
-        }
-
         chart_data = {'labels': [], 'growth': [], 'net_values': []}
         try:
-            response = my_fund._request_with_retries(
-                "POST",
-                url,
-                headers=headers,
-                params=params,
-                json=data,
-                verify=False,
-            )
-            if response.json()["success"]:
-                raw_list = response.json().get("list", [])
-                if raw_list:
-                    labels = []
-                    growth = []
-                    net_values = []
-                    for fund_info in raw_list:
-                        now_time = datetime.datetime.fromtimestamp(fund_info["time"] / 1000).strftime("%H:%M")
-                        forecastGrowth = str(round(float(fund_info["forecastGrowth"]) * 100, 2)) + "%"
-                        forecastNetValue = str(round(float(fund_info["forecastNetValue"]), 4))
-                        labels.append(now_time)
-                        growth.append(float(fund_info["forecastGrowth"]) * 100)
-                        net_values.append(float(fund_info["forecastNetValue"]))
-                    chart_data = {
-                        'labels': labels,
-                        'growth': growth,
-                        'net_values': net_values,
-                    }
-            else:
-                logger.error(f"查询基金代码【{fund_code}】失败: {response.text.strip()}")
+            points = self._get_lan_fund(user_id=user_id).fetch_intraday_curve(fund_key)
+            if points:
+                chart_data = {
+                    'labels': [point['time'] for point in points],
+                    'growth': [point['growth'] for point in points],
+                    'net_values': [point['net_value'] for point in points],
+                }
         except Exception as e:
             logger.error(f"获取基金估值趋势图数据失败【{fund_code}】: {e}")
 
