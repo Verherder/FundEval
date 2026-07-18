@@ -1,13 +1,11 @@
 # -*- coding: UTF-8 -*-
 
-import argparse
 import datetime
 import json
 import os
 import re
 import threading
 import time
-from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 import urllib3
@@ -18,8 +16,6 @@ from tabulate import tabulate
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-from src.data.bk_map import BK_MAP
-from src.data.sectors import MAJOR_CATEGORIES
 from src.services.metrics import (
     compute_holding_metrics,
     format_diff_value,
@@ -29,14 +25,10 @@ from src.services.metrics import (
     safe_float,
 )
 from src.services.fund_refresh_service import FundRefreshService
-from src.utils.financial import solve_xirr, xnpv
 from src.repositories.fund_repo import FundRepo
 from src.repositories.nav_repo import NavRepo
 from src.config.yaml_config import get_data_source_urls, get_fund_refresh_config
-from src.market_data import (
-    fetch_bk,
-    fetch_select_fund,
-)
+from src.market_data import fetch_bk, fetch_select_fund
 from src.trading_calendar import iter_cn_sse_trading_days
 from src.providers import (
     Fund123Client,
@@ -144,7 +136,6 @@ class MiniFund:
         )
         self._fundgz_client = FundGzClient(self._request_with_retries, DATA_SOURCE_URLS)
         self._refresh_service = FundRefreshService()
-        self.report_dir = None  # 默认不输出报告文件（需通过 -o 参数指定）
         self.result = []
         self._cache_dirty = False
         self._remote_initialized = False
@@ -528,76 +519,6 @@ class MiniFund:
                 logger.error(f"删除基金代码【{code}】失败: {e}")
         self.save_cache()
 
-    def mark_fund_sector_cli(self):
-        """
-        标记基金板块（命令行交互）。
-        这是独立功能
-        """
-        now_codes = list(self.CACHE_MAP.keys())
-        logger.debug(f"当前缓存基金代码: {now_codes}")
-        logger.info("请输入基金代码, 多个基金代码以英文逗号分隔:")
-        codes = input()
-        codes = codes.split(",")
-        codes = [code.strip() for code in codes if code.strip()]
-
-        # 构建板块序号到名称的映射
-        all_sectors = []
-        for category, sectors in MAJOR_CATEGORIES.items():
-            for sector in sectors:
-                all_sectors.append(sector)
-
-        # 表格形式展示板块分类
-        logger.info("板块分类列表:")
-        results = []
-        for i in range(0, len(all_sectors), 5):
-            tmp = all_sectors[i:i + 5]
-            tmp = [f"{i + 1 + j}. {tmp[j]}" for j in range(len(tmp))]
-            results.append(tmp)
-        for line_msg in format_table_msg(results).split("\n"):
-            logger.info(line_msg)
-
-        for code in codes:
-            try:
-                if code not in self.CACHE_MAP:
-                    logger.warning(f"标记板块【{code}】失败: 不存在该基金代码, 请先添加该基金代码")
-                    continue
-
-                # 选择板块
-                logger.info(f"为基金 【{code} {self.CACHE_MAP[code]['fund_name']}】 选择板块:")
-                logger.info("请输入板块序号或自定义板块名称 (多个用逗号分隔, 如: 1,3,5 或 新能源,医药 或 1,新能源):")
-                sector_input = input().strip()
-
-                if sector_input:
-                    sector_items = [s.strip() for s in sector_input.split(",")]
-                    selected_sectors = []
-                    for item in sector_items:
-                        # 尝试解析为序号
-                        try:
-                            idx = int(item)
-                            if 1 <= idx <= len(all_sectors):
-                                # 是有效序号，从板块列表中获取
-                                selected_sectors.append(all_sectors[idx - 1])
-                            else:
-                                # 序号超出范围，当作自定义板块名称
-                                selected_sectors.append(item)
-                        except ValueError:
-                            # 不是数字，直接作为自定义板块名称
-                            selected_sectors.append(item)
-
-                    if selected_sectors:
-                        self.CACHE_MAP[code]["sectors"] = selected_sectors
-                        logger.info(f"✓ 已绑定板块: {', '.join(selected_sectors)}")
-                    else:
-                        logger.info("未选择任何板块")
-                else:
-                    logger.info("未选择任何板块")
-
-                logger.info(f"标记板块【{code}】成功")
-
-            except Exception as e:
-                logger.error(f"标记板块【{code}】失败: {e}")
-        self.save_cache()
-
     def mark_fund_sector_web(self, codes, sectors):
         """标记基金板块（Web API使用）
 
@@ -625,36 +546,6 @@ class MiniFund:
                 logger.info(f"✓ 已删除基金 {code} 的板块标记")
             else:
                 logger.warning(f"基金代码 {code} 不存在")
-        self.save_cache()
-
-    def unmark_fund_sector_cli(self):
-        """
-        删除基金板块标记（命令行交互）。
-        """
-        # 找出所有有板块标记的基金
-        marked_codes = [code for code, data in self.CACHE_MAP.items() if data.get("sectors", [])]
-        if not marked_codes:
-            logger.warning("暂无板块标记的基金代码")
-            return
-
-        logger.debug(f"当前有板块标记的基金代码: {marked_codes}")
-        logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
-        codes = input()
-        codes = codes.split(",")
-        codes = [code.strip() for code in codes if code.strip()]
-
-        for code in codes:
-            try:
-                if code in self.CACHE_MAP:
-                    if self.CACHE_MAP[code].get("sectors", []):
-                        self.CACHE_MAP[code]["sectors"] = []
-                        logger.info(f"删除板块标记【{code}】成功")
-                    else:
-                        logger.warning(f"删除板块标记【{code}】失败: 该基金没有板块标记")
-                else:
-                    logger.warning(f"删除板块标记【{code}】失败: 不存在该基金代码")
-            except Exception as e:
-                logger.error(f"删除板块标记【{code}】失败: {e}")
         self.save_cache()
 
     def search_one_code(self, fund, fund_data, is_return, cancel_event=None):
@@ -1112,27 +1003,3 @@ class MiniFund:
 
     def bk(self, is_return=False):
         return fetch_bk(is_return)
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='MiniFund')
-    parser.add_argument('-a', '--add', action='store_true', help='添加基金代码')
-    parser.add_argument("-d", "--delete", action="store_true", help="删除基金代码")
-    parser.add_argument("-c", "--hold", action="store_true", help="添加持有基金标注")
-    parser.add_argument("-b", "--not_hold", action="store_true", help="删除持有基金标注")
-    parser.add_argument("-e", "--mark_sector", action="store_true", help="标记板块")
-    parser.add_argument("-u", "--unmark_sector", action="store_true", help="删除标记板块")
-    parser.add_argument("-s", "--select", action="store_true", help="选择板块查看基金列表")
-    parser.add_argument("-m", "--modify-shares", action="store_true", help="修改基金持仓份额")
-    parser.add_argument("-o", "--output", type=str, nargs='?', const="reports", default=None,
-                        help="输出AI分析报告到指定目录（默认: reports）。只有使用此参数时才会保存报告文件")
-    parser.add_argument("-f", "--fast", action="store_true", help="启用快速分析模式")
-    parser.add_argument("-D", "--deep", action="store_true", help="启用深度研究模式")
-    parser.add_argument("-W", "--with-ai", action="store_true", help="AI分析")
-    args = parser.parse_args()
-
-    lan_fund = MiniFund()
-    # 只有指定了 -o 参数时才传入 report_dir，否则传入 None 表示不保存报告
-    report_dir = args.output if args.output is not None else None
-    lan_fund.run(args.add, args.delete, args.hold, args.not_hold, report_dir, args.deep, args.fast, args.with_ai,
-                 args.select, args.mark_sector, args.unmark_sector, args.modify_shares)

@@ -13,6 +13,7 @@ from src.services.nav_service import nav_backfill_effective_end_date, _build_bac
 from src.services.transaction_service import _extract_net_value_and_date
 from src.trading_calendar import is_cn_sse_trading_day, iter_cn_sse_trading_days
 from src.config.yaml_config import get_performance_chart_config
+from src.services.intraday_chart_service import IntradayChartService
 
 # ── module-level constants (moved from fund_server.py) ────────────────
 
@@ -108,6 +109,7 @@ class ChartService:
         self._transaction_repo = transaction_repo
         self._nav_service = nav_service
         self._get_lan_fund = get_lan_fund_fn
+        self._intraday_service = IntradayChartService(fund_repo, get_lan_fund_fn)
 
     # ── helpers ────────────────────────────────────────────────────────
 
@@ -297,46 +299,11 @@ class ChartService:
 
     def get_latest_fund_estimate(self, user_id, fund_code):
         """Return one latest estimate point without exposing trend data."""
-        user_funds = self._fund_repo.get_user_funds(user_id)
-        if fund_code not in user_funds:
-            return None
-        fund_data = user_funds[fund_code]
-        estimate = self._get_lan_fund(user_id=user_id).fetch_latest_intraday_estimate(fund_data["fund_key"])
-        return {
-            "estimate": estimate,
-            "fund_info": {"code": fund_code, "name": fund_data["fund_name"]},
-        }
+        return self._intraday_service.get_latest_estimate(user_id, fund_code)
 
     def get_fund_chart_data(self, user_id, fund_code):
         """获取基金估值趋势图数据。"""
-        user_funds = self._fund_repo.get_user_funds(user_id)
-
-        if fund_code not in user_funds:
-            return None
-
-        fund_data = user_funds[fund_code]
-        fund_key = fund_data['fund_key']
-        fund_name = fund_data['fund_name']
-
-        chart_data = {'labels': [], 'growth': [], 'net_values': []}
-        try:
-            points = self._get_lan_fund(user_id=user_id).fetch_intraday_curve(fund_key)
-            if points:
-                chart_data = {
-                    'labels': [point['time'] for point in points],
-                    'growth': [point['growth'] for point in points],
-                    'net_values': [point['net_value'] for point in points],
-                }
-        except Exception as e:
-            logger.error(f"获取基金估值趋势图数据失败【{fund_code}】: {e}")
-
-        return {
-            'chart_data': chart_data,
-            'fund_info': {
-                'code': fund_code,
-                'name': fund_name,
-            }
-        }
+        return self._intraday_service.get_curve(user_id, fund_code)
 
     def get_fund_performance_chart_data(self, user_id, fund_code, date_interval):
         """获取基金业绩曲线数据。"""
