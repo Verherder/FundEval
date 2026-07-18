@@ -797,6 +797,46 @@ function renderFundRowChart(canvas, chartData, chartType = 'estimate') {
         }
     };
 
+    const fundPerformanceCrosshairPlugin = {
+        id: 'fundPerformanceCrosshairPlugin',
+        afterEvent(chart, args) {
+            if (!isPerformanceChart) return;
+            const event = args.event;
+            if (!event || event.type === 'mouseout') {
+                chart.$fundPerformanceCrosshair = null;
+                args.changed = true;
+                return;
+            }
+
+            const {left, right, top, bottom} = chart.chartArea;
+            if (event.x < left || event.x > right || event.y < top || event.y > bottom) {
+                chart.$fundPerformanceCrosshair = null;
+                args.changed = true;
+                return;
+            }
+
+            chart.$fundPerformanceCrosshair = {x: event.x, y: event.y};
+            args.changed = true;
+        },
+        afterDatasetsDraw(chart) {
+            if (!isPerformanceChart || !chart.$fundPerformanceCrosshair) return;
+            const {x, y} = chart.$fundPerformanceCrosshair;
+            const {left, right, top, bottom} = chart.chartArea;
+            const ctx = chart.ctx;
+            ctx.save();
+            ctx.beginPath();
+            ctx.setLineDash([5, 4]);
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = 'rgba(148, 163, 184, 0.85)';
+            ctx.moveTo(x, top);
+            ctx.lineTo(x, bottom);
+            ctx.moveTo(left, y);
+            ctx.lineTo(right, y);
+            ctx.stroke();
+            ctx.restore();
+        }
+    };
+
     if (isPerformanceChart && Chart.Tooltip && Chart.Tooltip.positioners) {
         Chart.Tooltip.positioners.fundPerformancePoint = function(elements, eventPosition) {
             const fundDatasetIndex = this.chart.data.datasets.findIndex(
@@ -825,7 +865,9 @@ function renderFundRowChart(canvas, chartData, chartType = 'estimate') {
 
     const chartConfig = {
         type: 'line',
-        plugins: [clearCycleLabelPlugin],
+        plugins: isPerformanceChart
+            ? [clearCycleLabelPlugin, fundPerformanceCrosshairPlugin]
+            : [clearCycleLabelPlugin],
         data: {
             labels: chartData.labels || [],
             datasets: datasets
@@ -860,8 +902,6 @@ function renderFundRowChart(canvas, chartData, chartType = 'estimate') {
                                 if ((datasetLabel === '买入' || datasetLabel === '卖出' || datasetLabel === '清仓') && raw.tx_time) {
                                     const txDate = raw.x || String(raw.tx_time).split(' ')[0] || context.label;
                                     const dateIndex = (chartData.labels || []).indexOf(txDate);
-                                    const fundPerf = dateIndex >= 0 ? Number(growthData[dateIndex]) : Number(dataValue);
-                                    const benchmarkPerf = dateIndex >= 0 ? Number(benchmarkGrowthData[dateIndex]) : null;
                                     const holdingReturnPct = dateIndex >= 0 ? Number(holdingReturnPctData[dateIndex]) : null;
                                     const formatPct = function(value) {
                                         if (value === null || value === undefined || !Number.isFinite(value)) return '--';
@@ -872,8 +912,6 @@ function renderFundRowChart(canvas, chartData, chartType = 'estimate') {
                                         '金额：¥' + Number(raw.amount || 0).toFixed(2),
                                         '份额：' + Number(raw.shares || 0).toFixed(2),
                                         '净值：' + Number(raw.net_value || 0).toFixed(4),
-                                        '基金业绩：' + formatPct(fundPerf),
-                                        benchmarkLabel + '：' + formatPct(benchmarkPerf),
                                         '持有收益率：' + formatPct(holdingReturnPct)
                                     ];
                                     if (datasetLabel === '清仓') {
