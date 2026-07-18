@@ -4,15 +4,12 @@ import argparse
 import datetime
 import json
 import os
-import queue
-import random
 import re
 import threading
 import time
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
-import requests
 import urllib3
 import tabulate as tabulate_module
 from dotenv import load_dotenv
@@ -31,6 +28,7 @@ from src.services.metrics import (
     parse_growth_percent,
     safe_float,
 )
+from src.services.fund_refresh_service import FundRefreshService
 from src.utils.financial import solve_xirr, xnpv
 from src.repositories.fund_repo import FundRepo
 from src.repositories.nav_repo import NavRepo
@@ -40,7 +38,12 @@ from src.market_data import (
     fetch_select_fund,
 )
 from src.trading_calendar import iter_cn_sse_trading_days
-from src.providers import Fund123Client, FundGzClient
+from src.providers import (
+    Fund123Client,
+    Fund123EndpointBlockedError,
+    FundGzClient,
+    FundHttpTransport,
+)
 
 # 加载环境变量
 load_dotenv()
@@ -56,17 +59,6 @@ PERFORMANCE_CHART_INTERVALS = {
     "FIVE_YEAR": "近5年",
     "SINCE_ESTABLISHMENT": "成立以来",
 }
-
-FUND123_REQUEST_TIMEOUT = (5, 20)
-FUND123_REQUEST_RETRIES = 3
-FUND123_RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
-FUND123_FORBIDDEN_COOLDOWN_SECONDS = 300
-_FUND123_BLOCKED_ENDPOINTS = {}
-_FUND123_BLOCKED_ENDPOINTS_LOCK = threading.Lock()
-
-
-class Fund123EndpointBlockedError(requests.exceptions.HTTPError):
-    """Raised while an endpoint is temporarily disabled after HTTP 403."""
 
 urllib3.disable_warnings()
 try:
@@ -141,13 +133,8 @@ class MiniFund:
         self.fund_repo = FundRepo(db) if db else None
         self.nav_repo = NavRepo(db) if db else None
 
-        # 普通 HTTP 会话使用requests（fund123）
-        self.session = requests.Session()
-        self._thread_local = threading.local()
-        self._session_state_lock = threading.Lock()
-        self._request_schedule_lock = threading.Lock()
-        self._next_request_at = 0.0
-        self._cooldown_until = 0.0
+        self._transport = FundHttpTransport()
+        self.session = self._transport.session
         self._csrf = ""
         self._fund123_client = Fund123Client(
             self._request_with_retries,
@@ -156,6 +143,7 @@ class MiniFund:
             lambda: self._csrf,
         )
         self._fundgz_client = FundGzClient(self._request_with_retries, DATA_SOURCE_URLS)
+        self._refresh_service = FundRefreshService()
         self.report_dir = None  # 默认不输出报告文件（需通过 -o 参数指定）
         self.result = []
         self._cache_dirty = False
@@ -170,114 +158,13 @@ class MiniFund:
             except Exception as e:
                 logger.error(f"初始化失败(网络或接口问题，不影响登录等基础功能): {e}")
 
-    def _request_with_retries(self, method, url, *, retries=FUND123_REQUEST_RETRIES, **kwargs):
-        """Run a fund123-style request with bounded retry/backoff for flaky upstream connections."""
-        timeout = kwargs.pop("timeout", FUND123_REQUEST_TIMEOUT)
-        last_response = None
-        last_error = None
-        session = getattr(self._thread_local, "session", None)
-        if session is None:
-            session = requests.Session()
-            with self._session_state_lock:
-                session.headers.update(self.session.headers)
-                session.cookies.update(self.session.cookies)
-            self._thread_local.session = session
-
-        for attempt in range(1, retries + 1):
-            self._raise_if_endpoint_blocked(url)
-            self._wait_for_request_slot()
-            try:
-                response = session.request(method, url, timeout=timeout, **kwargs)
-                with self._session_state_lock:
-                    self.session.cookies.update(session.cookies)
-                if response.status_code == 403:
-                    self._block_forbidden_endpoint(url)
-                    raise Fund123EndpointBlockedError(
-                        f"Fund123 接口返回 403，已暂停请求 5 分钟: {url}",
-                        response=response,
-                    )
-                if response.status_code not in FUND123_RETRY_STATUS_CODES:
-                    return response
-
-                last_response = response
-                if response.status_code == 429:
-                    self._register_rate_limit(response, attempt)
-                logger.warning(
-                    f"请求 {url} 返回 {response.status_code}，准备重试 "
-                    f"({attempt}/{retries})"
-                )
-            except Fund123EndpointBlockedError:
-                raise
-            except requests.exceptions.RequestException as e:
-                last_error = e
-                logger.warning(f"请求 {url} 失败，准备重试 ({attempt}/{retries}): {e}")
-
-            if attempt < retries:
-                time.sleep((0.6 * (2 ** (attempt - 1))) + random.uniform(0, 0.25))
-
-        if last_response is not None:
-            last_response.raise_for_status()
-            return last_response
-        raise last_error
-
-    @staticmethod
-    def _raise_if_endpoint_blocked(url):
-        now = time.monotonic()
-        with _FUND123_BLOCKED_ENDPOINTS_LOCK:
-            blocked_until = _FUND123_BLOCKED_ENDPOINTS.get(url, 0.0)
-            if blocked_until <= now:
-                _FUND123_BLOCKED_ENDPOINTS.pop(url, None)
-                return
-            remaining = max(1, int(blocked_until - now))
-        raise Fund123EndpointBlockedError(f"Fund123 接口仍在熔断期（剩余约 {remaining} 秒）: {url}")
-
-    @staticmethod
-    def _block_forbidden_endpoint(url):
-        blocked_until = time.monotonic() + FUND123_FORBIDDEN_COOLDOWN_SECONDS
-        with _FUND123_BLOCKED_ENDPOINTS_LOCK:
-            first_block = _FUND123_BLOCKED_ENDPOINTS.get(url, 0.0) <= time.monotonic()
-            _FUND123_BLOCKED_ENDPOINTS[url] = max(_FUND123_BLOCKED_ENDPOINTS.get(url, 0.0), blocked_until)
-        if first_block:
-            logger.warning(f"请求 {url} 返回 403，暂停该接口 5 分钟，后续基金使用降级数据")
-
-    def _wait_for_request_slot(self):
-        """Space requests and honor a shared cooldown after upstream rate limits."""
-        with self._request_schedule_lock:
-            now = time.monotonic()
-            scheduled_at = max(now, self._next_request_at, self._cooldown_until)
-            self._next_request_at = scheduled_at + 0.05
-        delay = scheduled_at - now
-        if delay > 0:
-            time.sleep(delay)
-
-    def _register_rate_limit(self, response, attempt):
-        retry_after = response.headers.get("Retry-After", "")
-        try:
-            cooldown = max(1.0, float(retry_after))
-        except (TypeError, ValueError):
-            cooldown = min(8.0, 1.5 * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
-        with self._request_schedule_lock:
-            self._cooldown_until = max(self._cooldown_until, time.monotonic() + cooldown)
+    def _request_with_retries(self, method, url, **kwargs):
+        """Compatibility delegate while callers migrate to provider clients."""
+        return self._transport.request(method, url, **kwargs)
 
     def _request_json_with_retries(self, method, url, *, json_retries=3, **kwargs):
-        """Retry successful HTTP responses whose body is empty or invalid JSON."""
-        last_error = None
-        for attempt in range(1, json_retries + 1):
-            response = self._request_with_retries(method, url, **kwargs)
-            try:
-                if not response.content or not response.text.strip():
-                    raise ValueError("响应正文为空")
-                return response, response.json()
-            except (ValueError, json.JSONDecodeError) as e:
-                last_error = e
-                content_type = response.headers.get("Content-Type", "")
-                logger.warning(
-                    f"请求 {url} 返回无效JSON，准备重试 ({attempt}/{json_retries}): "
-                    f"status={response.status_code}, content_type={content_type}, error={e}"
-                )
-                if attempt < json_retries:
-                    time.sleep((0.4 * attempt) + random.uniform(0, 0.2))
-        raise ValueError(f"请求 {url} 连续返回无效JSON: {last_error}")
+        """Compatibility delegate while callers migrate to provider clients."""
+        return self._transport.request_json(method, url, json_retries=json_retries, **kwargs)
 
     def fetch_latest_intraday_estimate(self, fund_key, cancel_event=None):
         """Fetch only the latest estimate point for portfolio refresh consumers."""
@@ -928,46 +815,20 @@ class MiniFund:
                 logger.error(f"查询基金代码【{fund}】失败: {e}")
 
     def search_code(self, is_return=False, cancel_event=None):
-        refresh_started = time.perf_counter()
         self._cache_dirty = False
         self.result = []
-        task_queue = queue.Queue()
-        for fund, fund_data in self.CACHE_MAP.items():
-            if cancel_event is not None and cancel_event.is_set():
-                logger.info("刷新已停止，后续基金不再发起请求")
-                break
-            task_queue.put((fund, fund_data))
-
-        def worker():
-            while True:
-                if cancel_event is not None and cancel_event.is_set():
-                    return
-                try:
-                    fund, fund_data = task_queue.get_nowait()
-                except queue.Empty:
-                    return
-                try:
-                    if cancel_event is not None and cancel_event.is_set():
-                        return
-                    self.search_one_code(fund, fund_data, is_return, cancel_event)
-                finally:
-                    task_queue.task_done()
-
         configured_worker_count = get_fund_refresh_config().get('request_batch_size', 5)
         self._refresh_semaphore = threading.Semaphore(configured_worker_count)
-        worker_count = min(configured_worker_count, task_queue.qsize())
-        logger.info(
-            f"基金刷新开始: funds={task_queue.qsize()}, concurrency={worker_count}, "
-            f"configured_concurrency={configured_worker_count}"
+        refresh_service = getattr(self, "_refresh_service", None) or FundRefreshService()
+        refresh_result = refresh_service.refresh(
+            self.CACHE_MAP,
+            configured_worker_count,
+            lambda fund, fund_data: self.search_one_code(
+                fund, fund_data, is_return, cancel_event
+            ),
+            cancel_event=cancel_event,
         )
-        threads = [
-            threading.Thread(target=worker, name=f"fund-refresh-worker-{idx + 1}")
-            for idx in range(worker_count)
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        worker_count = refresh_result["worker_count"]
 
         today = datetime.datetime.now().strftime("%Y-%m-%d")
         estimate1_rows = [row for row in self.result if len(row) > 9 and row[4] != "N/A" and row[9]]
@@ -981,11 +842,6 @@ class MiniFund:
             f"missing1={max(0, len(self.result) - len(estimate1_rows))}, "
             f"missing2={max(0, len(self.result) - len(estimate2_rows))}"
         )
-        logger.info(
-            f"基金刷新完成: funds={len(self.CACHE_MAP)}, concurrency={worker_count}, "
-            f"elapsed_seconds={time.perf_counter() - refresh_started:.2f}"
-        )
-
         if self._cache_dirty:
             self.save_cache()
             self._cache_dirty = False

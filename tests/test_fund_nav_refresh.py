@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src import fund as fund_module
 from src.fund import Fund123EndpointBlockedError, MiniFund, normalize_nav_date_for_storage
 from src.fund_table import build_fund_table, calculate_position_summary
+from src.providers import FundHttpTransport
 
 
 def test_normalize_nav_date_for_storage_expands_short_date():
@@ -21,43 +21,35 @@ def test_normalize_nav_date_for_storage_expands_short_date():
 
 
 def test_json_request_retries_empty_response(monkeypatch):
-    fund_obj = MiniFund.__new__(MiniFund)
     empty_response = MagicMock(content=b"", text="", status_code=200, headers={})
     valid_response = MagicMock(content=b'{"success": true}', text='{"success": true}', status_code=200, headers={})
     valid_response.json.return_value = {"success": True}
-    fund_obj._request_with_retries = MagicMock(side_effect=[empty_response, valid_response])
-    monkeypatch.setattr("src.fund.time.sleep", lambda _seconds: None)
+    transport = FundHttpTransport(sleep_fn=lambda _seconds: None)
+    transport.request = MagicMock(side_effect=[empty_response, valid_response])
 
-    response, payload = fund_obj._request_json_with_retries("POST", "https://example.test/api")
+    response, payload = transport.request_json("POST", "https://example.test/api")
 
     assert response is valid_response
     assert payload == {"success": True}
-    assert fund_obj._request_with_retries.call_count == 2
+    assert transport.request.call_count == 2
 
 
 def test_forbidden_endpoint_is_circuit_broken(monkeypatch):
-    fund_module._FUND123_BLOCKED_ENDPOINTS.clear()
+    FundHttpTransport.clear_circuit_breakers()
     response = MagicMock(status_code=403, headers={})
     session = MagicMock()
     session.request.return_value = response
-    fund_obj = MiniFund.__new__(MiniFund)
-    fund_obj.session = session
-    fund_obj._thread_local = threading.local()
-    fund_obj._thread_local.session = session
-    fund_obj._request_schedule_lock = threading.Lock()
-    fund_obj._session_state_lock = threading.Lock()
-    fund_obj._next_request_at = 0.0
-    fund_obj._cooldown_until = 0.0
-    monkeypatch.setattr("src.fund.time.sleep", lambda _seconds: None)
+    transport = FundHttpTransport(session=session, sleep_fn=lambda _seconds: None)
+    transport._thread_local.session = session
 
     try:
         with pytest.raises(Fund123EndpointBlockedError):
-            fund_obj._request_with_retries("POST", "https://example.test/blocked")
+            transport.request("POST", "https://example.test/blocked")
         with pytest.raises(Fund123EndpointBlockedError):
-            fund_obj._request_with_retries("POST", "https://example.test/blocked")
+            transport.request("POST", "https://example.test/blocked")
         assert session.request.call_count == 1
     finally:
-        fund_module._FUND123_BLOCKED_ENDPOINTS.clear()
+        FundHttpTransport.clear_circuit_breakers()
 
 
 def test_fund_refresh_only_requests_latest_estimate_not_trend_data(monkeypatch):
@@ -97,9 +89,10 @@ def test_fund_refresh_only_requests_latest_estimate_not_trend_data(monkeypatch):
 
     requested_urls = [call.args[1] for call in fund_obj._request_with_retries.call_args_list]
     requested_urls += [call.args[1] for call in fund_obj._request_json_with_retries.call_args_list]
-    assert fund_module.DATA_SOURCE_URLS["fund123_curves_api"] not in requested_urls
-    assert fund_module.DATA_SOURCE_URLS["fund123_intraday_api"] not in requested_urls
-    assert fund_module.DATA_SOURCE_URLS["fundgz_js_tpl"].format(fund="260101") in requested_urls
+    from src.fund import DATA_SOURCE_URLS
+    assert DATA_SOURCE_URLS["fund123_curves_api"] not in requested_urls
+    assert DATA_SOURCE_URLS["fund123_intraday_api"] not in requested_urls
+    assert DATA_SOURCE_URLS["fundgz_js_tpl"].format(fund="260101") in requested_urls
     fund_obj._request_json_with_retries.assert_not_called()
     fund_obj.fetch_latest_intraday_estimate.assert_called_once_with("KEY260101", cancel_event=None)
     assert len(fund_obj.result) == 1
