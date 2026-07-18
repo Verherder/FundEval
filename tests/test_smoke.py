@@ -227,3 +227,7 @@ def test_portfolio_chart_module_available(client):
     resp = client.get("/static/js/portfolio/chart-crosshair.js")
     assert resp.status_code == 200
     assert b"createPerformanceCrosshairPlugin" in resp.data
+
+    entry_resp = client.get("/static/js/portfolio/portfolio.js")
+    assert entry_resp.status_code == 200
+    assert b"toggleFundRowChart" in entry_resp.data
