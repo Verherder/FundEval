@@ -5,14 +5,11 @@ import json
 import os
 import re
 import threading
-import time
 from pathlib import Path
 
 import urllib3
-import tabulate as tabulate_module
 from dotenv import load_dotenv
 from loguru import logger
-from tabulate import tabulate
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -29,7 +26,6 @@ from src.services.fund_quote_worker import FundQuoteWorker
 from src.repositories.fund_repo import FundRepo
 from src.repositories.nav_repo import NavRepo
 from src.config.yaml_config import get_data_source_urls, get_fund_refresh_config
-from src.market_data import fetch_bk, fetch_select_fund
 from src.trading_calendar import iter_cn_sse_trading_days
 from src.providers import (
     Fund123Client,
@@ -70,13 +66,6 @@ try:
         )
 except Exception:
     pass
-
-tabulate_module.PRESERVE_WHITESPACE = True
-
-
-def format_table_msg(table, tablefmt="pretty"):
-    return tabulate(table, tablefmt=tablefmt, missingval="N/A")
-
 
 def normalize_nav_date_for_storage(nav_date_text, today=None):
     """Normalize NAV date text to YYYY-MM-DD for fund_nav_history keys."""
@@ -556,21 +545,20 @@ class MiniFund:
             quote_worker = FundQuoteWorker(DATA_SOURCE_URLS, normalize_nav_date_for_storage)
         return quote_worker.refresh_one(self, fund, fund_data, is_return, cancel_event)
 
-    def search_code(self, is_return=False, cancel_event=None):
+    def search_code(self, is_return=True, cancel_event=None):
         self._cache_dirty = False
         self.result = []
         configured_worker_count = get_fund_refresh_config().get('request_batch_size', 5)
         self._refresh_semaphore = threading.Semaphore(configured_worker_count)
         refresh_service = getattr(self, "_refresh_service", None) or FundRefreshService()
-        refresh_result = refresh_service.refresh(
+        refresh_service.refresh(
             self.CACHE_MAP,
             configured_worker_count,
             lambda fund, fund_data: self.search_one_code(
-                fund, fund_data, is_return, cancel_event
+                fund, fund_data, True, cancel_event
             ),
             cancel_event=cancel_event,
         )
-        worker_count = refresh_result["worker_count"]
 
         today = datetime.datetime.now().strftime("%Y-%m-%d")
         estimate1_rows = [row for row in self.result if len(row) > 9 and row[4] != "N/A" and row[9]]
@@ -588,269 +576,12 @@ class MiniFund:
             self.save_cache()
             self._cache_dirty = False
 
-        if is_return:
-            self.result = sorted(
-                self.result,
-                key=lambda x: float(x[4].replace("%", "")) if x[4] != "N/A" else -99,
-                reverse=True
-            )
-            return self.result
-
-        if self.result:
-            self.result = sorted(
-                self.result,
-                key=lambda x: float(x[4].split("m")[1].replace("%", "")) if x[4] != "N/A" else -99,
-                reverse=True
-            )
-
-            # 计算并显示持仓统计
-            position_summary = self.calculate_position_summary()
-            if position_summary:
-                # 收益统计表格
-                logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 收益统计:")
-
-                # 准备表格数据
-                total_value = position_summary['total_value']
-                est_gain = position_summary['estimated_gain']
-                est_gain_pct = position_summary['estimated_gain_pct']
-                act_gain = position_summary['actual_gain']
-                act_gain_pct = position_summary['actual_gain_pct']
-                settled_value = position_summary.get('settled_value', 0)
-
-                est_color = '\033[1;31m' if est_gain >= 0 else '\033[1;32m'
-                act_color = '\033[1;31m' if act_gain >= 0 else '\033[1;32m'
-                est_sign = '+' if est_gain >= 0 else ''
-                act_sign = '+' if act_gain >= 0 else ''
-
-                # 今日实际涨跌：只有当有基金净值更新至今日时才显示数值
-                if settled_value > 0:
-                    actual_gain_str = f"{act_color}{act_sign}¥{act_gain:,.2f} ({act_sign}{act_gain_pct:.2f}%)\033[0m"
-                else:
-                    actual_gain_str = "\033[1;90m净值未更新\033[0m"  # 灰色显示
-
-                summary_table = [
-                    ["总持仓金额", f"¥{total_value:,.2f}"],
-                    ["今日预估涨跌", f"{est_color}{est_sign}¥{est_gain:,.2f} ({est_sign}{est_gain_pct:.2f}%)\033[0m"],
-                    ["今日实际涨跌", actual_gain_str],
-                ]
-
-                for line_msg in format_table_msg(summary_table).split("\n"):
-                    logger.info(line_msg)
-
-                # 显示每个基金的详细涨跌（表格格式）
-                if 'fund_details' in position_summary and position_summary['fund_details']:
-                    logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 分基金涨跌明细:")
-
-                    # 准备表格数据
-                    table_data = []
-                    for detail in position_summary['fund_details']:
-                        est_color = '\033[1;31m' if detail['estimated_gain'] >= 0 else '\033[1;32m'
-                        act_color = '\033[1;31m' if detail['actual_gain'] >= 0 else '\033[1;32m'
-                        est_sign = '+' if detail['estimated_gain'] >= 0 else ''
-                        act_sign = '+' if detail['actual_gain'] >= 0 else ''
-
-                        table_data.append([
-                            detail['code'],
-                            detail['name'],
-                            f"{detail['shares']:,.2f}",
-                            f"¥{detail['position_value']:,.2f}",
-                            f"{est_color}{est_sign}¥{detail['estimated_gain']:,.2f}\n"
-                            f"{est_sign}{detail['estimated_gain_pct']:.2f}%\033[0m",
-                            f"{act_color}{act_sign}¥{detail['actual_gain']:,.2f}\n"
-                            f"{act_sign}{detail['actual_gain_pct']:.2f}%\033[0m",
-                        ])
-
-                    for line_msg in format_table_msg([
-                        ["基金代码", "基金名称", "持仓份额", "持仓市值", "预估收益", "实际收益"],
-                        *table_data
-                    ]).split("\n"):
-                        logger.info(line_msg)
-
-            # CLI模式删除净值列，避免表格过宽
-            cli_result = [[row[0], row[1], row[2], row[4], row[5], row[6], row[7]] for row in self.result]
-            logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 基金估值信息:")
-            for line_msg in format_table_msg([
-                [
-                    "基金代码", "基金名称", "时间", "估值", "日涨幅", "连涨/跌", "近30天"
-                ],
-                *cli_result
-            ]).split("\n"):
-                logger.info(line_msg)
-
-    def calculate_position_summary(self):
-        """计算持仓统计信息（CLI 输出用，委托给独立函数）。"""
-        from src.fund_table import calculate_position_summary
-        return calculate_position_summary(self.result, self.CACHE_MAP, self.db, self.user_id)
-
-    def modify_shares(self):
-        """修改基金持仓份额（CLI交互式）"""
-        now_codes = list(self.CACHE_MAP.keys())
-        if not now_codes:
-            logger.warning("暂无基金代码，请先添加基金")
-            return
-
-        logger.info("当前基金列表:")
-        for code, data in self.CACHE_MAP.items():
-            shares = data.get('shares', 0)
-            logger.info(f"  {code} - {data['fund_name']} (当前份额: {shares})")
-
-        logger.info("\n请输入基金代码, 多个基金代码以英文逗号分隔:")
-        codes = input()
-        codes = codes.split(",")
-        codes = [code.strip() for code in codes if code.strip()]
-
-        for code in codes:
-            try:
-                if code not in self.CACHE_MAP:
-                    logger.warning(f"修改份额【{code}】失败: 不存在该基金代码, 请先添加该基金代码")
-                    continue
-
-                fund_name = self.CACHE_MAP[code]['fund_name']
-                current_shares = self.CACHE_MAP[code].get('shares', 0)
-
-                logger.info(f"\n基金 【{code} {fund_name}】")
-                logger.info(f"当前份额: {current_shares}")
-                logger.info("请输入新的份额数量 (输入0表示清空):")
-                shares_input = input().strip()
-
-                if shares_input:
-                    try:
-                        shares = float(shares_input)
-                        if shares < 0:
-                            logger.warning("份额不能为负数")
-                            continue
-
-                        self.CACHE_MAP[code]['shares'] = shares
-
-                        # 如果份额>0，自动标记为持有
-                        if shares > 0:
-                            self.CACHE_MAP[code]['is_hold'] = True
-
-                        logger.info(f"✓ 已更新份额: {shares}")
-                    except ValueError:
-                        logger.warning("份额格式错误，请输入数字")
-                        continue
-                else:
-                    logger.info("未输入份额，跳过")
-
-            except Exception as e:
-                logger.error(f"修改份额【{code}】失败: {e}")
-
-        self.save_cache()
-        logger.info("\n份额修改完成")
+        self.result.sort(
+            key=lambda row: float(row[4].replace("%", "")) if row[4] != "N/A" else -99,
+            reverse=True,
+        )
+        return self.result
 
     def build_fund_table(self, cancel_event=None):
         from src.fund_table import build_fund_table
         return build_fund_table(self, cancel_event=cancel_event)
-
-    def select_fund(self, bk_id=None, is_return=False):
-        return fetch_select_fund(bk_id, is_return)
-
-
-    def run(self, is_add=False, is_delete=False, is_hold=False, is_not_hold=False, report_dir=None,
-            deep_mode=False, fast_mode=False, with_ai=False, select_mode=False, mark_sector=False, unmark_sector=False,
-            modify_shares=False):
-        """
-        高层入口：根据参数执行数据更新、添加、删除、持有标记、AI分析等。
-        记录整体耗时日志（仅输出到终端）。
-        """
-        import time
-        start = time.perf_counter()
-
-        try:
-            if select_mode:
-                self.select_fund()
-                return
-
-            # 处理修改份额功能
-            if modify_shares:
-                self.modify_shares()
-                return
-
-            # 处理标记板块功能
-            if mark_sector:
-                self.mark_fund_sector_cli()
-                return
-
-            # 处理删除标记板块功能
-            if unmark_sector:
-                self.unmark_fund_sector_cli()
-                return
-
-            # 存储报告目录到实例属性（None 表示不保存报告文件）
-            self.report_dir = report_dir
-
-            if not self.CACHE_MAP:
-                logger.warning("暂无缓存代码信息, 请先添加基金代码")
-                is_add = True
-                is_delete = False
-                is_hold = False
-                is_not_hold = False
-            if is_not_hold:
-                hold_codes = [code for code, data in self.CACHE_MAP.items() if data.get("is_hold", False)]
-                if not hold_codes:
-                    logger.warning("暂无持有标注基金代码")
-                    return
-                logger.debug(f"当前持有标注基金代码: {hold_codes}")
-                logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
-                codes = input()
-                codes = codes.split(",")
-                codes = [code.strip() for code in codes if code.strip()]
-                for code in codes:
-                    try:
-                        if code in self.CACHE_MAP:
-                            self.CACHE_MAP[code]["is_hold"] = False
-                            logger.info(f"删除持有标注【{code}】成功")
-                        else:
-                            logger.warning(f"删除持有标注【{code}】失败: 不存在该基金代码")
-                    except Exception as e:
-                        logger.error(f"删除持有标注【{code}】失败: {e}")
-                self.save_cache()
-                return
-            if is_hold:
-                now_codes = list(self.CACHE_MAP.keys())
-                logger.debug(f"当前缓存基金代码: {now_codes}")
-                logger.info("请输入基金代码, 多个基金代码以英文逗号分隔:")
-                codes = input()
-                codes = codes.split(",")
-                codes = [code.strip() for code in codes if code.strip()]
-
-                for code in codes:
-                    try:
-                        if code not in self.CACHE_MAP:
-                            logger.warning(f"添加持有标注【{code}】失败: 不存在该基金代码, 请先添加该基金代码")
-                            continue
-
-                        self.CACHE_MAP[code]["is_hold"] = True
-                        logger.info(f"添加持有标注【{code}】成功")
-
-                    except Exception as e:
-                        logger.error(f"添加持有标注【{code}】失败: {e}")
-                self.save_cache()
-                return
-
-            if is_delete:
-                now_codes = list(self.CACHE_MAP.keys())
-                logger.debug(f"当前缓存基金代码: {now_codes}")
-                logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
-                codes = input()
-                self.delete_code(codes)
-                logger.success("删除基金代码成功")
-                if not is_add:
-                    return
-            if is_add:
-                logger.debug("请输入基金代码, 多个基金代码以英文逗号分隔:")
-                codes = input()
-                self.add_code(codes)
-                logger.success("添加基金代码成功")
-            else:
-                self.bk()
-                self.search_code()
-                if with_ai:
-                    self.ai_analysis(deep_mode=deep_mode, fast_mode=fast_mode)
-        finally:
-            elapsed = (time.perf_counter() - start) * 1000
-            print(f"[FUNC] MiniFund.run total_elapsed_ms={elapsed:.1f}")
-
-    def bk(self, is_return=False):
-        return fetch_bk(is_return)
