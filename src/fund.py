@@ -45,7 +45,6 @@ from src.trading_calendar import iter_cn_sse_trading_days
 load_dotenv()
 
 DATA_SOURCE_URLS = get_data_source_urls()
-FUND_REFRESH_CONFIG = get_fund_refresh_config()
 
 PERFORMANCE_CHART_INTERVALS = {
     "ONE_MONTH": "近1月",
@@ -57,11 +56,16 @@ PERFORMANCE_CHART_INTERVALS = {
     "SINCE_ESTABLISHMENT": "成立以来",
 }
 
-FUND_REFRESH_WORKER_COUNT = FUND_REFRESH_CONFIG.get('request_batch_size', 5)
-sem = threading.Semaphore(FUND_REFRESH_WORKER_COUNT)
 FUND123_REQUEST_TIMEOUT = (5, 20)
 FUND123_REQUEST_RETRIES = 3
 FUND123_RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
+FUND123_FORBIDDEN_COOLDOWN_SECONDS = 300
+_FUND123_BLOCKED_ENDPOINTS = {}
+_FUND123_BLOCKED_ENDPOINTS_LOCK = threading.Lock()
+
+
+class Fund123EndpointBlockedError(requests.exceptions.HTTPError):
+    """Raised while an endpoint is temporarily disabled after HTTP 403."""
 
 urllib3.disable_warnings()
 try:
@@ -138,12 +142,17 @@ class MiniFund:
 
         # 普通 HTTP 会话使用requests（fund123）
         self.session = requests.Session()
+        self._thread_local = threading.local()
+        self._session_state_lock = threading.Lock()
+        self._request_schedule_lock = threading.Lock()
+        self._next_request_at = 0.0
+        self._cooldown_until = 0.0
         self._csrf = ""
         self.report_dir = None  # 默认不输出报告文件（需通过 -o 参数指定）
         self.result = []
         self._cache_dirty = False
         self._remote_initialized = False
-        
+
         # 加载缓存数据，外部接口失败时不影响基础功能
         self.load_cache()
         if initialize_remote:
@@ -158,18 +167,39 @@ class MiniFund:
         timeout = kwargs.pop("timeout", FUND123_REQUEST_TIMEOUT)
         last_response = None
         last_error = None
+        session = getattr(self._thread_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            with self._session_state_lock:
+                session.headers.update(self.session.headers)
+                session.cookies.update(self.session.cookies)
+            self._thread_local.session = session
 
         for attempt in range(1, retries + 1):
+            self._raise_if_endpoint_blocked(url)
+            self._wait_for_request_slot()
             try:
-                response = self.session.request(method, url, timeout=timeout, **kwargs)
+                response = session.request(method, url, timeout=timeout, **kwargs)
+                with self._session_state_lock:
+                    self.session.cookies.update(session.cookies)
+                if response.status_code == 403:
+                    self._block_forbidden_endpoint(url)
+                    raise Fund123EndpointBlockedError(
+                        f"Fund123 接口返回 403，已暂停请求 5 分钟: {url}",
+                        response=response,
+                    )
                 if response.status_code not in FUND123_RETRY_STATUS_CODES:
                     return response
 
                 last_response = response
+                if response.status_code == 429:
+                    self._register_rate_limit(response, attempt)
                 logger.warning(
                     f"请求 {url} 返回 {response.status_code}，准备重试 "
                     f"({attempt}/{retries})"
                 )
+            except Fund123EndpointBlockedError:
+                raise
             except requests.exceptions.RequestException as e:
                 last_error = e
                 logger.warning(f"请求 {url} 失败，准备重试 ({attempt}/{retries}): {e}")
@@ -181,6 +211,109 @@ class MiniFund:
             last_response.raise_for_status()
             return last_response
         raise last_error
+
+    @staticmethod
+    def _raise_if_endpoint_blocked(url):
+        now = time.monotonic()
+        with _FUND123_BLOCKED_ENDPOINTS_LOCK:
+            blocked_until = _FUND123_BLOCKED_ENDPOINTS.get(url, 0.0)
+            if blocked_until <= now:
+                _FUND123_BLOCKED_ENDPOINTS.pop(url, None)
+                return
+            remaining = max(1, int(blocked_until - now))
+        raise Fund123EndpointBlockedError(f"Fund123 接口仍在熔断期（剩余约 {remaining} 秒）: {url}")
+
+    @staticmethod
+    def _block_forbidden_endpoint(url):
+        blocked_until = time.monotonic() + FUND123_FORBIDDEN_COOLDOWN_SECONDS
+        with _FUND123_BLOCKED_ENDPOINTS_LOCK:
+            first_block = _FUND123_BLOCKED_ENDPOINTS.get(url, 0.0) <= time.monotonic()
+            _FUND123_BLOCKED_ENDPOINTS[url] = max(_FUND123_BLOCKED_ENDPOINTS.get(url, 0.0), blocked_until)
+        if first_block:
+            logger.warning(f"请求 {url} 返回 403，暂停该接口 5 分钟，后续基金使用降级数据")
+
+    def _wait_for_request_slot(self):
+        """Space requests and honor a shared cooldown after upstream rate limits."""
+        with self._request_schedule_lock:
+            now = time.monotonic()
+            scheduled_at = max(now, self._next_request_at, self._cooldown_until)
+            self._next_request_at = scheduled_at + 0.05
+        delay = scheduled_at - now
+        if delay > 0:
+            time.sleep(delay)
+
+    def _register_rate_limit(self, response, attempt):
+        retry_after = response.headers.get("Retry-After", "")
+        try:
+            cooldown = max(1.0, float(retry_after))
+        except (TypeError, ValueError):
+            cooldown = min(8.0, 1.5 * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
+        with self._request_schedule_lock:
+            self._cooldown_until = max(self._cooldown_until, time.monotonic() + cooldown)
+
+    def _request_json_with_retries(self, method, url, *, json_retries=3, **kwargs):
+        """Retry successful HTTP responses whose body is empty or invalid JSON."""
+        last_error = None
+        for attempt in range(1, json_retries + 1):
+            response = self._request_with_retries(method, url, **kwargs)
+            try:
+                if not response.content or not response.text.strip():
+                    raise ValueError("响应正文为空")
+                return response, response.json()
+            except (ValueError, json.JSONDecodeError) as e:
+                last_error = e
+                content_type = response.headers.get("Content-Type", "")
+                logger.warning(
+                    f"请求 {url} 返回无效JSON，准备重试 ({attempt}/{json_retries}): "
+                    f"status={response.status_code}, content_type={content_type}, error={e}"
+                )
+                if attempt < json_retries:
+                    time.sleep((0.4 * attempt) + random.uniform(0, 0.2))
+        raise ValueError(f"请求 {url} 连续返回无效JSON: {last_error}")
+
+    def fetch_latest_intraday_estimate(self, fund_key, cancel_event=None):
+        """Fetch only the latest estimate point for portfolio refresh consumers."""
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+        headers = {
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Connection": "close",
+            "Content-Type": "application/json",
+            "Origin": DATA_SOURCE_URLS['fund123_origin'],
+            "Referer": DATA_SOURCE_URLS['fund123_fund_page'],
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+            "X-API-Key": "foobar",
+            "accept": "json",
+        }
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        _response, payload = self._request_json_with_retries(
+            "POST",
+            DATA_SOURCE_URLS['fund123_intraday_api'],
+            headers=headers,
+            params={"_csrf": self._csrf},
+            json={
+                "startTime": today,
+                "endTime": tomorrow,
+                "limit": 200,
+                "productId": fund_key,
+                "format": True,
+                "source": "WEALTHBFFWEB",
+            },
+            verify=False,
+        )
+        points = payload.get("list", []) if payload.get("success") else []
+        if not points:
+            return None
+        latest = points[-1]
+        quote_dt = datetime.datetime.fromtimestamp(latest["time"] / 1000)
+        return {
+            "growth": round(float(latest["forecastGrowth"]) * 100, 2),
+            "net_value": round(float(latest["forecastNetValue"]), 4),
+            "date": quote_dt.strftime("%Y-%m-%d"),
+            "time": quote_dt.strftime("%H:%M"),
+        }
 
     def load_cache(self):
         """加载缓存数据，优先数据库；数据库为空时从 fund_map.json 迁移。"""
@@ -482,7 +615,7 @@ class MiniFund:
                 data = {
                     "fundCode": code
                 }
-                response = self._request_with_retries(
+                response, search_json = self._request_json_with_retries(
                     "POST",
                     url,
                     headers=headers,
@@ -490,9 +623,9 @@ class MiniFund:
                     json=data,
                     verify=False,
                 )
-                if response.json()["success"]:
-                    fund_key = response.json()["fundInfo"]["key"]
-                    fund_name = response.json()["fundInfo"]["fundName"]
+                if search_json["success"]:
+                    fund_key = search_json["fundInfo"]["key"]
+                    fund_name = search_json["fundInfo"]["fundName"]
                     establishment_date = self._fetch_fund_establishment_date(code)
                     self.CACHE_MAP[code] = {
                         "fund_key": fund_key,
@@ -656,7 +789,7 @@ class MiniFund:
         self.save_cache()
 
     def search_one_code(self, fund, fund_data, is_return, cancel_event=None):
-        with sem:
+        with self._refresh_semaphore:
             def is_cancelled():
                 if cancel_event is not None and cancel_event.is_set():
                     logger.info(f"刷新已停止，跳过基金代码【{fund}】后续请求")
@@ -713,118 +846,33 @@ class MiniFund:
                     self._ensure_recent_nav_history_on_refresh(fund, fund_key, normalized_net_value_date)
                 netValueDate = normalized_net_value_date or netValueDate
                 netValue = netValue + f"({netValueDate})"
-                url = DATA_SOURCE_URLS['fund123_curves_api']
-                params = {
-                    "_csrf": self._csrf
-                }
-                data = {
-                    "productId": fund_key,
-                    "dateInterval": "ONE_MONTH"
-                }
-                response = self._request_with_retries(
-                    "POST",
-                    url,
-                    headers=headers,
-                    params=params,
-                    json=data,
-                    verify=False,
-                )
-                if is_cancelled():
-                    return
-                curves_json = response.json()
-                if not curves_json.get("success"):
-                    logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
-                    return
-                points = curves_json.get("points", [])
-                points = [x for x in points if x.get("type") == "fund"]
+                # 组合刷新只取净值和估值；业绩/趋势数据由图表接口在用户展开时按需加载。
+                montly_growth_day = "N/A"
+                montly_growth_day_count = 0
+                montly_growth_rate = "N/A"
+                consecutive_count = "N/A"
+                consecutive_growth = "N/A"
 
-                montly_growth = []
-                last_rate = None
-                for point in points:
-                    if last_rate is None:
-                        last_rate = point["rate"]
-                        continue
-                    now_rate = point["rate"]
-                    if now_rate >= last_rate:
-                        montly_growth.append(f"涨,{now_rate}")
-                    else:
-                        montly_growth.append(f"跌,{now_rate}")
-                    last_rate = now_rate
-
-                montly_growth = montly_growth[::-1]
-                if montly_growth:
-                    montly_growth_day = sum(1 for x in montly_growth if x[0] == "涨")
-                    montly_growth_day_count = len(montly_growth)
-                    consecutive_count = 1
-                    start_rate = montly_growth[0].split(",")[1]
-                    montly_growth_rate = str(round(round(float(start_rate), 4) * 100, 2)) + "%"
-                    end_rate = 0
-                    for i in montly_growth[1:]:
-                        if i[0] == montly_growth[0][0]:
-                            consecutive_count += 1
-                        else:
-                            end_rate = i.split(",")[1]
-                            break
-
-                    montly_growth_day = str(montly_growth_day)
-                    if "-" in montly_growth_rate:
-                        if not is_return:
-                            montly_growth_day = "\033[1;32m" + montly_growth_day
-                    else:
-                        if not is_return:
-                            montly_growth_day = "\033[1;31m" + montly_growth_day
-
-                    consecutive_growth = str(round(round(float(start_rate) - float(end_rate), 4) * 100, 2)) + "%"
-                    if montly_growth[0][0] == "跌":
-                        if not is_return:
-                            consecutive_count = "\033[1;32m" + str(-consecutive_count)
-                            consecutive_growth = "\033[1;32m" + str(consecutive_growth)
-                        else:
-                            consecutive_count = str(-consecutive_count)
-                            consecutive_growth = str(consecutive_growth)
-                    else:
-                        if not is_return:
-                            consecutive_count = "\033[1;31m" + str(consecutive_count)
-                            consecutive_growth = "\033[1;31m" + str(consecutive_growth)
-                        else:
-                            consecutive_count = str(consecutive_count)
-                            consecutive_growth = str(consecutive_growth)
-                else:
-                    montly_growth_day = "N/A"
-                    montly_growth_day_count = 0
-                    montly_growth_rate = "N/A"
-                    consecutive_count = "N/A"
-                    consecutive_growth = "N/A"
-
-                url = DATA_SOURCE_URLS['fund123_intraday_api']
-                params = {
-                    "_csrf": self._csrf
-                }
                 today = datetime.datetime.now().strftime("%Y-%m-%d")
-                tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-                data = {
-                    "startTime": today,
-                    "endTime": tomorrow,
-                    "limit": 200,
-                    "productId": fund_key,
-                    "format": True,
-                    "source": "WEALTHBFFWEB"
-                }
-                intraday_json = {"success": False, "list": []}
+                now_time = "N/A"
+                forecastGrowth = "N/A"
+                estimateDate = ""
                 try:
-                    if is_cancelled():
-                        return
-                    response = self._request_with_retries(
-                        "POST",
-                        url,
-                        headers=headers,
-                        params=params,
-                        json=data,
-                        verify=False,
-                    )
-                    intraday_json = response.json()
+                    latest_estimate = self.fetch_latest_intraday_estimate(fund_key, cancel_event=cancel_event)
+                    if latest_estimate:
+                        forecastGrowth = f"{latest_estimate['growth']}%"
+                        now_time = latest_estimate["time"]
+                        estimateDate = latest_estimate["date"]
+                        if now_time == "15:00":
+                            fund_cache = self.CACHE_MAP.get(fund, {})
+                            new_history = {estimateDate: latest_estimate["growth"]}
+                            if fund_cache.get("estimate_history", {}) != new_history:
+                                fund_cache["estimate_history"] = new_history
+                                self._cache_dirty = True
+                except Fund123EndpointBlockedError as e:
+                    logger.debug(f"基金【{fund}】估值1接口已熔断，使用 N/A: {e}")
                 except Exception as e:
-                    logger.warning(f"查询基金代码【{fund}】实时估值失败，使用 N/A: {e}")
+                    logger.warning(f"基金【{fund}】估值1请求失败: {e}")
 
                 estimate2Growth = "N/A"
                 estimate2Time = "N/A"
@@ -867,107 +915,51 @@ class MiniFund:
                                             self._cache_dirty = True
                                 except Exception:
                                     pass
-                except Exception:
-                    pass
-                if estimate2Date and estimate2Date != today:
-                    logger.debug(f"基金代码【{fund}】估值2日期过期: {estimate2Date}，当前日期: {today}")
-                    estimate2Growth = "N/A"
-                    estimate2Time = "N/A"
-                    estimate2Date = ""
-
-                if intraday_json.get("success"):
-                    if not intraday_json.get("list"):
-                        now_time = "N/A"
-                        forecastGrowth = "N/A"
-                        estimateDate = ""
                     else:
-                        fund_info = intraday_json["list"][-1]
-                        quote_dt = datetime.datetime.fromtimestamp(fund_info["time"] / 1000)
-                        now_time = quote_dt.strftime("%H:%M")
-                        estimateDate = quote_dt.strftime("%Y-%m-%d")
-                        forecastGrowth = str(round(float(fund_info["forecastGrowth"]) * 100, 2)) + "%"
+                        logger.warning(
+                            f"基金【{fund}】最新估值响应格式异常: "
+                            f"status={fundgz_resp.status_code}, content_length={len(fundgz_resp.text or '')}"
+                        )
+                except Exception as e:
+                    logger.warning(f"基金【{fund}】最新估值请求失败: {e}")
+                if estimate2Date and estimate2Date != today:
+                    logger.debug(f"基金代码【{fund}】使用最近交易日估值: {estimate2Date}，当前日期: {today}")
 
-                        # 记录"当日估值涨幅"历史（仅当估值更新时间为15:00时入库），用于后续与对应净值日的实际涨幅比较
-                        try:
-                            is_final_quote = (quote_dt.hour == 15 and quote_dt.minute == 0)
-
-                            if is_final_quote:
-                                today_key = quote_dt.strftime("%Y-%m-%d")
-                                estimate_val = round(float(fund_info["forecastGrowth"]) * 100, 2)
-                                fund_cache = self.CACHE_MAP.get(fund, {})
-                                current_history = fund_cache.get("estimate_history", {})
-                                new_history = {today_key: estimate_val}
-                                # 覆盖旧数据：仅保留当天一条最终快照
-                                if current_history != new_history:
-                                    fund_cache["estimate_history"] = new_history
-                                    self._cache_dirty = True
-                        except Exception:
-                            pass
-
-                        if not is_return:
-                            if "-" in forecastGrowth:
-                                forecastGrowth = "\033[1;32m" + forecastGrowth
-                            else:
-                                forecastGrowth = "\033[1;31m" + forecastGrowth
-                            if estimate2Growth != "N/A":
-                                if "-" in estimate2Growth:
-                                    estimate2Growth = "\033[1;32m" + estimate2Growth
-                                else:
-                                    estimate2Growth = "\033[1;31m" + estimate2Growth
-                    if not is_return:
-                        if "-" in dayOfGrowth:
-                            dayOfGrowth = "\033[1;32m" + dayOfGrowth
+                if not is_return:
+                    if forecastGrowth != "N/A":
+                        if "-" in forecastGrowth:
+                            forecastGrowth = "\033[1;32m" + forecastGrowth
                         else:
-                            dayOfGrowth = "\033[1;31m" + dayOfGrowth
-                    # 处理持有标记（Web 和 CLI 模式都显示）
-                    if self.CACHE_MAP[fund].get("is_hold", False):
-                        fund_name = "⭐ " + fund_name
-                    # 处理板块标记 - 根据模式使用不同格式
-                    sectors = self.CACHE_MAP[fund].get("sectors", [])
-                    if sectors:
-                        sector_display = ", ".join(sectors)
-                        if is_return:
-                            # Web模式：使用HTML样式
-                            fund_name = f"{fund_name} <span style='color: #8b949e; font-size: 12px;'>🏷️ {sector_display}</span>"
+                            forecastGrowth = "\033[1;31m" + forecastGrowth
+                    if "-" in dayOfGrowth:
+                        dayOfGrowth = "\033[1;32m" + dayOfGrowth
+                    else:
+                        dayOfGrowth = "\033[1;31m" + dayOfGrowth
+                    if estimate2Growth != "N/A":
+                        if "-" in estimate2Growth:
+                            estimate2Growth = "\033[1;32m" + estimate2Growth
                         else:
-                            # CLI模式：使用括号格式
-                            fund_name = f"({sector_display}) {fund_name}"
-                    # 合并连涨天数和连涨幅
-                    consecutive_info = f"{consecutive_count}天 {consecutive_growth}"
-                    # 合并近30天涨跌和总涨幅
-                    monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
-                    self.result.append([
-                        fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, netValueDate, consecutive_info,
-                        monthly_info, estimateDate, estimate2Growth, estimate2Time, estimate2Date
-                    ])
-                else:
-                    now_time = "N/A"
-                    forecastGrowth = "N/A"
-                    estimateDate = ""
-                    if not is_return:
-                        if "-" in dayOfGrowth:
-                            dayOfGrowth = "\033[1;32m" + dayOfGrowth
-                        else:
-                            dayOfGrowth = "\033[1;31m" + dayOfGrowth
-                    if self.CACHE_MAP[fund].get("is_hold", False):
-                        fund_name = "⭐ " + fund_name
-                    sectors = self.CACHE_MAP[fund].get("sectors", [])
-                    if sectors:
-                        sector_display = ", ".join(sectors)
-                        if is_return:
-                            fund_name = f"{fund_name} <span style='color: #8b949e; font-size: 12px;'>🏷️ {sector_display}</span>"
-                        else:
-                            fund_name = f"({sector_display}) {fund_name}"
-                    consecutive_info = f"{consecutive_count}天 {consecutive_growth}"
-                    monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
-                    self.result.append([
-                        fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, netValueDate, consecutive_info,
-                        monthly_info, estimateDate, estimate2Growth, estimate2Time, estimate2Date
-                    ])
+                            estimate2Growth = "\033[1;31m" + estimate2Growth
+                if self.CACHE_MAP[fund].get("is_hold", False):
+                    fund_name = "⭐ " + fund_name
+                sectors = self.CACHE_MAP[fund].get("sectors", [])
+                if sectors:
+                    sector_display = ", ".join(sectors)
+                    if is_return:
+                        fund_name = f"{fund_name} <span style='color: #8b949e; font-size: 12px;'>🏷️ {sector_display}</span>"
+                    else:
+                        fund_name = f"({sector_display}) {fund_name}"
+                consecutive_info = f"{consecutive_count}天 {consecutive_growth}"
+                monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
+                self.result.append([
+                    fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, netValueDate, consecutive_info,
+                    monthly_info, estimateDate, estimate2Growth, estimate2Time, estimate2Date
+                ])
             except Exception as e:
                 logger.error(f"查询基金代码【{fund}】失败: {e}")
 
     def search_code(self, is_return=False, cancel_event=None):
+        refresh_started = time.perf_counter()
         self._cache_dirty = False
         self.result = []
         task_queue = queue.Queue()
@@ -992,7 +984,13 @@ class MiniFund:
                 finally:
                     task_queue.task_done()
 
-        worker_count = min(FUND_REFRESH_WORKER_COUNT, task_queue.qsize())
+        configured_worker_count = get_fund_refresh_config().get('request_batch_size', 5)
+        self._refresh_semaphore = threading.Semaphore(configured_worker_count)
+        worker_count = min(configured_worker_count, task_queue.qsize())
+        logger.info(
+            f"基金刷新开始: funds={task_queue.qsize()}, concurrency={worker_count}, "
+            f"configured_concurrency={configured_worker_count}"
+        )
         threads = [
             threading.Thread(target=worker, name=f"fund-refresh-worker-{idx + 1}")
             for idx in range(worker_count)
@@ -1001,6 +999,23 @@ class MiniFund:
             t.start()
         for t in threads:
             t.join()
+
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        estimate1_rows = [row for row in self.result if len(row) > 9 and row[4] != "N/A" and row[9]]
+        estimate2_rows = [row for row in self.result if len(row) > 12 and row[10] != "N/A" and row[12]]
+        estimate1_current = sum(1 for row in estimate1_rows if row[9] == today)
+        estimate2_current = sum(1 for row in estimate2_rows if row[12] == today)
+        logger.info(
+            f"基金估值刷新结果: rows={len(self.result)}, "
+            f"estimate1={len(estimate1_rows)}(current={estimate1_current}), "
+            f"estimate2={len(estimate2_rows)}(current={estimate2_current}), "
+            f"missing1={max(0, len(self.result) - len(estimate1_rows))}, "
+            f"missing2={max(0, len(self.result) - len(estimate2_rows))}"
+        )
+        logger.info(
+            f"基金刷新完成: funds={len(self.CACHE_MAP)}, concurrency={worker_count}, "
+            f"elapsed_seconds={time.perf_counter() - refresh_started:.2f}"
+        )
 
         if self._cache_dirty:
             self.save_cache()

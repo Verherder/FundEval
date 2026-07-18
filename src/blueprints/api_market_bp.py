@@ -7,7 +7,7 @@ from loguru import logger
 from src.auth import get_current_user_id, login_required
 from src.dependencies import get_fund_repo, get_fund_service, get_market_service, get_nav_service
 from src.tab_enhancers import enhance_fund_tab_content
-from src.config.yaml_config import get_page_refresh_config
+from src.config.yaml_config import MAX_FUND_REFRESH_BATCH_SIZE, get_refresh_settings, save_refresh_settings
 
 api_market_bp = Blueprint("api_market", __name__, url_prefix="/api")
 
@@ -121,7 +121,26 @@ def api_index_sync_nav():
         return jsonify({"error": str(e)}), 500
 
 
-@api_market_bp.route("/config/refresh")
+@api_market_bp.route("/config/refresh", methods=["GET", "PUT"])
+@login_required
 def api_config_refresh():
-    config = get_page_refresh_config()
-    return jsonify(config)
+    if request.method == "GET":
+        return jsonify(get_refresh_settings())
+
+    body = request.get_json(silent=True) or {}
+    try:
+        enabled = body.get("auto_refresh_enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("自动刷新开关必须是布尔值")
+        interval = int(body.get("auto_refresh_interval"))
+        batch_size = int(body.get("request_batch_size"))
+        if not 10000 <= interval <= 3600000:
+            raise ValueError("自动刷新间隔必须在 10 秒到 60 分钟之间")
+        if not 1 <= batch_size <= MAX_FUND_REFRESH_BATCH_SIZE:
+            raise ValueError(f"同步基金数必须在 1 到 {MAX_FUND_REFRESH_BATCH_SIZE} 之间")
+        return jsonify({"success": True, "settings": save_refresh_settings(enabled, interval, batch_size)})
+    except (TypeError, ValueError) as e:
+        return jsonify({"success": False, "message": str(e)}), 400
+    except Exception as e:
+        logger.error(f"保存刷新配置失败: {e}")
+        return jsonify({"success": False, "message": "保存设置失败"}), 500

@@ -34,13 +34,15 @@ data_sources:
 
 # 页面刷新配置
 page_refresh:
+  # 是否启用页面自动刷新
+  auto_refresh_enabled: false
   # 自动刷新间隔时长（毫秒）
   auto_refresh_interval: 300000  # 5 分钟
 
 # 基金刷新配置
 fund_refresh:
   # 单次刷新同时请求的基金数量
-  request_batch_size: 10
+  request_batch_size: 12
 
 # 服务器配置
 server:

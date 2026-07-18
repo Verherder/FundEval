@@ -1,0 +1,111 @@
+{% extends 'layouts/base.html' %}
+{% set active_page = 'settings' %}
+
+{% block title %}设置 - MiniFund{% endblock %}
+
+{% block content %}
+<div class="page-header settings-header">
+    <h1>设置</h1>
+</div>
+
+<form id="refreshSettingsForm" class="settings-panel">
+    <div class="settings-section-header">
+        <div>
+            <h2>刷新与同步</h2>
+            <p>控制页面刷新频率和基金数据请求并发量。</p>
+        </div>
+    </div>
+
+    <div class="settings-row">
+        <div class="settings-copy">
+            <label for="autoRefreshEnabled">自动刷新</label>
+            <span>页面打开时按设定间隔自动更新数据</span>
+        </div>
+        <label class="switch-control">
+            <input type="checkbox" id="autoRefreshEnabled">
+            <span class="switch-track"></span>
+        </label>
+    </div>
+
+    <div class="settings-row">
+        <div class="settings-copy">
+            <label for="autoRefreshInterval">自动刷新间隔</label>
+            <span>允许设置 10 秒到 60 分钟</span>
+        </div>
+        <div class="settings-input-unit">
+            <input type="number" id="autoRefreshInterval" min="10" max="3600" step="10" required>
+            <span>秒</span>
+        </div>
+    </div>
+
+    <div class="settings-row">
+        <div class="settings-copy">
+            <label for="requestBatchSize">单次刷新同步基金数</label>
+            <span>同时请求的基金数量，建议 8–12，最高 15</span>
+        </div>
+        <div class="settings-input-unit">
+            <input type="number" id="requestBatchSize" min="1" max="15" step="1" required>
+            <span>只</span>
+        </div>
+    </div>
+
+    <div class="settings-actions">
+        <span id="settingsStatus" role="status"></span>
+        <button type="submit" class="btn btn-primary" id="saveSettingsBtn">保存设置</button>
+    </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', async () => {
+    const form = document.getElementById('refreshSettingsForm');
+    const enabledInput = document.getElementById('autoRefreshEnabled');
+    const intervalInput = document.getElementById('autoRefreshInterval');
+    const batchInput = document.getElementById('requestBatchSize');
+    const saveButton = document.getElementById('saveSettingsBtn');
+    const status = document.getElementById('settingsStatus');
+
+    const showStatus = (message, isError = false) => {
+        status.textContent = message;
+        status.classList.toggle('error', isError);
+    };
+
+    try {
+        const response = await fetch('/api/config/refresh');
+        if (!response.ok) throw new Error('读取设置失败');
+        const settings = await response.json();
+        enabledInput.checked = settings.auto_refresh_enabled !== false;
+        intervalInput.value = Math.round(settings.auto_refresh_interval / 1000);
+        batchInput.value = settings.request_batch_size;
+    } catch (error) {
+        showStatus(error.message, true);
+    }
+
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!form.reportValidity()) return;
+        saveButton.disabled = true;
+        showStatus('正在保存...');
+        try {
+            const response = await fetch('/api/config/refresh', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    auto_refresh_enabled: enabledInput.checked,
+                    auto_refresh_interval: Number(intervalInput.value) * 1000,
+                    request_batch_size: Number(batchInput.value)
+                })
+            });
+            const result = await response.json();
+            if (!response.ok || !result.success) throw new Error(result.message || '保存设置失败');
+            showStatus('设置已保存，下次刷新时生效');
+        } catch (error) {
+            showStatus(error.message, true);
+        } finally {
+            saveButton.disabled = false;
+        }
+    });
+});
+</script>
+{% endblock %}

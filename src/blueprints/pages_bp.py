@@ -167,3 +167,9 @@ def get_sector_funds():
         data=data["results"],
         sortable_columns=[4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
     )
+
+
+@pages_bp.route("/settings")
+@login_required
+def get_settings():
+    return render_template("pages/settings.html", username=get_current_username())

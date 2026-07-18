@@ -573,6 +573,18 @@ def api_portfolio_fund_table_stop():
 # ------------------------------------------------------------------
 
 
+@api_fund_bp.route("/fund/latest-estimate")
+@login_required
+def api_fund_latest_estimate():
+    fund_code = request.args.get("code")
+    if not fund_code:
+        return jsonify({"error": "Missing fund code"}), 400
+    result = get_chart_service().get_latest_fund_estimate(get_current_user_id(), fund_code)
+    if result is None:
+        return jsonify({"error": "Fund not in user list"}), 400
+    return jsonify(result)
+
+
 @api_fund_bp.route("/fund/chart-data")
 @login_required
 def api_fund_chart_data():

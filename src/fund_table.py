@@ -298,10 +298,13 @@ def build_fund_table(lan_fund, cancel_event=None):
         if estimate2_return is not None:
             estimate2_return_attr = f" data-estimate2-return='{estimate2_return:.6f}'"
 
+        estimate2_timestamp = estimate2_time
+        if estimate2_date:
+            estimate2_timestamp = f"{estimate2_date[5:]} {estimate2_time}".strip()
         estimate2_cell = (
             f"<span class='fund-estimate2-cell' data-code='{code}' data-estimate2-date='{estimate2_date}'{estimate2_return_attr} "
             f"style='font-weight:500;'>{estimate2_growth}</span>"
-            f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{estimate2_time}{estimate2_diff_str}</span>"
+            f"<br><span style='font-size:11px;color:var(--text-dim);font-weight:400;'>{estimate2_timestamp}{estimate2_diff_str}</span>"
         )
 
         daygrowth_cell = (

@@ -2,9 +2,13 @@
 """Regression tests for refreshed NAV persistence and daily return calculation."""
 
 import datetime
+import threading
 from unittest.mock import MagicMock
 
-from src.fund import normalize_nav_date_for_storage
+import pytest
+
+from src import fund as fund_module
+from src.fund import Fund123EndpointBlockedError, MiniFund, normalize_nav_date_for_storage
 from src.fund_table import build_fund_table, calculate_position_summary
 
 
@@ -14,6 +18,117 @@ def test_normalize_nav_date_for_storage_expands_short_date():
     assert normalize_nav_date_for_storage("01-02", today=today) == "2024-01-02"
     assert normalize_nav_date_for_storage("12-29", today=today) == "2023-12-29"
     assert normalize_nav_date_for_storage("20240102", today=today) == "2024-01-02"
+
+
+def test_json_request_retries_empty_response(monkeypatch):
+    fund_obj = MiniFund.__new__(MiniFund)
+    empty_response = MagicMock(content=b"", text="", status_code=200, headers={})
+    valid_response = MagicMock(content=b'{"success": true}', text='{"success": true}', status_code=200, headers={})
+    valid_response.json.return_value = {"success": True}
+    fund_obj._request_with_retries = MagicMock(side_effect=[empty_response, valid_response])
+    monkeypatch.setattr("src.fund.time.sleep", lambda _seconds: None)
+
+    response, payload = fund_obj._request_json_with_retries("POST", "https://example.test/api")
+
+    assert response is valid_response
+    assert payload == {"success": True}
+    assert fund_obj._request_with_retries.call_count == 2
+
+
+def test_forbidden_endpoint_is_circuit_broken(monkeypatch):
+    fund_module._FUND123_BLOCKED_ENDPOINTS.clear()
+    response = MagicMock(status_code=403, headers={})
+    session = MagicMock()
+    session.request.return_value = response
+    fund_obj = MiniFund.__new__(MiniFund)
+    fund_obj.session = session
+    fund_obj._thread_local = threading.local()
+    fund_obj._thread_local.session = session
+    fund_obj._request_schedule_lock = threading.Lock()
+    fund_obj._session_state_lock = threading.Lock()
+    fund_obj._next_request_at = 0.0
+    fund_obj._cooldown_until = 0.0
+    monkeypatch.setattr("src.fund.time.sleep", lambda _seconds: None)
+
+    try:
+        with pytest.raises(Fund123EndpointBlockedError):
+            fund_obj._request_with_retries("POST", "https://example.test/blocked")
+        with pytest.raises(Fund123EndpointBlockedError):
+            fund_obj._request_with_retries("POST", "https://example.test/blocked")
+        assert session.request.call_count == 1
+    finally:
+        fund_module._FUND123_BLOCKED_ENDPOINTS.clear()
+
+
+def test_fund_refresh_only_requests_latest_estimate_not_trend_data(monkeypatch):
+    fund_obj = MiniFund.__new__(MiniFund)
+    fund_obj._refresh_semaphore = threading.Semaphore(1)
+    fund_obj._csrf = "csrf"
+    fund_obj.db = None
+    fund_obj.user_id = None
+    fund_obj.nav_repo = None
+    fund_obj._cache_dirty = False
+    fund_obj.result = []
+    fund_obj.CACHE_MAP = {
+        "260101": {
+            "fund_key": "KEY260101",
+            "fund_name": "测试基金",
+            "is_hold": False,
+            "sectors": [],
+        }
+    }
+    detail_response = MagicMock(
+        text='"dayOfGrowth":"1.2","netValue":"1.5","netValueDate":"2026-07-17"'
+    )
+    fallback_response = MagicMock(
+        text='jsonpgz({"gszzl":"1.23","gztime":"2026-07-17 15:00"});',
+        status_code=200,
+    )
+    fund_obj._request_with_retries = MagicMock(side_effect=[detail_response, fallback_response])
+    fund_obj._request_json_with_retries = MagicMock()
+    fund_obj.fetch_latest_intraday_estimate = MagicMock(return_value={
+        "growth": -2.34,
+        "net_value": 1.46,
+        "date": "2026-07-18",
+        "time": "14:30",
+    })
+
+    fund_obj.search_one_code("260101", fund_obj.CACHE_MAP["260101"], True)
+
+    requested_urls = [call.args[1] for call in fund_obj._request_with_retries.call_args_list]
+    requested_urls += [call.args[1] for call in fund_obj._request_json_with_retries.call_args_list]
+    assert fund_module.DATA_SOURCE_URLS["fund123_curves_api"] not in requested_urls
+    assert fund_module.DATA_SOURCE_URLS["fund123_intraday_api"] not in requested_urls
+    assert fund_module.DATA_SOURCE_URLS["fundgz_js_tpl"].format(fund="260101") in requested_urls
+    fund_obj._request_json_with_retries.assert_not_called()
+    fund_obj.fetch_latest_intraday_estimate.assert_called_once_with("KEY260101", cancel_event=None)
+    assert len(fund_obj.result) == 1
+    assert fund_obj.result[0][4] == "-2.34%"
+    assert fund_obj.result[0][9] == "2026-07-18"
+    assert fund_obj.result[0][10] == "1.23%"
+    assert fund_obj.result[0][12] == "2026-07-17"
+
+
+def test_latest_estimate_interface_returns_only_last_point():
+    fund_obj = MiniFund.__new__(MiniFund)
+    fund_obj._csrf = "csrf"
+    quote_time = datetime.datetime(2026, 7, 18, 14, 30).timestamp() * 1000
+    fund_obj._request_json_with_retries = MagicMock(return_value=(MagicMock(), {
+        "success": True,
+        "list": [
+            {"time": quote_time - 60000, "forecastGrowth": "-0.01", "forecastNetValue": "1.48"},
+            {"time": quote_time, "forecastGrowth": "-0.0234", "forecastNetValue": "1.46"},
+        ],
+    }))
+
+    result = fund_obj.fetch_latest_intraday_estimate("KEY260101")
+
+    assert result == {
+        "growth": -2.34,
+        "net_value": 1.46,
+        "date": "2026-07-18",
+        "time": "14:30",
+    }
 
 
 def test_daily_return_uses_nav_delta_and_shares_when_prev_nav_exists():

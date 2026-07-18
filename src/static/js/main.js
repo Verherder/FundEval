@@ -3339,6 +3339,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // ==================== Auto-Refresh System ====================
     let refreshInterval;
     let REFRESH_INTERVAL = 60000; // 默认 60 秒（毫秒）
+    let AUTO_REFRESH_ENABLED = true;
     let lastRefreshTime = null; // 记录最后刷新时间
     let activeRefreshController = null;
     let activeRefreshId = '';
@@ -3350,9 +3351,10 @@ document.addEventListener('DOMContentLoaded', function() {
             if (response.ok) {
                 const config = await response.json();
                 REFRESH_INTERVAL = config.auto_refresh_interval || 60000;
+                AUTO_REFRESH_ENABLED = config.auto_refresh_enabled !== false;
                 console.log(`✅ Refresh config loaded: interval=${REFRESH_INTERVAL}ms`);
                 // 暴露配置到 window，用于调试
-                window._refreshConfig = { REFRESH_INTERVAL };
+                window._refreshConfig = { REFRESH_INTERVAL, AUTO_REFRESH_ENABLED };
             } else {
                 console.warn(`❌ Failed to fetch refresh config: HTTP ${response.status}`);
                 window._refreshConfig = { error: `HTTP ${response.status}` };
@@ -3404,6 +3406,10 @@ document.addEventListener('DOMContentLoaded', function() {
     function startAutoRefresh() {
         if (refreshInterval) {
             clearInterval(refreshInterval);
+        }
+        if (!AUTO_REFRESH_ENABLED) {
+            console.log('Auto-refresh is disabled');
+            return;
         }
         refreshInterval = setInterval(() => {
             if (!activeRefreshController) {

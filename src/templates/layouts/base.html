@@ -48,6 +48,10 @@
                 <span class="sidebar-icon">🏢</span>
                 <span>行业板块</span>
             </a>
+            <a href="/settings" class="sidebar-item sidebar-settings{% if active_page == 'settings' %} active{% endif %}">
+                <span class="sidebar-icon">⚙️</span>
+                <span>设置</span>
+            </a>
         </div>
 
         <!-- 内容区域 -->
@@ -58,7 +62,7 @@
 
     {% block modals %}{% endblock %}
 
-    <script src="/static/js/main.js?v=20260408c"></script>
+    <script src="/static/js/main.js?v=20260717a"></script>
     <script src="/static/js/sidebar-nav.js"></script>
     {% block scripts %}{% endblock %}
 </body>

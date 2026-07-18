@@ -297,6 +297,18 @@ class ChartService:
 
     # ── route body methods ─────────────────────────────────────────────
 
+    def get_latest_fund_estimate(self, user_id, fund_code):
+        """Return one latest estimate point without exposing trend data."""
+        user_funds = self._fund_repo.get_user_funds(user_id)
+        if fund_code not in user_funds:
+            return None
+        fund_data = user_funds[fund_code]
+        estimate = self._get_lan_fund(user_id=user_id).fetch_latest_intraday_estimate(fund_data["fund_key"])
+        return {
+            "estimate": estimate,
+            "fund_info": {"code": fund_code, "name": fund_data["fund_name"]},
+        }
+
     def get_fund_chart_data(self, user_id, fund_code):
         """获取基金估值趋势图数据。"""
         user_funds = self._fund_repo.get_user_funds(user_id)

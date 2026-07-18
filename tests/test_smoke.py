@@ -96,6 +96,18 @@ def test_portfolio_loads_when_authenticated(auth_client):
     assert resp.status_code != 500
 
 
+def test_settings_page_loads_when_authenticated(auth_client):
+    resp = auth_client.get("/settings")
+    assert resp.status_code != 500
+    if resp.status_code == 200:
+        assert "单次刷新同步基金数" in resp.get_data(as_text=True)
+
+
+def test_refresh_settings_requires_login(client):
+    resp = client.get("/api/config/refresh", follow_redirects=False)
+    assert resp.status_code in (302, 401)
+
+
 def test_fund_page_loads(auth_client):
     """GET /fund returns 200."""
     resp = auth_client.get("/fund")
