@@ -220,3 +220,10 @@ def test_static_js_available(client):
     """/static/js/main.js returns 200."""
     resp = client.get("/static/js/main.js")
     assert resp.status_code != 500
+
+
+def test_portfolio_chart_module_available(client):
+    """Portfolio native module is served as JavaScript."""
+    resp = client.get("/static/js/portfolio/chart-crosshair.js")
+    assert resp.status_code == 200
+    assert b"createPerformanceCrosshairPlugin" in resp.data
