@@ -966,10 +966,13 @@ class Database:
                     nav_value = excluded.nav_value,
                     source = excluded.source,
                     updated_at = CURRENT_TIMESTAMP
+                WHERE fund_nav_history.nav_value IS NOT excluded.nav_value
+                   OR fund_nav_history.source IS NOT excluded.source
             ''', (code, date_text, value, source_text))
+            changed = cursor.rowcount > 0
             conn.commit()
             conn.close()
-            return True
+            return changed
         except Exception as e:
             logger.error(f"Failed to upsert fund nav history: {e}")
             return False
@@ -1416,10 +1419,13 @@ class Database:
                     close = excluded.close,
                     change_pct = excluded.change_pct,
                     updated_at = CURRENT_TIMESTAMP
+                WHERE index_nav_history.close IS NOT excluded.close
+                   OR index_nav_history.change_pct IS NOT excluded.change_pct
             ''', [(code, r['nav_date'], float(r['close']), r.get('change_pct'), ) for r in records])
+            changed = cursor.rowcount > 0
             conn.commit()
             conn.close()
-            return True
+            return changed
         except Exception as e:
             logger.error(f"Failed to bulk upsert index nav history: {e}")
             return False
