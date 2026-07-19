@@ -33,7 +33,7 @@ resolve_bind() {
         return
     fi
     PYTHONPATH="${PROJECT_DIR}" "${PYTHON_BIN}" -c \
-        'from src.config.yaml_config import get_server_config; c=get_server_config(); print("{}:{}".format(c.get("host", "0.0.0.0"), c.get("port", 8311)))'
+        'from src.config.yaml_config import get_server_config; c=get_server_config(); print("{}:{}".format(c.get("host", "127.0.0.1"), c.get("port", 8888)))'
 }
 
 is_ready() {

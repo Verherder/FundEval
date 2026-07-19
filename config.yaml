@@ -1,54 +1,22 @@
 # 基金估值项目配置
 
-# 数据源 URL 配置
-data_sources:
-  urls:
-    # 中证指数-沪深300
-    csindex_origin: "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode={000300}}"
-    # fund123，蚂蚁基金
-    fund123_origin: "https://www.fund123.cn"
-    fund123_fund_page: "https://www.fund123.cn/fund"
-    fund123_search_api: "https://www.fund123.cn/api/fund/searchFund"
-    # 基金详情
-    fund123_matiaria_tpl: "https://www.fund123.cn/matiaria?fundCode={fund}"
-    # 业绩曲线，dateInterval可以取：ONE_MONTEH、THREE_MONTH、SIX_MONTH、ONE_YEAR、THREE_YEAR、ALL
-    fund123_curves_api: "https://www.fund123.cn/api/fund/queryFundQuotationCurves"
-    # 估值曲线
-    fund123_intraday_api: "https://www.fund123.cn/api/fund/queryFundEstimateIntraday"
-    # 历史净值（可指定起止日期查询）
-    fund123_history_net_value_api: "https://www.fund123.cn/api/fund/queryFundHistoryNetValueList"
-
-    # eastmoney
-    eastmoney_fundguide_api: "https://fund.eastmoney.com/data/FundGuideapi.aspx"
-    eastmoney_fundguide_referer: "https://fund.eastmoney.com/daogou/"
-    eastmoney_bk_api: "https://push2.eastmoney.com/api/qt/clist/get"
-
-    # jijinhao / cngold
-    cngold_hist_referer: "https://quote.cngold.org/gjs/swhj_zghj.html"
-    cngold_realtime_referer: "https://quote.cngold.org/gjs/gjhj.html"
-    jijinhao_history_api: "https://api.jijinhao.com/quoteCenter/history.htm"
-    jijinhao_realtime_api: "https://api.jijinhao.com/quoteCenter/realTime.htm"
-
-    # fundgz
-    fundgz_js_tpl: "https://fundgz.1234567.com.cn/js/{fund}.js"
+# 服务器配置
+server:
+  host: "127.0.0.1"
+  port: 8888
+  secret_key: "gugufish"  # Flask session 密钥
 
 # 页面刷新配置
 page_refresh:
   # 是否启用页面自动刷新
   auto_refresh_enabled: false
   # 自动刷新间隔时长（毫秒）
-  auto_refresh_interval: 300000  # 5 分钟
+  auto_refresh_interval: 3600000  # 60 分钟
 
 # 基金刷新配置
 fund_refresh:
   # 单次刷新同时请求的基金数量
   request_batch_size: 12
-
-# 服务器配置
-server:
-  host: "0.0.0.0"
-  port: 8312
-  secret_key: "luobobo"  # Flask session 密钥
 
 # 历史净值同步配置
 nav_sync:
@@ -111,3 +79,36 @@ http_timing:
   console_log: false
 
 update_interval: 300  # 单位：秒
+
+
+# 数据源 URL 配置
+data_sources:
+  urls:
+    # 中证指数-沪深300
+    csindex_origin: "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode={000300}}"
+    # fund123，蚂蚁基金
+    fund123_origin: "https://www.fund123.cn"
+    fund123_fund_page: "https://www.fund123.cn/fund"
+    fund123_search_api: "https://www.fund123.cn/api/fund/searchFund"
+    # 基金详情
+    fund123_matiaria_tpl: "https://www.fund123.cn/matiaria?fundCode={fund}"
+    # 业绩曲线，dateInterval可以取：ONE_MONTEH、THREE_MONTH、SIX_MONTH、ONE_YEAR、THREE_YEAR、ALL
+    fund123_curves_api: "https://www.fund123.cn/api/fund/queryFundQuotationCurves"
+    # 估值曲线
+    fund123_intraday_api: "https://www.fund123.cn/api/fund/queryFundEstimateIntraday"
+    # 历史净值（可指定起止日期查询）
+    fund123_history_net_value_api: "https://www.fund123.cn/api/fund/queryFundHistoryNetValueList"
+
+    # eastmoney
+    eastmoney_fundguide_api: "https://fund.eastmoney.com/data/FundGuideapi.aspx"
+    eastmoney_fundguide_referer: "https://fund.eastmoney.com/daogou/"
+    eastmoney_bk_api: "https://push2.eastmoney.com/api/qt/clist/get"
+
+    # jijinhao / cngold
+    cngold_hist_referer: "https://quote.cngold.org/gjs/swhj_zghj.html"
+    cngold_realtime_referer: "https://quote.cngold.org/gjs/gjhj.html"
+    jijinhao_history_api: "https://api.jijinhao.com/quoteCenter/history.htm"
+    jijinhao_realtime_api: "https://api.jijinhao.com/quoteCenter/realTime.htm"
+
+    # fundgz
+    fundgz_js_tpl: "https://fundgz.1234567.com.cn/js/{fund}.js"

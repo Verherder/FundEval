@@ -1,7 +1,7 @@
 # FundEval - 基金交易与收益评估工具
 
 FundEval 参考MiniFund继续演进，定位为“可交易记录、可收益评估、可视化对比”的基金工具。
-支持终端和 Web 两种使用方式，默认通过 Web 页面（8311 端口）进行日常操作，以web为演进方向。
+项目以 Web 页面为统一入口，默认监听 `127.0.0.1:8888`，可通过 Nginx 对外提供访问。
 
 ![基金持仓页](imgs/持仓.png)
 ---
@@ -39,7 +39,7 @@ FundEval 参考MiniFund继续演进，定位为“可交易记录、可收益评
 **推荐工作流程**：
 
 1. **Web 端首次配置**
-   - 访问 `http://localhost:8311` 注册/登录
+   - 访问 `http://127.0.0.1:8888` 注册/登录
    - 添加基金、设置份额、标记持有、配置板块
 
 2. **日常操作**
@@ -95,7 +95,7 @@ python3 -m venv .venv
 运行日志位于 `cache/logs/`。可通过环境变量覆盖运行参数，例如：
 
 ```bash
-FUNDEVAL_BIND=127.0.0.1:8312 FUNDEVAL_THREADS=12 ./scripts/restart.sh
+FUNDEVAL_BIND=127.0.0.1:8888 FUNDEVAL_THREADS=12 ./scripts/restart.sh
 ```
 
 ### 日志归档

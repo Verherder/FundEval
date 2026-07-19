@@ -15,8 +15,8 @@ if __name__ == "__main__":
     from werkzeug.serving import run_simple
 
     server_cfg = get_server_config()
-    host = server_cfg.get("host", "0.0.0.0")
-    port = server_cfg.get("port", 8311)
+    host = server_cfg.get("host", "127.0.0.1")
+    port = server_cfg.get("port", 8888)
 
     try:
         run_simple(
