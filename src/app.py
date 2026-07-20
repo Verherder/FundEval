@@ -13,6 +13,7 @@ import urllib3
 from dotenv import load_dotenv
 from flask import Flask
 from loguru import logger
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from src.dependencies import init_dependencies
 from src.config.yaml_config import get_server_config, load_yaml_config
@@ -236,7 +237,13 @@ def create_app(db=None):
     app.register_blueprint(api_fund_bp)
     app.register_blueprint(api_market_bp)
 
-    app.wsgi_app = FilteredWSGIRequestLogger(app.wsgi_app)
+    app.wsgi_app = ProxyFix(
+        FilteredWSGIRequestLogger(app.wsgi_app),
+        x_for=1,
+        x_proto=1,
+        x_host=1,
+        x_prefix=1,
+    )
 
     if (
         os.environ.get("WERKZEUG_RUN_MAIN") == "true"

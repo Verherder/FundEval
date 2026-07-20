@@ -7,7 +7,7 @@ window.process = {
 
 document.addEventListener('DOMContentLoaded', function() {
     // Initialize Auto Colorize
-    if (window.location.pathname !== '/portfolio') {
+    if (window.appPathname() !== '/portfolio') {
         autoColorize();
     }
 
@@ -1038,12 +1038,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // 下载fund_map.json
     window.downloadFundMap = function() {
-        window.location.href = '/api/fund/download';
+        window.location.href = window.appUrl('/api/fund/download');
     };
 
     window.clearAllFundTransactions = async function() {
         try {
-            window.location.href = '/api/fund/transactions/download-all';
+            window.location.href = window.appUrl('/api/fund/transactions/download-all');
 
             const confirmText = '清空全部交易';
             const inputText = window.prompt(
@@ -3430,7 +3430,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Refresh current page data based on route (只更新数据，不重新加载页面)
     async function refreshCurrentPage() {
-        const path = window.location.pathname;
+        const path = window.appPathname();
 
         // 快速检查：避免重复点击刷新按钮
         // 通过检查对应页面的刷新按钮是否已禁用
@@ -4024,7 +4024,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // Portfolio 首页仅做轻量初始化，不在首屏强制触发完整刷新
-    if (window.location.pathname === '/portfolio') {
+    if (window.appPathname() === '/portfolio') {
         const todayLabel = getDayLabelFromDateKey(formatDateKey(new Date()));
         applyDailyGainLabels(todayLabel, todayLabel);
         initSummaryPanelsToggleByToolbarEstimate();

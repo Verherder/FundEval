@@ -88,5 +88,5 @@
 <script>
 {% include 'partials/lyrics-carousel.html' %}
 </script>
-<script type="module" src="/static/js/portfolio/portfolio.js"></script>
+<script type="module" src="{{ url_for('static', filename='js/portfolio/portfolio.js') }}"></script>
 {% endblock %}

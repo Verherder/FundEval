@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-app-base="{{ request.script_root }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>登录 - MiniFund</title>
-    <link rel="icon" href="/static/1.ico">
+    <link rel="icon" href="{{ url_for('static', filename='1.ico') }}">
     <style>
         * {
             margin: 0;
@@ -333,7 +333,7 @@
 <body>
     <div class="login-container">
         <div class="login-header">
-            <img src="/static/1.ico" alt="Logo" class="logo">
+            <img src="{{ url_for('static', filename='1.ico') }}" alt="Logo" class="logo">
             <h1>MiniFund</h1>
             <p>智能基金管理助手</p>
         </div>
@@ -342,7 +342,7 @@
         <div class="error-message">{{ error }}</div>
         {% endif %}
 
-        <form method="POST" action="/login">
+        <form method="POST" action="{{ url_for('auth.login') }}">
             <div class="form-group">
                 <label for="username">用户名</label>
                 <div class="input-wrapper">
@@ -374,7 +374,7 @@
         </div>
 
         <div class="register-link">
-            还没有账户？ <a href="/register">立即注册</a>
+            还没有账户？ <a href="{{ url_for('auth.register') }}">立即注册</a>
         </div>
     </div>
 </body>

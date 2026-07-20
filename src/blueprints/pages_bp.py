@@ -1,7 +1,7 @@
 # -*- coding: UTF-8 -*-
 """Page routes — full HTML pages served via Jinja templates."""
 
-from flask import Blueprint, redirect, render_template, request
+from flask import Blueprint, redirect, render_template, request, url_for
 from loguru import logger
 
 from src.auth import get_current_user_id, get_current_username, login_required
@@ -14,25 +14,25 @@ pages_bp = Blueprint("pages", __name__)
 @pages_bp.route("/")
 @login_required
 def get_index():
-    return redirect("/portfolio")
+    return redirect(url_for("pages.get_portfolio"))
 
 
 @pages_bp.route("/fund")
 @login_required
 def get_fund():
-    return redirect("/portfolio")
+    return redirect(url_for("pages.get_portfolio"))
 
 
 @pages_bp.route("/market")
 @login_required
 def get_market():
-    return redirect("/portfolio")
+    return redirect(url_for("pages.get_portfolio"))
 
 
 @pages_bp.route("/market-indices")
 @login_required
 def get_market_indices():
-    return redirect("/portfolio")
+    return redirect(url_for("pages.get_portfolio"))
 
 
 @pages_bp.route("/portfolio")

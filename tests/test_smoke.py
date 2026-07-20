@@ -55,6 +55,35 @@ def test_login_page_loads(client):
     assert resp.status_code == 200
 
 
+def test_reverse_proxy_prefix_is_preserved_in_redirects_and_assets(client):
+    headers = {"X-Forwarded-Prefix": "/fundeval"}
+
+    redirect_response = client.get("/", headers=headers, follow_redirects=False)
+    assert redirect_response.status_code == 302
+    assert redirect_response.headers["Location"].endswith("/fundeval/login")
+
+    login_response = client.get("/login", headers=headers)
+    html = login_response.get_data(as_text=True)
+    assert 'action="/fundeval/login"' in html
+    assert 'href="/fundeval/register"' in html
+    assert 'href="/fundeval/static/1.ico"' in html
+
+
+def test_reverse_proxy_prefix_is_preserved_after_login(client):
+    headers = {"X-Forwarded-Prefix": "/fundeval"}
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "prefixuser"
+
+    settings_response = client.get("/settings", headers=headers)
+    html = settings_response.get_data(as_text=True)
+    assert 'data-app-base="/fundeval"' in html
+    assert 'href="/fundeval/portfolio"' in html
+    assert 'href="/fundeval/settings"' in html
+    assert 'src="/fundeval/static/js/app-url.js"' in html
+    assert 'src="/fundeval/static/js/settings.js?v=20260721a"' in html
+
+
 def test_login_with_valid_credentials(client, test_db):
     """POST /login with valid credentials sets session and redirects."""
     test_db.create_user("user1", "pass123")

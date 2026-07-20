@@ -86,6 +86,26 @@ server {
 }
 ```
 
+部署在 `/fundeval` 子路径时，必须传递 `X-Forwarded-Prefix`：
+
+```nginx
+location = /fundeval {
+    return 301 /fundeval/;
+}
+
+location /fundeval/ {
+    proxy_pass http://127.0.0.1:8888/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /fundeval;
+    proxy_read_timeout 180s;
+}
+```
+
+`proxy_pass` 末尾的 `/` 和 `X-Forwarded-Prefix` 都不能省略：前者让 Nginx 转发时移除路径前缀，后者让 Flask 生成带 `/fundeval` 的跳转、静态资源和页面链接。
+
 ## 5. 更新发布
 
 ```bash

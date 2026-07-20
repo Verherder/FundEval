@@ -1,4 +1,4 @@
-import {createPerformanceCrosshairPlugin} from '/static/js/portfolio/chart-crosshair.js';
+import {createPerformanceCrosshairPlugin} from './chart-crosshair.js';
 
 document.addEventListener('DOMContentLoaded', function() {
     // 自动颜色化 (portfolio version with extractSignedNumber)

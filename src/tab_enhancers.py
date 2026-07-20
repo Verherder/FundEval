@@ -1,6 +1,8 @@
 # -*- coding: UTF-8 -*-
 import re
 
+from flask import url_for
+
 
 def enhance_fund_tab_content(content, shares_map=None):
     """
@@ -10,7 +12,7 @@ def enhance_fund_tab_content(content, shares_map=None):
         shares_map: Dict mapping fund_code -> shares value (optional)
     """
     # 添加文件操作和持仓统计区域
-    file_operations = """
+    file_operations = f"""
         <div class="file-operations" style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
             <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                 <button class="btn btn-secondary fund-io-btn" onclick="downloadFundMap()">📥 导出基金列表</button>
@@ -100,7 +102,7 @@ def enhance_fund_tab_content(content, shares_map=None):
 
                 <!-- 左上角品牌标识 -->
                 <div class="showoff-brand-corner">
-                    <img src="/static/1.ico" alt="MiniFund" class="brand-logo" onerror="this.style.display='none'">
+                    <img src="{url_for('static', filename='1.ico')}" alt="MiniFund" class="brand-logo" onerror="this.style.display='none'">
                     <span class="brand-name">MiniFund</span>
                 </div>
 

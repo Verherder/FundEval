@@ -1,19 +1,19 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-app-base="{{ request.script_root }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}MiniFund{% endblock %}</title>
-    <link rel="icon" href="/static/1.ico">
-    <link rel="stylesheet" href="/static/css/style.css">
-    <link rel="stylesheet" href="/static/css/pages.css">
+    <link rel="icon" href="{{ url_for('static', filename='1.ico') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/pages.css') }}">
     {% block head_extra %}{% endblock %}
 </head>
 <body>
     <!-- 顶部导航栏 -->
     <nav class="top-navbar">
         <div class="top-navbar-brand">
-            <img src="/static/1.ico" alt="Logo" class="navbar-logo">
+            <img src="{{ url_for('static', filename='1.ico') }}" alt="Logo" class="navbar-logo">
         </div>
         <div class="top-navbar-quote" id="lyricsDisplay">
             偶然与巧合, 舞动了蝶翼, 谁的心头风起 ————《如果我们不曾相遇》
@@ -23,7 +23,7 @@
             <a href="https://github.com/lanZzV/fund/issues" target="_blank" class="nav-feedback">反馈</a>
             {% if username %}
             <span class="nav-user">🍎 {{ username }}</span>
-            <a href="/logout" class="nav-logout">退出登录</a>
+            <a href="{{ url_for('auth.logout') }}" class="nav-logout">退出登录</a>
             {% endif %}
         </div>
     </nav>
@@ -40,15 +40,15 @@
         <!-- 左侧导航栏 -->
         <div class="sidebar collapsed" id="sidebar">
             <div class="sidebar-toggle" id="sidebarToggle">▶</div>
-            <a href="/portfolio" class="sidebar-item{% if active_page == 'portfolio' %} active{% endif %}">
+            <a href="{{ url_for('pages.get_portfolio') }}" class="sidebar-item{% if active_page == 'portfolio' %} active{% endif %}">
                 <span class="sidebar-icon">💼</span>
                 <span>持仓基金</span>
             </a>
-            <a href="/sectors" class="sidebar-item{% if active_page == 'sectors' %} active{% endif %}">
+            <a href="{{ url_for('pages.get_sectors') }}" class="sidebar-item{% if active_page == 'sectors' %} active{% endif %}">
                 <span class="sidebar-icon">🏢</span>
                 <span>行业板块</span>
             </a>
-            <a href="/settings" class="sidebar-item sidebar-settings{% if active_page == 'settings' %} active{% endif %}">
+            <a href="{{ url_for('pages.get_settings') }}" class="sidebar-item sidebar-settings{% if active_page == 'settings' %} active{% endif %}">
                 <span class="sidebar-icon">⚙️</span>
                 <span>设置</span>
             </a>
@@ -62,8 +62,9 @@
 
     {% block modals %}{% endblock %}
 
-    <script src="/static/js/main.js?v=20260717a"></script>
-    <script src="/static/js/sidebar-nav.js"></script>
+    <script src="{{ url_for('static', filename='js/app-url.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}?v=20260721a"></script>
+    <script src="{{ url_for('static', filename='js/sidebar-nav.js') }}"></script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

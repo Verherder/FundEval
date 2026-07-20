@@ -59,6 +59,7 @@ def login():
                     max_age=7 * 24 * 60 * 60,
                     httponly=True,
                     samesite="Lax",
+                    path=request.script_root or "/",
                 )
 
         return response
@@ -99,5 +100,10 @@ def register():
 def logout():
     logout_user()
     response = redirect(url_for("auth.login"))
-    response.set_cookie("remember_token", "", max_age=0)
+    response.set_cookie(
+        "remember_token",
+        "",
+        max_age=0,
+        path=request.script_root or "/",
+    )
     return response
