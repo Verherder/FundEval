@@ -7,11 +7,64 @@ LOG_DIR="${FUNDEVAL_LOG_DIR:-${PROJECT_DIR}/cache/logs}"
 PID_FILE="${RUNTIME_DIR}/fundeval.pid"
 ACCESS_LOG="${LOG_DIR}/gunicorn_access.log"
 ERROR_LOG="${LOG_DIR}/gunicorn_error.log"
-PYTHON_BIN="${PYTHON_BIN:-${PROJECT_DIR}/.venv/bin/python}"
+ENV_NAME="${FUNDEVAL_ENV_NAME:-finance}"
 
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-    PYTHON_BIN="${FUNDEVAL_PYTHON:-python3}"
-fi
+resolve_python_bin() {
+    local candidate
+    if [[ -n "${PYTHON_BIN:-}" ]]; then
+        if [[ -x "${PYTHON_BIN}" ]]; then
+            printf '%s' "${PYTHON_BIN}"
+            return 0
+        fi
+        candidate="$(command -v "${PYTHON_BIN}" 2>/dev/null || true)"
+        if [[ -n "${candidate}" ]]; then
+            printf '%s' "${candidate}"
+            return 0
+        fi
+        echo "PYTHON_BIN 不可执行: ${PYTHON_BIN}" >&2
+        return 1
+    fi
+
+    if [[ "${CONDA_DEFAULT_ENV:-}" == "${ENV_NAME}" && -x "${CONDA_PREFIX:-}/bin/python" ]]; then
+        printf '%s' "${CONDA_PREFIX}/bin/python"
+        return 0
+    fi
+
+    for candidate in \
+        "${MAMBA_ROOT_PREFIX:-}/envs/${ENV_NAME}/bin/python" \
+        "${HOME}/miniforge3/envs/${ENV_NAME}/bin/python" \
+        "${HOME}/mambaforge/envs/${ENV_NAME}/bin/python" \
+        "${HOME}/.conda/envs/${ENV_NAME}/bin/python"; do
+        if [[ -x "${candidate}" ]]; then
+            printf '%s' "${candidate}"
+            return 0
+        fi
+    done
+
+    local manager
+    for manager in "${MAMBA_EXE:-}" micromamba mamba conda; do
+        [[ -n "${manager}" ]] || continue
+        if [[ ! -x "${manager}" ]]; then
+            manager="$(command -v "${manager}" 2>/dev/null || true)"
+        fi
+        [[ -n "${manager}" ]] || continue
+        candidate="$("${manager}" run -n "${ENV_NAME}" python -c 'import sys; print(sys.executable)' 2>/dev/null | tail -n 1)"
+        if [[ -x "${candidate}" ]]; then
+            printf '%s' "${candidate}"
+            return 0
+        fi
+    done
+
+    if [[ -x "${PROJECT_DIR}/.venv/bin/python" ]]; then
+        printf '%s' "${PROJECT_DIR}/.venv/bin/python"
+        return 0
+    fi
+
+    echo "找不到 mamba/conda 环境 ${ENV_NAME}。请设置 PYTHON_BIN 或 FUNDEVAL_ENV_NAME。" >&2
+    return 1
+}
+
+PYTHON_BIN="$(resolve_python_bin)"
 
 read_pid() {
     [[ -f "${PID_FILE}" ]] || return 1
@@ -110,6 +163,8 @@ start_server() {
         echo "未安装 gunicorn，请先执行: ${PYTHON_BIN} -m pip install -r requirements.txt" >&2
         return 1
     fi
+
+    echo "使用 Python: ${PYTHON_BIN}"
 
     local bind
     bind="$(resolve_bind)"
@@ -211,12 +266,21 @@ status_server() {
     return 1
 }
 
+show_environment() {
+    echo "环境名称: ${ENV_NAME}"
+    echo "Python 路径: ${PYTHON_BIN}"
+    "${PYTHON_BIN}" --version
+    PYTHONPATH="${PROJECT_DIR}" "${PYTHON_BIN}" -c \
+        'from importlib.metadata import version; print("Flask: {}".format(version("flask"))); print("Gunicorn: {}".format(version("gunicorn")))'
+}
+
 case "${1:-}" in
     start) start_server ;;
     stop) stop_server ;;
     restart) stop_server; start_server ;;
     status) status_server ;;
+    environment) show_environment ;;
     rotate-logs) "${PROJECT_DIR}/scripts/rotate_logs.sh" ;;
     logs) tail -n "${FUNDEVAL_LOG_LINES:-100}" -f "${ERROR_LOG}" ;;
-    *) echo "用法: $0 {start|stop|restart|status|rotate-logs|logs}" >&2; exit 2 ;;
+    *) echo "用法: $0 {start|stop|restart|status|environment|rotate-logs|logs}" >&2; exit 2 ;;
 esac

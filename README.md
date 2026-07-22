@@ -82,13 +82,15 @@ python run.py
 服务器部署使用 Gunicorn 管理脚本：
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+mamba create -n finance python=3.12
+mamba run -n finance python -m pip install -r requirements.txt
 ./scripts/start.sh
 ./scripts/status.sh
 ./scripts/restart.sh
 ./scripts/stop.sh
 ```
+
+脚本会自动使用 mamba/conda 的 `finance` 环境，无需提前执行 `mamba activate finance`。
 
 完整安装、Nginx、启停和日志配置见 [服务器部署说明](docs/DEPLOYMENT.md)。
 

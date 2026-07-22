@@ -2,13 +2,15 @@
 
 ## 1. 环境准备
 
-要求 Linux、Python 3.10 以上，并建议使用独立虚拟环境：
+要求 Linux、Python 3.10 以上。使用 mamba 时创建默认的 `finance` 环境：
 
 ```bash
 cd /opt/FundEval
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+mamba create -n finance python=3.12
+mamba run -n finance python -m pip install -r requirements.txt
 ```
+
+启停脚本会自动定位 `finance` 环境的 Python，不需要先执行 `mamba activate finance`。如果使用其他环境名，设置 `FUNDEVAL_ENV_NAME`；项目 `.venv` 仍作为后备方案。
 
 修改 `config.yaml`：
 
@@ -28,6 +30,7 @@ server:
 ./scripts/stop.sh        # 停止
 ./scripts/restart.sh     # 重启
 ./scripts/status.sh      # 查看状态
+./scripts/fundctl.sh environment # 查看实际使用的 Python 环境
 ./scripts/fundctl.sh logs # 跟踪 Gunicorn 错误日志
 ```
 
@@ -37,7 +40,9 @@ server:
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
-| `PYTHON_BIN` | `.venv/bin/python` | 指定 Python 解释器 |
+| `PYTHON_BIN` | 自动查找 | 显式指定 Python 解释器，优先级最高 |
+| `FUNDEVAL_ENV_NAME` | `finance` | 指定 mamba/conda 环境名 |
+| `MAMBA_EXE` | 自动查找 | mamba/micromamba 可执行文件路径 |
 | `FUNDEVAL_BIND` | 读取 `config.yaml` | 临时覆盖监听地址 |
 | `FUNDEVAL_THREADS` | `8` | Gunicorn 线程数 |
 | `FUNDEVAL_TIMEOUT` | `120` | 请求超时秒数 |
@@ -112,7 +117,7 @@ location /fundeval/ {
 cd /opt/FundEval
 ./scripts/stop.sh
 git pull
-.venv/bin/pip install -r requirements.txt
+mamba run -n finance python -m pip install -r requirements.txt
 ./scripts/start.sh
 ./scripts/status.sh
 ```
