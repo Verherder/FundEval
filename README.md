@@ -3,6 +3,13 @@
 FundEval 参考MiniFund继续演进，定位为“可交易记录、可收益评估、可视化对比”的基金工具。
 项目以 Web 页面为统一入口，默认监听 `127.0.0.1:8888`，可通过 Nginx 对外提供访问。
 
+架构与数据文档：
+
+- [多用户数据隔离说明](docs/DATA_ISOLATION.md)
+- [Restic + OneDrive 备份方案与实施指引](docs/BACKUP_RESTIC_ONEDRIVE.md)
+- [服务器部署、迁移与加密备份](docs/DEPLOYMENT.md)
+- [重构后架构说明](docs/refactor/ARCHITECTURE.md)
+
 ![基金持仓页](imgs/持仓.png)
 ---
 
@@ -94,7 +101,12 @@ mamba run -n finance python -m pip install -r requirements.txt
 
 完整安装、Nginx、启停和日志配置见 [服务器部署说明](docs/DEPLOYMENT.md)。
 
-运行日志位于 `cache/logs/`。可通过环境变量覆盖运行参数，例如：
+数据库通过Restic加密、去重后由Rclone上传到OneDrive，不再提交到Git或Git子模块。
+从工具安装到自动备份和恢复演练见
+[Restic + OneDrive从零部署手册](docs/BACKUP_RESTIC_ONEDRIVE.md)。
+
+运行数据库和日志默认位于 `cache/fund_data.db`、`cache/logs/`；`cache/`整体不进入Git。
+可通过环境变量覆盖运行参数，例如：
 
 ```bash
 FUNDEVAL_BIND=127.0.0.1:8888 FUNDEVAL_THREADS=12 ./scripts/restart.sh
@@ -111,10 +123,10 @@ FUNDEVAL_BIND=127.0.0.1:8888 FUNDEVAL_THREADS=12 ./scripts/restart.sh
 服务器上建议加入当前部署用户的 crontab，每天零点 10 分执行：
 
 ```cron
-10 0 * * * /opt/FundEval/scripts/rotate_logs.sh >> /opt/FundEval/cache/logs/rotate.log 2>&1
+10 0 * * * $HOME/FundEval/scripts/rotate_logs.sh >> $HOME/FundEval/cache/logs/rotate.log 2>&1
 ```
 
-将 `/opt/FundEval` 替换为实际部署目录。调整归档保留天数：
+调整归档保留天数：
 
 ```bash
 FUNDEVAL_LOG_RETENTION_DAYS=30 ./scripts/rotate_logs.sh

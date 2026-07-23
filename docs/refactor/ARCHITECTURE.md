@@ -14,9 +14,9 @@
     ▼
 run.py  (30 行)
   └── from src.app import create_app
-        ├── _setup_logging()       # loguru → stderr + cache/logs/
+        ├── _setup_logging()       # loguru → stderr + FUNDEVAL_LOG_DIR
         ├── _setup_environment()   # .env, SSL ciphers
-        ├── _ensure_directories()  # cache/ 目录
+        ├── _ensure_directories()  # 运行数据和日志目录
         ├── Database()             # SQLite 连接
         ├── init_dependencies(db)  # 初始化所有 repo/service（见依赖注入节）
         ├── register 4 blueprints  # 注册路由
@@ -125,10 +125,12 @@ Blueprint 路由
 
 | Repository | 文件 | 操作的数据库表 |
 |------------|------|---------------|
-| `UserRepo` | `repositories/user_repo.py` | `users` |
-| `FundRepo` | `repositories/fund_repo.py` | `user_funds` |
-| `TransactionRepo` | `repositories/transaction_repo.py` | `transactions` |
+| `UserRepo` | `repositories/user_repo.py` | `users`、邀请码和登录令牌 |
+| `FundRepo` | `repositories/fund_repo.py` | `fund_catalog`、`user_watchlist` |
+| `TransactionRepo` | `repositories/transaction_repo.py` | `fund_transactions`、`fund_pending_buys` |
 | `NavRepo` | `repositories/nav_repo.py` | `fund_nav_history` |
+
+共享基金目录与个人数据的完整边界见 [`docs/DATA_ISOLATION.md`](../DATA_ISOLATION.md)。
 
 每个 Repo 构造时接收 `Database` 实例，方法返回 dict/list，不暴露 SQL 到上层。
 

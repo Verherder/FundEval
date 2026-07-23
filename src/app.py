@@ -4,6 +4,7 @@
 import datetime
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -11,7 +12,7 @@ from pathlib import Path
 
 import urllib3
 from dotenv import load_dotenv
-from flask import Flask
+from flask import Flask, abort, request, session
 from loguru import logger
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -19,14 +20,17 @@ from src.dependencies import init_dependencies
 from src.config.yaml_config import get_server_config, load_yaml_config
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_PROJECT_ROOT / ".env")
 
 
 def _setup_logging():
     """Configure loguru: stderr + rotating file."""
+    log_dir = Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "cache" / "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     logger.remove()
     logger.add(sys.stderr, level="INFO")
     logger.add(
-        str(_PROJECT_ROOT / "cache" / "logs" / "fund_server.log"),
+        str(log_dir / "fund_server.log"),
         level="INFO",
         encoding="utf-8",
         rotation="00:00",
@@ -58,13 +62,14 @@ def _setup_environment():
 
 
 def _ensure_directories():
-    (_PROJECT_ROOT / "cache").mkdir(parents=True, exist_ok=True)
-    (_PROJECT_ROOT / "cache" / "logs").mkdir(parents=True, exist_ok=True)
+    Path(os.environ.get("FUNDEVAL_DATA_DIR", _PROJECT_ROOT / "cache")).mkdir(parents=True, exist_ok=True, mode=0o700)
+    Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "cache" / "logs")).mkdir(parents=True, exist_ok=True, mode=0o700)
 
 
-IMPORT_DETAIL_LOG_PATH = str(_PROJECT_ROOT / "cache" / "logs" / "transaction_import.log")
-SERVER_LOG_PATH = str(_PROJECT_ROOT / "cache" / "logs" / "fund_server.log")
-LOG_CLEANUP_STATE_PATH = str(_PROJECT_ROOT / "cache" / "logs" / ".log_cleanup_state")
+_LOG_DIR = Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "cache" / "logs"))
+IMPORT_DETAIL_LOG_PATH = str(_LOG_DIR / "transaction_import.log")
+SERVER_LOG_PATH = str(_LOG_DIR / "fund_server.log")
+LOG_CLEANUP_STATE_PATH = str(_LOG_DIR / ".log_cleanup_state")
 
 _LOG_CLEANUP_LOCK = threading.Lock()
 _LOG_CLEANUP_THREAD_STARTED = False
@@ -221,7 +226,18 @@ def create_app(db=None):
 
     app = Flask(__name__, template_folder="templates", static_folder="static")
     _server_cfg = get_server_config()
-    app.secret_key = _server_cfg.get("secret_key", "luobobo")
+    secret_key = os.environ.get("FUNDEVAL_SECRET_KEY", "")
+    if not secret_key:
+        if os.environ.get("FUNDEVAL_ENV", "development").lower() == "production" and db is None:
+            raise RuntimeError("生产环境必须设置 FUNDEVAL_SECRET_KEY")
+        secret_key = "test-only-secret" if db is not None else os.urandom(32)
+    app.secret_key = secret_key
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=os.environ.get("FUNDEVAL_SECURE_COOKIE", "0") == "1",
+        MAX_CONTENT_LENGTH=16 * 1024 * 1024,
+    )
 
     if db is None:
         db = Database()
@@ -236,6 +252,35 @@ def create_app(db=None):
     app.register_blueprint(pages_bp)
     app.register_blueprint(api_fund_bp)
     app.register_blueprint(api_market_bp)
+
+    from src.auth import get_csrf_token
+
+    @app.context_processor
+    def inject_security_context():
+        return {"csrf_token": get_csrf_token}
+
+    @app.before_request
+    def enforce_csrf():
+        if app.config.get("TESTING"):
+            return None
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return None
+        expected = session.get("csrf_token")
+        supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
+        if not expected or not supplied or not secrets.compare_digest(expected, supplied):
+            abort(400, description="CSRF validation failed")
+
+    @app.after_request
+    def add_security_headers(response):
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
+        )
+        return response
 
     app.wsgi_app = ProxyFix(
         FilteredWSGIRequestLogger(app.wsgi_app),

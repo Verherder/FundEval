@@ -2,6 +2,11 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "${PROJECT_DIR}/.env" ]]; then
+    set -a
+    source "${PROJECT_DIR}/.env"
+    set +a
+fi
 LOG_DIR="${FUNDEVAL_LOG_DIR:-${PROJECT_DIR}/cache/logs}"
 RUNTIME_DIR="${FUNDEVAL_RUNTIME_DIR:-${PROJECT_DIR}/.runtime}"
 PID_FILE="${RUNTIME_DIR}/fundeval.pid"

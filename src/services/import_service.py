@@ -23,7 +23,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 IMPORT_JOB_STORE = {}
 IMPORT_JOB_LOCK = threading.Lock()
-IMPORT_DETAIL_LOG_PATH = str(_PROJECT_ROOT / "cache" / "logs" / "transaction_import.log")
+IMPORT_DETAIL_LOG_PATH = str(Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "cache" / "logs")) / "transaction_import.log")
 
 
 # ── job state helpers ──────────────────────────────────────────────────
@@ -235,17 +235,12 @@ def _log_import_share_mismatch(fund_code, trade_dt, amount, tx_type, net_value, 
         f'{fund_code}基金于{trade_text}日的{float(amount or 0):.2f}元{tx_label}交易，'
         f'净值{float(net_value or 0):.4f}，确认份额{float(confirmed_shares or 0):.2f}与计算份额{float(computed_shares or 0):.2f}不一致'
     )
-    logger.warning('{}', message)
+    logger.warning('交易导入份额校验不一致: fund_code={}, tx_type={}', fund_code, tx_type)
     _append_import_detail_log(
         'WARNING',
-        message,
+        '交易导入份额校验不一致',
         fund_code=fund_code,
-        trade_time=trade_text,
         tx_type=tx_label,
-        amount=f'{float(amount or 0):.2f}',
-        net_value=f'{float(net_value or 0):.4f}',
-        confirmed_shares=f'{float(confirmed_shares or 0):.2f}',
-        computed_shares=f'{float(computed_shares or 0):.2f}',
     )
     return message
 
@@ -276,6 +271,7 @@ class ImportService:
         job_id = _generate_job_id()
         _set_import_job_state(
             job_id,
+            user_id=user_id,
             success=None,
             done=False,
             status='queued',
@@ -306,10 +302,10 @@ class ImportService:
             'message': '文件上传成功，已开始导入',
         }
 
-    def get_import_progress(self, job_id):
+    def get_import_progress(self, user_id, job_id):
         """Poll import job progress."""
         state = _get_import_job_state(job_id)
-        if not state:
+        if not state or int(state.get('user_id', -1)) != int(user_id):
             return {'success': False, 'message': '导入任务不存在或已过期'}
         return {'success': True, 'job': state}
 
@@ -416,7 +412,7 @@ class ImportService:
 
                     exists_in_db = order_exists_cache.get(order_no)
                     if exists_in_db is None:
-                        exists_in_db = self._transaction_repo.exists_transaction_order_no(order_no)
+                        exists_in_db = self._transaction_repo.exists_transaction_order_no(user_id, order_no)
                         order_exists_cache[order_no] = exists_in_db
                     if exists_in_db:
                         duplicate_count += 1
@@ -574,27 +570,16 @@ class ImportService:
                     else:
                         row_trade_date = _normalize_import_text(item.get('trade_time', '')) or '-'
                     logger.warning(
-                        '交易导入失败: row={}, fund_code={}, tx_type={}, trade_time={}, amount={}, fee={}, diag={}, reason={}',
-                        row_num,
-                        row_code,
-                        row_tx_type,
-                        row_trade_date,
-                        row_amount,
-                        row_fee,
-                        json.dumps(row_diag, ensure_ascii=False),
-                        str(row_error),
+                        '交易导入失败: row={}, fund_code={}, tx_type={}, error_type={}',
+                        row_num, row_code, row_tx_type, type(row_error).__name__,
                     )
                     _append_import_detail_log(
                         'ERROR',
-                        f'交易导入失败: 基金{row_code} 日期{row_trade_date}：{str(row_error)}',
+                        '交易导入失败',
                         row=row_num,
                         fund_code=row_code,
-                        order_no=row_order_no,
                         tx_type=row_tx_type,
-                        trade_time=row_trade_date,
-                        amount=row_amount,
-                        fee=row_fee,
-                        diag=row_diag,
+                        error_type=type(row_error).__name__,
                     )
                     failed_rows.append({
                         'row': row_num,

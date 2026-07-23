@@ -1,15 +1,28 @@
 # -*- coding: UTF-8 -*-
-"""Authentication routes — login, register, logout."""
+"""Authentication routes with invite-only registration and revocable tokens."""
 
+import datetime
 import hashlib
+import secrets
 
-from flask import Blueprint, redirect, render_template, request, url_for
+from flask import Blueprint, redirect, render_template, request, session, url_for
 from loguru import logger
 
-from src.auth import login_user, logout_user
+from src.auth import get_csrf_token, login_user, logout_user
 from src.dependencies import get_user_repo
 
 auth_bp = Blueprint("auth", __name__)
+
+
+def _token_hash(token):
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def _set_remember_cookie(response, token, max_age=7 * 24 * 60 * 60):
+    response.set_cookie(
+        "remember_token", token, max_age=max_age, httponly=True,
+        secure=request.is_secure, samesite="Lax", path=request.script_root or "/",
+    )
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
@@ -17,54 +30,42 @@ def login():
     if request.method == "GET":
         remember_token = request.cookies.get("remember_token")
         if remember_token:
-            try:
-                parts = remember_token.split(":")
-                if len(parts) == 2:
-                    username, token_hash = parts
-                    user = get_user_repo().get_user_by_username(username)
-                    if user:
-                        expected_hash = hashlib.sha256(
-                            f"{username}:{user['password_hash']}".encode()
-                        ).hexdigest()
-                        if token_hash == expected_hash:
-                            login_user(user["id"], username)
-                            return redirect(url_for("pages.get_fund"))
-            except Exception as e:
-                logger.error(f"Auto-login failed: {e}")
-
+            user = get_user_repo().consume_remember_token(_token_hash(remember_token))
+            if user:
+                login_user(user["user_id"], user["username"])
+                response = redirect(url_for("pages.get_fund"))
+                replacement = secrets.token_urlsafe(48)
+                expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=7)
+                get_user_repo().save_remember_token(user["user_id"], _token_hash(replacement), expires.isoformat())
+                _set_remember_cookie(response, replacement)
+                return response
         return render_template("login.html")
 
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
-    remember_me = request.form.get("remember_me") == "1"
-
     if not username or not password:
         return render_template("login.html", error="请输入用户名和密码")
 
+    identity = _token_hash(f"{username.lower()}|{request.remote_addr or ''}")
+    if get_user_repo().login_is_limited(identity):
+        return render_template("login.html", error="登录尝试过多，请稍后再试"), 429
     success, user_id = get_user_repo().verify_password(username, password)
-    if success:
-        login_user(user_id, username)
-        response = redirect(url_for("pages.get_fund"))
+    get_user_repo().record_login_attempt(identity, success)
+    if not success:
+        logger.warning("Login failed")
+        return render_template("login.html", error="用户名或密码错误"), 401
+    user = get_user_repo().get_user_by_username(username)
+    if user and user.get("password_reset_required"):
+        return render_template("login.html", error="密码已失效，请联系管理员重置"), 403
 
-        if remember_me:
-            user = get_user_repo().get_user_by_username(username)
-            if user:
-                token_hash = hashlib.sha256(
-                    f"{username}:{user['password_hash']}".encode()
-                ).hexdigest()
-                remember_token = f"{username}:{token_hash}"
-                response.set_cookie(
-                    "remember_token",
-                    remember_token,
-                    max_age=7 * 24 * 60 * 60,
-                    httponly=True,
-                    samesite="Lax",
-                    path=request.script_root or "/",
-                )
-
-        return response
-    else:
-        return render_template("login.html", error="用户名或密码错误")
+    login_user(user_id, username)
+    response = redirect(url_for("pages.get_fund"))
+    if request.form.get("remember_me") == "1":
+        raw_token = secrets.token_urlsafe(48)
+        expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=7)
+        get_user_repo().save_remember_token(user_id, _token_hash(raw_token), expires.isoformat())
+        _set_remember_cookie(response, raw_token)
+    return response
 
 
 @auth_bp.route("/register", methods=["GET", "POST"])
@@ -75,35 +76,33 @@ def register():
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
     confirm_password = request.form.get("confirm_password", "")
+    invite_code = request.form.get("invite_code", "").strip()
+    invite_hash = _token_hash(invite_code)
 
-    if not username or not password:
-        return render_template("register.html", error="请输入用户名和密码")
-
+    if not get_user_repo().invitation_is_valid(invite_hash):
+        return render_template("register.html", error="邀请码无效或已过期"), 400
     if len(username) < 3 or len(username) > 20:
-        return render_template("register.html", error="用户名长度应为3-20个字符")
-
-    if len(password) < 6:
-        return render_template("register.html", error="密码长度至少为6个字符")
-
+        return render_template("register.html", error="用户名长度应为3-20个字符"), 400
+    if len(password) < 12:
+        return render_template("register.html", error="密码长度至少为12个字符"), 400
     if password != confirm_password:
-        return render_template("register.html", error="两次输入的密码不一致")
+        return render_template("register.html", error="两次输入的密码不一致"), 400
 
     success, message, user_id = get_user_repo().create_user(username, password)
-    if success:
-        login_user(user_id, username)
-        return redirect(url_for("pages.get_fund"))
-    else:
-        return render_template("register.html", error=message)
+    if not success:
+        return render_template("register.html", error=message), 400
+    if not get_user_repo().consume_invitation(invite_hash, user_id):
+        return render_template("register.html", error="邀请码已被使用，请联系管理员"), 409
+    login_user(user_id, username)
+    return redirect(url_for("pages.get_fund"))
 
 
-@auth_bp.route("/logout")
+@auth_bp.route("/logout", methods=["POST"])
 def logout():
+    user_id = session.get("user_id")
+    if user_id:
+        get_user_repo().revoke_remember_tokens(user_id)
     logout_user()
     response = redirect(url_for("auth.login"))
-    response.set_cookie(
-        "remember_token",
-        "",
-        max_age=0,
-        path=request.script_root or "/",
-    )
+    _set_remember_cookie(response, "", max_age=0)
     return response

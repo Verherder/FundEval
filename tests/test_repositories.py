@@ -144,8 +144,8 @@ class TestTransactionRepo:
 
     def test_mark_pending_buy_settled_delegates(self, mock_db):
         repo = TransactionRepo(mock_db)
-        repo.mark_pending_buy_settled(1, 100, 2.5, 400.0)
-        mock_db.mark_pending_buy_settled.assert_called_once_with(1, 100, 2.5, 400.0)
+        repo.mark_pending_buy_settled(7, 1, 100, 2.5, 400.0)
+        mock_db.mark_pending_buy_settled.assert_called_once_with(7, 1, 100, 2.5, 400.0)
 
     def test_get_fund_transactions_delegates(self, mock_db):
         mock_db.get_fund_transactions.return_value = [{"id": 1, "tx_type": "buy"}]
@@ -164,8 +164,8 @@ class TestTransactionRepo:
     def test_exists_transaction_order_no_delegates(self, mock_db):
         mock_db.exists_transaction_order_no.return_value = True
         repo = TransactionRepo(mock_db)
-        result = repo.exists_transaction_order_no("ON123")
-        mock_db.exists_transaction_order_no.assert_called_once_with("ON123")
+        result = repo.exists_transaction_order_no(7, "ON123")
+        mock_db.exists_transaction_order_no.assert_called_once_with(7, "ON123")
         assert result is True
 
     def test_update_fund_transaction_and_recalculate_delegates(self, mock_db):

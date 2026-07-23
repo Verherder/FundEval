@@ -106,7 +106,7 @@ def test_login_with_wrong_password(client, test_db):
         data={"username": "user1", "password": "wrongpassword"},
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 401
     # Should not redirect — stays on login
 
 
@@ -208,14 +208,14 @@ def test_performance_chart_endpoint(auth_client):
 # ── P0-8: Logout ─────────────────────────────────────────────────────────
 
 def test_logout(auth_client):
-    """GET /logout clears session and redirects to /login."""
-    resp = auth_client.get("/logout", follow_redirects=False)
+    """POST /logout clears session and redirects to /login."""
+    resp = auth_client.post("/logout", follow_redirects=False)
     assert resp.status_code in (200, 302)
 
 
 def test_protected_page_after_logout(auth_client):
     """After logout, /portfolio redirects to /login."""
-    auth_client.get("/logout")
+    auth_client.post("/logout")
     resp = auth_client.get("/portfolio", follow_redirects=False)
     assert resp.status_code in (302, 401)
 

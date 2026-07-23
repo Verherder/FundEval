@@ -2,7 +2,9 @@
 
 from functools import wraps
 
-from flask import session, redirect, url_for, request
+import secrets
+
+from flask import abort, session, redirect, url_for, request
 from loguru import logger
 
 
@@ -40,6 +42,23 @@ def get_current_username():
     return session.get('username')
 
 
+def get_csrf_token():
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_urlsafe(32)
+    return session["csrf_token"]
+
+
+def admin_required(f):
+    @wraps(f)
+    @login_required
+    def decorated_function(*args, **kwargs):
+        from src.dependencies import get_user_repo
+        if not get_user_repo().is_admin(get_current_user_id()):
+            abort(403)
+        return f(*args, **kwargs)
+    return decorated_function
+
+
 def login_user(user_id, username):
     """登录用户，设置session
 
@@ -47,13 +66,15 @@ def login_user(user_id, username):
         user_id: 用户ID
         username: 用户名
     """
+    session.clear()
     session['user_id'] = user_id
     session['username'] = username
-    logger.info(f"User logged in: {username} (ID: {user_id})")
+    session['csrf_token'] = secrets.token_urlsafe(32)
+    logger.info(f"User logged in: id={user_id}")
 
 
 def logout_user():
     """登出用户，清除session"""
-    username = session.get('username', 'Unknown')
+    user_id = session.get('user_id', 'unknown')
     session.clear()
-    logger.info(f"User logged out: {username}")
+    logger.info(f"User logged out: id={user_id}")

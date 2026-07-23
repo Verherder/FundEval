@@ -1,3 +1,0 @@
-[submodule "cache"]
-	path = cache
-	url = git@github.com:verherder/FundEval-data.git

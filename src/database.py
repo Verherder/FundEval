@@ -3,11 +3,14 @@
 import json
 import os
 import sqlite3
+import uuid
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 import bcrypt
 from loguru import logger
+
+from src.schema import EXAMPLE_FUNDS, SCHEMA_VERSION, MigrationRequired, create_latest_schema, get_schema_version
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -15,14 +18,24 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 class Database:
     def __init__(self, db_path=None):
         if db_path is None:
-            db_path = str(_PROJECT_ROOT / "cache" / "fund_data.db")
-        self.db_path = db_path
+            data_dir = Path(os.environ.get("FUNDEVAL_DATA_DIR", _PROJECT_ROOT / "cache"))
+            data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            target_path = data_dir / "fund_data.db"
+            db_path = str(target_path)
+        self._memory_keeper = None
+        if db_path == ":memory:":
+            self.db_path = f"file:fundeval-{uuid.uuid4().hex}?mode=memory&cache=shared"
+            self._memory_keeper = sqlite3.connect(self.db_path, uri=True)
+        else:
+            self.db_path = db_path
         self.init_database()
 
     def get_connection(self):
         """获取数据库连接"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, uri=self.db_path.startswith("file:"))
         conn.row_factory = sqlite3.Row  # 返回字典格式
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
     @staticmethod
@@ -36,6 +49,25 @@ class Database:
         """初始化数据库表"""
         conn = self.get_connection()
         cursor = conn.cursor()
+
+        has_tables = cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
+        ).fetchone()
+        if not has_tables:
+            create_latest_schema(conn)
+            conn.commit()
+            conn.close()
+            return
+
+        version = get_schema_version(conn)
+        if version == SCHEMA_VERSION:
+            conn.close()
+            return
+        conn.close()
+        raise MigrationRequired(
+            f"数据库结构版本为 {version}，当前需要 {SCHEMA_VERSION}。"
+            "请先执行 scripts/fundctl.sh migrate --dry-run，确认后执行 scripts/fundctl.sh migrate。"
+        )
 
         # 创建用户表
         cursor.execute('''
@@ -139,7 +171,7 @@ class Database:
         # 历史数据归一化：份额统一保留两位小数
         try:
             cursor.execute('''
-                UPDATE user_funds
+                UPDATE user_watchlist
                 SET shares = ROUND(COALESCE(shares, 0), 2)
             ''')
             cursor.execute('''
@@ -344,6 +376,15 @@ class Database:
                 (username, password_hash)
             )
             user_id = cursor.lastrowid
+            for fund_code, fund_key, fund_name in EXAMPLE_FUNDS:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO fund_catalog(fund_code,fund_key,fund_name) VALUES(?,?,?)",
+                    (fund_code, fund_key, fund_name),
+                )
+                cursor.execute(
+                    "INSERT OR IGNORE INTO user_watchlist(user_id,fund_code) VALUES(?,?)",
+                    (user_id, fund_code),
+                )
             conn.commit()
             conn.close()
 
@@ -399,6 +440,98 @@ class Database:
             logger.error(f"Failed to verify password for {username}: {e}")
             return False, None
 
+    def reset_password(self, username, password):
+        password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12))
+        with self.get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE users SET password_hash=?, password_reset_required=0 WHERE username=?",
+                (password_hash, username),
+            )
+            if cur.rowcount:
+                conn.execute(
+                    "UPDATE remember_tokens SET revoked_at=CURRENT_TIMESTAMP WHERE user_id=(SELECT id FROM users WHERE username=?)",
+                    (username,),
+                )
+            return cur.rowcount == 1
+
+    def is_admin(self, user_id):
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT is_admin FROM users WHERE id=?", (user_id,)).fetchone()
+            return bool(row and row[0])
+
+    def create_invitation(self, token_hash, created_by, expires_at):
+        with self.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO invitations(token_hash,created_by,expires_at) VALUES(?,?,?)",
+                (token_hash, created_by, expires_at),
+            )
+
+    def consume_invitation(self, token_hash, user_id):
+        with self.get_connection() as conn:
+            cur = conn.execute(
+                """UPDATE invitations SET used_by=?, used_at=CURRENT_TIMESTAMP
+                   WHERE token_hash=? AND used_at IS NULL AND revoked_at IS NULL
+                     AND datetime(expires_at) > datetime('now')""",
+                (user_id, token_hash),
+            )
+            return cur.rowcount == 1
+
+    def invitation_is_valid(self, token_hash):
+        with self.get_connection() as conn:
+            return conn.execute(
+                """SELECT 1 FROM invitations WHERE token_hash=? AND used_at IS NULL
+                   AND revoked_at IS NULL AND datetime(expires_at) > datetime('now')""",
+                (token_hash,),
+            ).fetchone() is not None
+
+    def save_remember_token(self, user_id, token_hash, expires_at):
+        with self.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO remember_tokens(user_id,token_hash,expires_at) VALUES(?,?,?)",
+                (user_id, token_hash, expires_at),
+            )
+
+    def consume_remember_token(self, token_hash):
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """SELECT t.id,t.user_id,u.username FROM remember_tokens t
+                   JOIN users u ON u.id=t.user_id
+                   WHERE t.token_hash=? AND t.revoked_at IS NULL
+                     AND datetime(t.expires_at) > datetime('now')""",
+                (token_hash,),
+            ).fetchone()
+            if row:
+                conn.execute("UPDATE remember_tokens SET revoked_at=CURRENT_TIMESTAMP WHERE id=?", (row["id"],))
+                return dict(row)
+            return None
+
+    def revoke_remember_tokens(self, user_id):
+        with self.get_connection() as conn:
+            conn.execute(
+                "UPDATE remember_tokens SET revoked_at=CURRENT_TIMESTAMP WHERE user_id=? AND revoked_at IS NULL",
+                (user_id,),
+            )
+
+    def login_is_limited(self, identity_hash, max_failures=5, window_minutes=15):
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """SELECT COUNT(*) FROM login_attempts
+                   WHERE identity_hash=? AND succeeded=0
+                     AND datetime(attempted_at) >= datetime('now', ?)""",
+                (identity_hash, f"-{int(window_minutes)} minutes"),
+            ).fetchone()
+            return int(row[0]) >= int(max_failures)
+
+    def record_login_attempt(self, identity_hash, succeeded):
+        with self.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO login_attempts(identity_hash,succeeded) VALUES(?,?)",
+                (identity_hash, 1 if succeeded else 0),
+            )
+            if succeeded:
+                conn.execute("DELETE FROM login_attempts WHERE identity_hash=?", (identity_hash,))
+            conn.execute("DELETE FROM login_attempts WHERE datetime(attempted_at) < datetime('now','-1 day')")
+
     # ==================== Fund Operations ====================
 
     def get_user_funds(self, user_id):
@@ -410,7 +543,15 @@ class Database:
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM user_funds WHERE user_id = ?', (user_id,))
+            cursor.execute('''
+                SELECT w.user_id, w.fund_code, w.is_hold, w.shares, w.chart_default,
+                       c.fund_key, c.fund_name, c.sectors, c.establishment_date,
+                       c.estimate_history, c.estimate_history_2
+                FROM user_watchlist w
+                JOIN fund_catalog c ON c.fund_code = w.fund_code
+                WHERE w.user_id = ?
+                ORDER BY w.id
+            ''', (user_id,))
             rows = cursor.fetchall()
             conn.close()
 
@@ -430,6 +571,7 @@ class Database:
                     'establishment_date': row['establishment_date'],
                     'estimate_history': estimate_history,
                     'estimate_history_2': estimate_history_2,
+                    'chart_default': bool(row['chart_default']),
                 }
 
             return fund_map
@@ -450,7 +592,7 @@ class Database:
             cursor = conn.cursor()
 
             # 删除用户现有的所有基金数据
-            cursor.execute('DELETE FROM user_funds WHERE user_id = ?', (user_id,))
+            cursor.execute('DELETE FROM user_watchlist WHERE user_id = ?', (user_id,))
 
             # 插入新的基金数据
             for fund_code, fund_data in fund_map.items():
@@ -459,21 +601,31 @@ class Database:
                 estimate_history_2_json = json.dumps(fund_data.get('estimate_history_2', {}), ensure_ascii=False)
 
                 cursor.execute('''
-                               INSERT INTO user_funds
-                                   (user_id, fund_code, fund_key, fund_name, is_hold, shares, sectors, establishment_date, estimate_history, estimate_history_2)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                               ''', (
-                                   user_id,
-                                   fund_code,
-                                   fund_data['fund_key'],
-                                   fund_data['fund_name'],
-                                   1 if fund_data.get('is_hold', False) else 0,
-                                   fund_data.get('shares', 0),
-                                   sectors_json,
-                                   fund_data.get('establishment_date'),
-                                   estimate_history_json,
-                                   estimate_history_2_json
-                               ))
+                    INSERT INTO fund_catalog
+                        (fund_code, fund_key, fund_name, sectors, establishment_date,
+                         estimate_history, estimate_history_2, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(fund_code) DO UPDATE SET
+                        fund_key=excluded.fund_key,
+                        fund_name=excluded.fund_name,
+                        sectors=excluded.sectors,
+                        establishment_date=COALESCE(excluded.establishment_date, fund_catalog.establishment_date),
+                        estimate_history=excluded.estimate_history,
+                        estimate_history_2=excluded.estimate_history_2,
+                        updated_at=CURRENT_TIMESTAMP
+                ''', (
+                    fund_code, fund_data['fund_key'], fund_data['fund_name'], sectors_json,
+                    fund_data.get('establishment_date'), estimate_history_json, estimate_history_2_json
+                ))
+                cursor.execute('''
+                    INSERT INTO user_watchlist
+                        (user_id, fund_code, is_hold, shares, chart_default)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (
+                    user_id, fund_code, 1 if fund_data.get('is_hold', False) else 0,
+                    self._round_shares(fund_data.get('shares', 0)),
+                    1 if fund_data.get('chart_default', False) else 0,
+                ))
 
             conn.commit()
             conn.close()
@@ -500,7 +652,7 @@ class Database:
             is_hold = 1 if shares > 0 else 0
 
             cursor.execute('''
-                           UPDATE user_funds
+                           UPDATE user_watchlist
                            SET shares = ?, is_hold = ?
                            WHERE user_id = ?
                              AND fund_code = ?
@@ -532,10 +684,16 @@ class Database:
             cursor = conn.cursor()
 
             cursor.execute('''
-                INSERT OR REPLACE INTO user_funds
-                (user_id, fund_code, fund_key, fund_name, is_hold, shares, sectors, establishment_date, estimate_history, estimate_history_2)
-                VALUES (?, ?, ?, ?, 0, 0, '[]', NULL, '{}', '{}')
-            ''', (user_id, fund_code, fund_key, fund_name))
+                INSERT INTO fund_catalog(fund_code, fund_key, fund_name)
+                VALUES (?, ?, ?)
+                ON CONFLICT(fund_code) DO UPDATE SET
+                    fund_key=excluded.fund_key, fund_name=excluded.fund_name,
+                    updated_at=CURRENT_TIMESTAMP
+            ''', (fund_code, fund_key, fund_name))
+            cursor.execute('''
+                INSERT OR IGNORE INTO user_watchlist(user_id, fund_code)
+                VALUES (?, ?)
+            ''', (user_id, fund_code))
 
             conn.commit()
             conn.close()
@@ -558,7 +716,7 @@ class Database:
 
             cursor.execute('''
                            DELETE
-                           FROM user_funds
+                           FROM user_watchlist
                            WHERE user_id = ?
                              AND fund_code = ?
                            ''', (user_id, fund_code))
@@ -593,11 +751,11 @@ class Database:
             cursor = conn.cursor()
 
             # 先清除该用户的所有chart_default标记
-            cursor.execute('UPDATE user_funds SET chart_default = 0 WHERE user_id = ?', (user_id,))
+            cursor.execute('UPDATE user_watchlist SET chart_default = 0 WHERE user_id = ?', (user_id,))
 
             # 设置新的默认基金
             cursor.execute('''
-                           UPDATE user_funds
+                           UPDATE user_watchlist
                            SET chart_default = 1
                            WHERE user_id = ?
                              AND fund_code = ?
@@ -625,7 +783,7 @@ class Database:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT shares FROM user_funds
+                SELECT shares FROM user_watchlist
                 WHERE user_id = ? AND fund_code = ?
             ''', (user_id, fund_code))
             row = cursor.fetchone()
@@ -642,7 +800,7 @@ class Database:
 
             is_hold = 1 if new_shares > 0 else 0
             cursor.execute('''
-                UPDATE user_funds
+                UPDATE user_watchlist
                 SET shares = ?, is_hold = ?
                 WHERE user_id = ? AND fund_code = ?
             ''', (new_shares, is_hold, user_id, fund_code))
@@ -664,10 +822,11 @@ class Database:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                UPDATE user_funds
-                SET establishment_date = ?
-                WHERE user_id = ? AND fund_code = ?
-            ''', (value, user_id, fund_code))
+                UPDATE fund_catalog
+                SET establishment_date = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE fund_code = ?
+                  AND EXISTS (SELECT 1 FROM user_watchlist WHERE user_id=? AND fund_code=fund_catalog.fund_code)
+            ''', (value, fund_code, user_id))
 
             conn.commit()
             affected_rows = cursor.rowcount
@@ -685,7 +844,7 @@ class Database:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT id FROM user_funds
+                SELECT id FROM user_watchlist
                 WHERE user_id = ? AND fund_code = ?
             ''', (user_id, fund_code))
             fund_row = cursor.fetchone()
@@ -714,7 +873,7 @@ class Database:
             is_hold = 1 if total_shares > 0 else 0
 
             cursor.execute('''
-                UPDATE user_funds
+                UPDATE user_watchlist
                 SET shares = ?, is_hold = ?
                 WHERE user_id = ? AND fund_code = ?
             ''', (total_shares, is_hold, user_id, fund_code))
@@ -735,6 +894,7 @@ class Database:
     def add_fund_transaction(self, user_id, fund_code, tx_type, amount, shares, net_value=None, tx_time=None, fee=0.0,
                              order_no=None):
         """写入基金交易记录。"""
+        conn = None
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -762,6 +922,9 @@ class Database:
             conn.close()
             return tx_id
         except Exception as e:
+            if conn is not None:
+                conn.rollback()
+                conn.close()
             logger.error(f"Failed to add transaction: {e}")
             return None
 
@@ -813,7 +976,7 @@ class Database:
             logger.error(f"Failed to get pending buys for user {user_id}: {e}")
             return []
 
-    def mark_pending_buy_settled(self, pending_id, settled_tx_id, settled_net_value, settled_shares):
+    def mark_pending_buy_settled(self, user_id, pending_id, settled_tx_id, settled_net_value, settled_shares):
         """将待确认买入标记为已结算。"""
         try:
             conn = self.get_connection()
@@ -825,8 +988,8 @@ class Database:
                     settled_net_value = ?,
                     settled_shares = ?,
                     settled_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND status = 'pending'
-            ''', (settled_tx_id, settled_net_value, settled_shares, pending_id))
+                WHERE id = ? AND user_id = ? AND status = 'pending'
+            ''', (settled_tx_id, settled_net_value, settled_shares, pending_id, user_id))
             conn.commit()
             affected_rows = cursor.rowcount
             conn.close()
@@ -871,7 +1034,7 @@ class Database:
             logger.error(f"Failed to get all transactions for user {user_id}: {e}")
             return []
 
-    def exists_transaction_order_no(self, order_no):
+    def exists_transaction_order_no(self, user_id, order_no):
         """检查订单号是否已存在。"""
         try:
             normalized_order_no = str(order_no or '').strip()
@@ -883,9 +1046,9 @@ class Database:
             cursor.execute('''
                 SELECT 1
                 FROM fund_transactions
-                WHERE order_no = ?
+                WHERE user_id = ? AND order_no = ?
                 LIMIT 1
-            ''', (normalized_order_no,))
+            ''', (user_id, normalized_order_no))
             row = cursor.fetchone()
             conn.close()
             return row is not None
@@ -1176,7 +1339,7 @@ class Database:
             total_shares = self._round_shares(max(total_shares, 0.0))
             is_hold = 1 if total_shares > 0 else 0
             cursor.execute('''
-                UPDATE user_funds
+                UPDATE user_watchlist
                 SET shares = ?, is_hold = ?
                 WHERE user_id = ? AND fund_code = ?
             ''', (total_shares, is_hold, user_id, fund_code))
@@ -1246,7 +1409,7 @@ class Database:
             total_shares = self._round_shares(max(total_shares, 0.0))
             is_hold = 1 if total_shares > 0 else 0
             cursor.execute('''
-                UPDATE user_funds
+                UPDATE user_watchlist
                 SET shares = ?, is_hold = ?
                 WHERE user_id = ? AND fund_code = ?
             ''', (total_shares, is_hold, user_id, fund_code))
@@ -1303,7 +1466,7 @@ class Database:
             deleted_count = int(cursor.rowcount or 0)
 
             cursor.execute('''
-                UPDATE user_funds
+                UPDATE user_watchlist
                 SET shares = 0, is_hold = 0
                 WHERE user_id = ? AND fund_code = ?
             ''', (user_id, fund_code))
@@ -1352,7 +1515,7 @@ class Database:
             deleted_count = int(cursor.rowcount or 0)
 
             cursor.execute('''
-                UPDATE user_funds
+                UPDATE user_watchlist
                 SET shares = 0, is_hold = 0
                 WHERE user_id = ?
             ''', (user_id,))
@@ -1385,7 +1548,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                            SELECT fund_code, fund_key, fund_name
-                           FROM user_funds
+                           FROM user_watchlist
                            WHERE user_id = ? AND chart_default = 1
                            ''', (user_id,))
             row = cursor.fetchone()

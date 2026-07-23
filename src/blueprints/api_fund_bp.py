@@ -3,11 +3,12 @@
 
 import time
 import threading
+import os
 
-from flask import Blueprint, jsonify, render_template, request, send_file
+from flask import Blueprint, after_this_request, jsonify, render_template, request, send_file
 from loguru import logger
 
-from src.auth import get_current_user_id, login_required
+from src.auth import admin_required, get_current_user_id, login_required
 from src.dependencies import (
     get_chart_service,
     get_fund_repo,
@@ -138,7 +139,7 @@ def api_fund_set_hold():
 
 
 @api_fund_bp.route("/fund/sector", methods=["POST"])
-@login_required
+@admin_required
 def api_fund_set_sector():
     start = time.perf_counter()
     try:
@@ -161,7 +162,7 @@ def api_fund_set_sector():
 
 
 @api_fund_bp.route("/fund/sector/remove", methods=["POST"])
-@login_required
+@admin_required
 def api_fund_remove_sector():
     start = time.perf_counter()
     try:
@@ -211,6 +212,13 @@ def api_fund_download():
     try:
         user_id = get_current_user_id()
         temp_path, download_name, mimetype = get_fund_service().download_funds(user_id)
+        @after_this_request
+        def cleanup_download(response):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            return response
         return send_file(temp_path, as_attachment=True, download_name=download_name, mimetype=mimetype)
     except Exception as e:
         logger.error(f"下载文件失败: {e}")
@@ -223,6 +231,13 @@ def api_fund_transactions_download_all():
     try:
         user_id = get_current_user_id()
         temp_path, download_name, mimetype = get_fund_service().download_all_transactions(user_id)
+        @after_this_request
+        def cleanup_download(response):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            return response
         return send_file(temp_path, as_attachment=True, download_name=download_name, mimetype=mimetype)
     except Exception as e:
         logger.error(f"下载全部交易记录备份失败: {e}")
@@ -413,7 +428,7 @@ def api_fund_transactions_import():
 @login_required
 def api_fund_transactions_import_progress():
     job_id = str(request.args.get("job_id", "") or "").strip()
-    return get_import_service().get_import_progress(job_id)
+    return get_import_service().get_import_progress(get_current_user_id(), job_id)
 
 
 @api_fund_bp.route("/fund/transaction/update", methods=["POST"])

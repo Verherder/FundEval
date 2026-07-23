@@ -167,35 +167,14 @@ class MiniFund:
         return self._fund123_client.fetch_intraday_curve(fund_key)
 
     def load_cache(self):
-        """加载缓存数据，优先数据库；数据库为空时从 fund_map.json 迁移。"""
+        """Load the authenticated user's watchlist from the database."""
         if self.user_id is not None and self.db is not None:
             self.CACHE_MAP = self.fund_repo.get_user_funds(self.user_id)
-            if not self.CACHE_MAP:
-                _migrated = self._try_migrate_from_file()
-                if _migrated is not None:
-                    self.CACHE_MAP = _migrated
         else:
             fund_map_path = _PROJECT_ROOT / "cache" / "fund_map.json"
             if fund_map_path.exists():
                 with open(str(fund_map_path), "r", encoding="gbk") as f:
                     self.CACHE_MAP = json.load(f)
-
-    def _try_migrate_from_file(self):
-        """如果 fund_map.json 存在，将其内容迁移到数据库并返回 CACHE_MAP。"""
-        fund_map_path = _PROJECT_ROOT / "cache" / "fund_map.json"
-        if not fund_map_path.exists():
-            return None
-        try:
-            with open(str(fund_map_path), "r", encoding="gbk") as f:
-                data = json.load(f)
-            if not data:
-                return None
-            self.fund_repo.save_user_funds(self.user_id, data)
-            logger.info(f"从 fund_map.json 迁移 {len(data)} 个基金到数据库 (user_id={self.user_id})")
-            return data
-        except Exception as e:
-            logger.warning(f"从 fund_map.json 迁移数据失败: {e}")
-            return None
 
     @staticmethod
     def _normalize_establishment_date_text(raw_value):

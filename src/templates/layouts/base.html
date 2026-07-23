@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>{% block title %}MiniFund{% endblock %}</title>
     <link rel="icon" href="{{ url_for('static', filename='1.ico') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
@@ -23,7 +24,10 @@
             <a href="https://github.com/lanZzV/fund/issues" target="_blank" class="nav-feedback">反馈</a>
             {% if username %}
             <span class="nav-user">🍎 {{ username }}</span>
-            <a href="{{ url_for('auth.logout') }}" class="nav-logout">退出登录</a>
+            <form method="POST" action="{{ url_for('auth.logout') }}" class="nav-logout-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="nav-logout">退出登录</button>
+            </form>
             {% endif %}
         </div>
     </nav>

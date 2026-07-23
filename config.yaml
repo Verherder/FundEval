@@ -4,7 +4,6 @@
 server:
   host: "127.0.0.1"
   port: 8888
-  secret_key: "gugufish"  # Flask session 密钥
 
 # 页面刷新配置
 page_refresh:

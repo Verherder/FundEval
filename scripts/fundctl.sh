@@ -2,6 +2,11 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "${PROJECT_DIR}/.env" ]]; then
+    set -a
+    source "${PROJECT_DIR}/.env"
+    set +a
+fi
 RUNTIME_DIR="${FUNDEVAL_RUNTIME_DIR:-${PROJECT_DIR}/.runtime}"
 LOG_DIR="${FUNDEVAL_LOG_DIR:-${PROJECT_DIR}/cache/logs}"
 PID_FILE="${RUNTIME_DIR}/fundeval.pid"
@@ -274,6 +279,10 @@ show_environment() {
         'from importlib.metadata import version; print("Flask: {}".format(version("flask"))); print("Gunicorn: {}".format(version("gunicorn")))'
 }
 
+run_admin() {
+    PYTHONPATH="${PROJECT_DIR}" "${PYTHON_BIN}" -m src.cli "$@"
+}
+
 case "${1:-}" in
     start) start_server ;;
     stop) stop_server ;;
@@ -281,6 +290,9 @@ case "${1:-}" in
     status) status_server ;;
     environment) show_environment ;;
     rotate-logs) "${PROJECT_DIR}/scripts/rotate_logs.sh" ;;
+    migrate) shift; run_admin migrate "$@" ;;
+    invite) shift; run_admin invite "$@" ;;
+    reset-password) shift; run_admin reset-password "$@" ;;
     logs) tail -n "${FUNDEVAL_LOG_LINES:-100}" -f "${ERROR_LOG}" ;;
-    *) echo "用法: $0 {start|stop|restart|status|environment|rotate-logs|logs}" >&2; exit 2 ;;
+    *) echo "用法: $0 {start|stop|restart|status|environment|rotate-logs|logs|migrate|invite|reset-password}" >&2; exit 2 ;;
 esac

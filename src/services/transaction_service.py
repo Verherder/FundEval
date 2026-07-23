@@ -262,6 +262,7 @@ class TransactionService:
                 continue
 
             marked = self._transaction_repo.mark_pending_buy_settled(
+                user_id=user_id,
                 pending_id=order['id'],
                 settled_tx_id=tx_id,
                 settled_net_value=latest_net_value,

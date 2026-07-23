@@ -24,8 +24,8 @@ class TransactionRepo:
     def get_pending_buys(self, user_id, fund_code=None):
         return self._db.get_pending_buys(user_id, fund_code)
 
-    def mark_pending_buy_settled(self, pending_id, settled_tx_id, settled_net_value, settled_shares):
-        return self._db.mark_pending_buy_settled(pending_id, settled_tx_id, settled_net_value, settled_shares)
+    def mark_pending_buy_settled(self, user_id, pending_id, settled_tx_id, settled_net_value, settled_shares):
+        return self._db.mark_pending_buy_settled(user_id, pending_id, settled_tx_id, settled_net_value, settled_shares)
 
     def get_fund_transactions(self, user_id, fund_code):
         return self._db.get_fund_transactions(user_id, fund_code)
@@ -33,8 +33,8 @@ class TransactionRepo:
     def get_all_fund_transactions(self, user_id):
         return self._db.get_all_fund_transactions(user_id)
 
-    def exists_transaction_order_no(self, order_no):
-        return self._db.exists_transaction_order_no(order_no)
+    def exists_transaction_order_no(self, user_id, order_no):
+        return self._db.exists_transaction_order_no(user_id, order_no)
 
     def update_fund_transaction_and_recalculate(self, user_id, fund_code, tx_id, tx_type,
                                                   amount, shares, net_value, tx_time, fee=0.0):
