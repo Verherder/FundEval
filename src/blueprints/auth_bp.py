@@ -10,6 +10,7 @@ from loguru import logger
 
 from src.auth import get_csrf_token, login_user, logout_user
 from src.dependencies import get_user_repo
+from src.security_validation import validate_password, validate_username
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -81,10 +82,10 @@ def register():
 
     if not get_user_repo().invitation_is_valid(invite_hash):
         return render_template("register.html", error="邀请码无效或已过期"), 400
-    if len(username) < 3 or len(username) > 20:
-        return render_template("register.html", error="用户名长度应为3-20个字符"), 400
-    if len(password) < 12:
-        return render_template("register.html", error="密码长度至少为12个字符"), 400
+    if not validate_username(username):
+        return render_template("register.html", error="用户名须为3-20位字母、数字或下划线"), 400
+    if not validate_password(password):
+        return render_template("register.html", error="密码须为12-20位字母、数字或允许的安全符号"), 400
     if password != confirm_password:
         return render_template("register.html", error="两次输入的密码不一致"), 400
 

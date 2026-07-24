@@ -5,7 +5,7 @@ from src.services.intraday_chart_service import IntradayChartService
 
 def test_latest_estimate_and_curve_use_separate_provider_methods():
     fund_repo = MagicMock()
-    fund_repo.get_user_funds.return_value = {
+    fund_repo.get_visible_funds.return_value = {
         "260101": {"fund_key": "KEY260101", "fund_name": "测试基金"}
     }
     provider = MagicMock()
@@ -30,7 +30,7 @@ def test_latest_estimate_and_curve_use_separate_provider_methods():
 
 def test_unknown_fund_returns_none_without_provider_request():
     fund_repo = MagicMock()
-    fund_repo.get_user_funds.return_value = {}
+    fund_repo.get_visible_funds.return_value = {}
     provider_factory = MagicMock()
     service = IntradayChartService(fund_repo, provider_factory)
 

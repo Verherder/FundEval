@@ -69,10 +69,13 @@ def test_reverse_proxy_prefix_is_preserved_in_redirects_and_assets(client):
     assert 'href="/fundeval/static/1.ico"' in html
 
 
-def test_reverse_proxy_prefix_is_preserved_after_login(client):
+def test_reverse_proxy_prefix_is_preserved_after_login(client, test_db):
     headers = {"X-Forwarded-Prefix": "/fundeval"}
+    _, _, user_id = test_db.create_user("prefixadmin", "prefix-password")
+    with test_db.get_connection() as conn:
+        conn.execute("UPDATE users SET is_admin=1 WHERE id=?", (user_id,))
     with client.session_transaction() as session:
-        session["user_id"] = 1
+        session["user_id"] = user_id
         session["username"] = "prefixuser"
 
     settings_response = client.get("/settings", headers=headers)

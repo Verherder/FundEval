@@ -35,6 +35,22 @@ class FundService:
         my_fund.add_code(codes)
         return {'success': True, 'message': f'已添加基金: {codes}'}
 
+    def add_catalog_funds(self, user_id, codes):
+        """Select funds that already exist in the shared catalog."""
+        parsed_codes = self._parse_codes(codes)
+        existing = {
+            item["fund_code"]
+            for item in self._fund_repo.get_fund_catalog(user_id)
+        }
+        missing = [code for code in parsed_codes if code not in existing]
+        if missing:
+            return {
+                "success": False,
+                "message": f"公共基金池中不存在: {', '.join(missing)}",
+            }
+        added = self._fund_repo.add_catalog_funds_to_watchlist(user_id, parsed_codes)
+        return {"success": True, "message": f"已加入自选: {added} 只基金"}
+
     def delete_fund(self, user_id, codes):
         """Delete fund codes from the user's watchlist."""
         fund_map = self._fund_repo.get_user_funds(user_id) or {}

@@ -23,7 +23,7 @@ def test_performance_chart_uses_transaction_nav_to_render_missing_trade_date_mar
     }]
 
     fund_repo = MagicMock()
-    fund_repo.get_user_funds.return_value = {
+    fund_repo.get_visible_funds.return_value = {
         "012842": {
             "fund_key": "KEY012842",
             "fund_name": "易方达中证军工指数(LOF)C",

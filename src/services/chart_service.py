@@ -115,7 +115,7 @@ class ChartService:
 
     def get_latest_fund_quote(self, user_id, fund_code):
         """获取基金最新净值与净值日期。"""
-        user_funds = self._fund_repo.get_user_funds(user_id)
+        user_funds = self._fund_repo.get_visible_funds(user_id)
         if fund_code not in user_funds:
             return None, None, None
 
@@ -206,7 +206,7 @@ class ChartService:
                                             user_funds=None):
         """基于本地 fund_nav_history 构建业绩曲线，不依赖远端业绩曲线接口。"""
         if user_funds is None:
-            user_funds = self._fund_repo.get_user_funds(user_id)
+            user_funds = self._fund_repo.get_visible_funds(user_id)
 
         establishment_date = self._nav_service.get_local_fund_establishment_date(
             user_id, fund_code, user_funds=user_funds)
@@ -307,7 +307,7 @@ class ChartService:
 
     def get_fund_performance_chart_data(self, user_id, fund_code, date_interval):
         """获取基金业绩曲线数据。"""
-        user_funds = self._fund_repo.get_user_funds(user_id)
+        user_funds = self._fund_repo.get_visible_funds(user_id)
 
         if fund_code not in user_funds:
             return None
@@ -450,7 +450,7 @@ class ChartService:
 
     def get_fund_profit_chart_data(self, user_id, fund_code, date_interval):
         """获取基金累计收益曲线数据。"""
-        user_funds = self._fund_repo.get_user_funds(user_id)
+        user_funds = self._fund_repo.get_visible_funds(user_id)
         if fund_code not in user_funds:
             return None
 
@@ -797,7 +797,7 @@ class ChartService:
 
     def set_chart_default(self, user_id, fund_code):
         """设置估值趋势图默认基金。"""
-        user_funds = self._fund_repo.get_user_funds(user_id)
+        user_funds = self._fund_repo.get_visible_funds(user_id)
         if fund_code not in user_funds:
             return False
         self._fund_repo.update_chart_default(user_id, fund_code)

@@ -45,4 +45,4 @@ class IntradayChartService:
         }
 
     def _get_fund(self, user_id, fund_code):
-        return (self._fund_repo.get_user_funds(user_id) or {}).get(fund_code)
+        return (self._fund_repo.get_visible_funds(user_id) or {}).get(fund_code)

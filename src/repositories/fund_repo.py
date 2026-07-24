@@ -16,6 +16,18 @@ class FundRepo:
     def get_user_funds(self, user_id):
         return self._db.get_user_funds(user_id)
 
+    def get_visible_funds(self, user_id):
+        return self._db.get_visible_funds(user_id)
+
+    def save_visible_funds(self, user_id, fund_map):
+        return self._db.save_visible_funds(user_id, fund_map)
+
+    def get_fund_catalog(self, user_id):
+        return self._db.get_fund_catalog(user_id)
+
+    def add_catalog_funds_to_watchlist(self, user_id, fund_codes):
+        return self._db.add_catalog_funds_to_watchlist(user_id, fund_codes)
+
     def save_user_funds(self, user_id, fund_map):
         return self._db.save_user_funds(user_id, fund_map)
 

@@ -54,6 +54,67 @@
         <button type="submit" class="btn btn-primary" id="saveSettingsBtn">保存设置</button>
     </div>
 </form>
+
+<section class="settings-panel" aria-labelledby="invitationTitle">
+    <div class="settings-section-header">
+        <div>
+            <h2 id="invitationTitle">注册邀请码</h2>
+            <p>邀请码仅显示一次，使用后立即失效。</p>
+        </div>
+    </div>
+    <div class="settings-row">
+        <div class="settings-copy">
+            <label for="invitationDays">有效期</label>
+            <span>允许设置 1 到 30 天</span>
+        </div>
+        <div class="settings-input-unit">
+            <input type="number" id="invitationDays" min="1" max="30" value="7" required>
+            <span>天</span>
+        </div>
+    </div>
+    <div class="settings-row" id="invitationResultRow" hidden>
+        <div class="settings-copy">
+            <label for="invitationCode">邀请码</label>
+            <span id="invitationExpiry"></span>
+        </div>
+        <div class="settings-input-unit">
+            <input type="text" id="invitationCode" readonly>
+            <button type="button" class="btn btn-secondary" id="copyInvitationBtn">复制</button>
+        </div>
+    </div>
+    <div class="settings-actions">
+        <span id="invitationStatus" role="status"></span>
+        <button type="button" class="btn btn-primary" id="generateInvitationBtn">生成邀请码</button>
+    </div>
+</section>
+
+<section class="settings-panel" aria-labelledby="userManagementTitle">
+    <div class="settings-section-header">
+        <div>
+            <h2 id="userManagementTitle">用户管理</h2>
+            <p>管理账号权限、登录状态和密码。</p>
+        </div>
+    </div>
+    <div style="overflow-x:auto;">
+        <table style="width:100%; border-collapse:collapse; min-width:720px;">
+            <thead>
+                <tr>
+                    <th style="text-align:left; padding:10px;">用户名</th>
+                    <th style="text-align:center; padding:10px;">角色</th>
+                    <th style="text-align:center; padding:10px;">状态</th>
+                    <th style="text-align:right; padding:10px;">个人基金</th>
+                    <th style="text-align:right; padding:10px;">交易记录</th>
+                    <th style="text-align:right; padding:10px;">操作</th>
+                </tr>
+            </thead>
+            <tbody id="userManagementBody"></tbody>
+        </table>
+    </div>
+    <div class="settings-actions">
+        <span id="userManagementStatus" role="status"></span>
+        <button type="button" class="btn btn-secondary" id="refreshUsersBtn">刷新</button>
+    </div>
+</section>
 {% endblock %}
 
 {% block scripts %}

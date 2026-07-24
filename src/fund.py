@@ -167,14 +167,12 @@ class MiniFund:
         return self._fund123_client.fetch_intraday_curve(fund_key)
 
     def load_cache(self):
-        """Load the authenticated user's watchlist from the database."""
+        """Load the shared catalog with the authenticated user's private state."""
         if self.user_id is not None and self.db is not None:
-            self.CACHE_MAP = self.fund_repo.get_user_funds(self.user_id)
+            self.CACHE_MAP = self.fund_repo.get_visible_funds(self.user_id)
         else:
-            fund_map_path = _PROJECT_ROOT / "cache" / "fund_map.json"
-            if fund_map_path.exists():
-                with open(str(fund_map_path), "r", encoding="gbk") as f:
-                    self.CACHE_MAP = json.load(f)
+            self.CACHE_MAP = {}
+            logger.warning("缺少用户或数据库上下文，拒绝从 fund_map.json 加载运行数据")
 
     @staticmethod
     def _normalize_establishment_date_text(raw_value):
@@ -381,16 +379,10 @@ class MiniFund:
         return wrote
 
     def save_cache(self):
-        """
-        保存缓存数据，优先保存到数据库（如果有user_id），否则保存到json文件。
-        """
-        if self.user_id is not None and self.db is not None:
-            # 保存到数据库
-            self.fund_repo.save_user_funds(self.user_id, self.CACHE_MAP)
-        else:
-            # 保存到文件（CLI模式）
-            with open(str(_PROJECT_ROOT / "cache" / "fund_map.json"), "w", encoding="gbk") as f:
-                json.dump(self.CACHE_MAP, f, ensure_ascii=False, indent=4)
+        """Persist shared quote data without creating implicit watchlist rows."""
+        if self.user_id is None or self.db is None:
+            raise RuntimeError("缺少用户或数据库上下文，拒绝写入 fund_map.json")
+        self.fund_repo.save_visible_funds(self.user_id, self.CACHE_MAP)
 
     def init(self):
         """
@@ -464,6 +456,7 @@ class MiniFund:
                         "shares": 0,
                         "establishment_date": establishment_date,
                     }
+                    self.fund_repo.add_fund(self.user_id, code, fund_key, fund_name)
                     logger.info(f"添加基金代码【{code}】成功")
                 else:
                     logger.error(f"添加基金代码【{code}】失败: {response.text.strip()}")

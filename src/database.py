@@ -10,7 +10,7 @@ from pathlib import Path
 import bcrypt
 from loguru import logger
 
-from src.schema import EXAMPLE_FUNDS, SCHEMA_VERSION, MigrationRequired, create_latest_schema, get_schema_version
+from src.schema import SCHEMA_VERSION, MigrationRequired, create_latest_schema, get_schema_version
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -376,15 +376,6 @@ class Database:
                 (username, password_hash)
             )
             user_id = cursor.lastrowid
-            for fund_code, fund_key, fund_name in EXAMPLE_FUNDS:
-                cursor.execute(
-                    "INSERT OR IGNORE INTO fund_catalog(fund_code,fund_key,fund_name) VALUES(?,?,?)",
-                    (fund_code, fund_key, fund_name),
-                )
-                cursor.execute(
-                    "INSERT OR IGNORE INTO user_watchlist(user_id,fund_code) VALUES(?,?)",
-                    (user_id, fund_code),
-                )
             conn.commit()
             conn.close()
 
@@ -459,12 +450,52 @@ class Database:
             row = conn.execute("SELECT is_admin FROM users WHERE id=?", (user_id,)).fetchone()
             return bool(row and row[0])
 
+    def list_users(self):
+        with self.get_connection() as conn:
+            return [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT u.id, u.username, u.is_admin,
+                           u.password_reset_required AS is_locked,
+                           u.created_at,
+                           (SELECT COUNT(*) FROM user_watchlist w WHERE w.user_id=u.id) AS personal_funds,
+                           (SELECT COUNT(*) FROM fund_transactions t WHERE t.user_id=u.id) AS transactions
+                    FROM users u
+                    ORDER BY u.id
+                    """
+                )
+            ]
+
+    def set_user_admin(self, user_id, is_admin):
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE users SET is_admin=? WHERE id=?",
+                (1 if is_admin else 0, user_id),
+            )
+            return cursor.rowcount == 1
+
+    def set_user_locked(self, user_id, is_locked):
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE users SET password_reset_required=? WHERE id=?",
+                (1 if is_locked else 0, user_id),
+            )
+            if is_locked and cursor.rowcount:
+                conn.execute(
+                    "UPDATE remember_tokens SET revoked_at=CURRENT_TIMESTAMP "
+                    "WHERE user_id=? AND revoked_at IS NULL",
+                    (user_id,),
+                )
+            return cursor.rowcount == 1
+
     def create_invitation(self, token_hash, created_by, expires_at):
         with self.get_connection() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO invitations(token_hash,created_by,expires_at) VALUES(?,?,?)",
                 (token_hash, created_by, expires_at),
             )
+            return cursor.lastrowid
 
     def consume_invitation(self, token_hash, user_id):
         with self.get_connection() as conn:
@@ -580,6 +611,130 @@ class Database:
             logger.error(f"Failed to get funds for user {user_id}: {e}")
             return {}
 
+    def get_visible_funds(self, user_id):
+        """Return every shared fund with this user's private state overlaid."""
+        try:
+            with self.get_connection() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT c.fund_code, c.fund_key, c.fund_name, c.sectors,
+                           c.establishment_date, c.estimate_history,
+                           c.estimate_history_2,
+                           COALESCE(w.is_hold, 0) AS is_hold,
+                           COALESCE(w.shares, 0) AS shares,
+                           COALESCE(w.chart_default, 0) AS chart_default,
+                           CASE WHEN w.id IS NULL THEN 0 ELSE 1 END AS is_selected
+                    FROM fund_catalog c
+                    LEFT JOIN user_watchlist w
+                      ON w.fund_code=c.fund_code AND w.user_id=?
+                    ORDER BY CASE WHEN w.id IS NULL THEN 1 ELSE 0 END,
+                             w.id, c.fund_code
+                    """,
+                    (user_id,),
+                ).fetchall()
+            return {
+                row["fund_code"]: {
+                    "fund_key": row["fund_key"],
+                    "fund_name": row["fund_name"],
+                    "is_hold": bool(row["is_hold"]),
+                    "shares": float(row["shares"] or 0),
+                    "sectors": json.loads(row["sectors"] or "[]"),
+                    "establishment_date": row["establishment_date"],
+                    "estimate_history": json.loads(row["estimate_history"] or "{}"),
+                    "estimate_history_2": json.loads(row["estimate_history_2"] or "{}"),
+                    "chart_default": bool(row["chart_default"]),
+                    "is_selected": bool(row["is_selected"]),
+                }
+                for row in rows
+            }
+        except Exception as e:
+            logger.error(f"Failed to get visible funds for user {user_id}: {e}")
+            return {}
+
+    def save_visible_funds(self, user_id, fund_map):
+        """Persist shared quote metadata without creating implicit watchlists."""
+        try:
+            with self.get_connection() as conn:
+                for fund_code, fund_data in fund_map.items():
+                    conn.execute(
+                        """
+                        UPDATE fund_catalog
+                        SET fund_key=?, fund_name=?, sectors=?,
+                            establishment_date=COALESCE(?, establishment_date),
+                            estimate_history=?, estimate_history_2=?,
+                            updated_at=CURRENT_TIMESTAMP
+                        WHERE fund_code=?
+                        """,
+                        (
+                            fund_data["fund_key"],
+                            fund_data["fund_name"],
+                            json.dumps(fund_data.get("sectors", []), ensure_ascii=False),
+                            fund_data.get("establishment_date"),
+                            json.dumps(fund_data.get("estimate_history", {}), ensure_ascii=False),
+                            json.dumps(fund_data.get("estimate_history_2", {}), ensure_ascii=False),
+                            fund_code,
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE user_watchlist
+                        SET is_hold=?, shares=?, chart_default=?
+                        WHERE user_id=? AND fund_code=?
+                        """,
+                        (
+                            1 if fund_data.get("is_hold") else 0,
+                            self._round_shares(fund_data.get("shares", 0)),
+                            1 if fund_data.get("chart_default") else 0,
+                            user_id,
+                            fund_code,
+                        ),
+                    )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save visible funds for user {user_id}: {e}")
+            return False
+
+    def get_fund_catalog(self, user_id):
+        """Return the shared fund pool with the current user's selection state."""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.fund_code, c.fund_key, c.fund_name, c.sectors,
+                       CASE WHEN w.id IS NULL THEN 0 ELSE 1 END AS is_selected
+                FROM fund_catalog c
+                LEFT JOIN user_watchlist w
+                  ON w.fund_code=c.fund_code AND w.user_id=?
+                ORDER BY c.fund_code
+                """,
+                (user_id,),
+            ).fetchall()
+        return [
+            {
+                "fund_code": row["fund_code"],
+                "fund_key": row["fund_key"],
+                "fund_name": row["fund_name"],
+                "sectors": json.loads(row["sectors"] or "[]"),
+                "is_selected": bool(row["is_selected"]),
+            }
+            for row in rows
+        ]
+
+    def add_catalog_funds_to_watchlist(self, user_id, fund_codes):
+        """Add existing shared funds to a user's watchlist."""
+        codes = list(dict.fromkeys(str(code).strip() for code in fund_codes if str(code).strip()))
+        if not codes:
+            return 0
+        with self.get_connection() as conn:
+            before = conn.total_changes
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO user_watchlist(user_id, fund_code)
+                SELECT ?, fund_code FROM fund_catalog WHERE fund_code=?
+                """,
+                [(user_id, code) for code in codes],
+            )
+            return conn.total_changes - before
+
     def save_user_funds(self, user_id, fund_map):
         """保存用户的所有基金数据（完全替换）
 
@@ -651,6 +806,13 @@ class Database:
             shares = self._round_shares(shares)
             is_hold = 1 if shares > 0 else 0
 
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO user_watchlist(user_id, fund_code)
+                SELECT ?, fund_code FROM fund_catalog WHERE fund_code=?
+                """,
+                (user_id, fund_code),
+            )
             cursor.execute('''
                            UPDATE user_watchlist
                            SET shares = ?, is_hold = ?
@@ -782,6 +944,13 @@ class Database:
             conn = self.get_connection()
             cursor = conn.cursor()
 
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO user_watchlist(user_id, fund_code)
+                SELECT ?, fund_code FROM fund_catalog WHERE fund_code=?
+                """,
+                (user_id, fund_code),
+            )
             cursor.execute('''
                 SELECT shares FROM user_watchlist
                 WHERE user_id = ? AND fund_code = ?

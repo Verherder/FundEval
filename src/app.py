@@ -23,6 +23,35 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
 
 
+def _load_secret_key(db):
+    configured = os.environ.get("FUNDEVAL_SECRET_KEY", "")
+    if configured:
+        return configured
+    if db is not None:
+        return "test-only-secret"
+    if os.environ.get("FUNDEVAL_ENV", "development").lower() == "production":
+        raise RuntimeError("生产环境必须设置 FUNDEVAL_SECRET_KEY")
+
+    runtime_dir = Path(os.environ.get("FUNDEVAL_RUNTIME_DIR", _PROJECT_ROOT / ".runtime"))
+    runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    secret_path = runtime_dir / "session-secret"
+    try:
+        existing = secret_path.read_text(encoding="ascii").strip()
+        if existing:
+            return existing
+    except FileNotFoundError:
+        pass
+
+    generated = secrets.token_urlsafe(48)
+    try:
+        fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="ascii") as secret_file:
+            secret_file.write(generated)
+        return generated
+    except FileExistsError:
+        return secret_path.read_text(encoding="ascii").strip()
+
+
 def _setup_logging():
     """Configure loguru: stderr + rotating file."""
     log_dir = Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "cache" / "logs"))
@@ -226,12 +255,7 @@ def create_app(db=None):
 
     app = Flask(__name__, template_folder="templates", static_folder="static")
     _server_cfg = get_server_config()
-    secret_key = os.environ.get("FUNDEVAL_SECRET_KEY", "")
-    if not secret_key:
-        if os.environ.get("FUNDEVAL_ENV", "development").lower() == "production" and db is None:
-            raise RuntimeError("生产环境必须设置 FUNDEVAL_SECRET_KEY")
-        secret_key = "test-only-secret" if db is not None else os.urandom(32)
-    app.secret_key = secret_key
+    app.secret_key = _load_secret_key(db)
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
@@ -253,11 +277,16 @@ def create_app(db=None):
     app.register_blueprint(api_fund_bp)
     app.register_blueprint(api_market_bp)
 
-    from src.auth import get_csrf_token
+    from src.auth import get_csrf_token, get_current_user_id, validate_csrf_token
+    from src.dependencies import get_user_repo
 
     @app.context_processor
     def inject_security_context():
-        return {"csrf_token": get_csrf_token}
+        user_id = get_current_user_id()
+        return {
+            "csrf_token": get_csrf_token,
+            "is_admin": bool(user_id and get_user_repo().is_admin(user_id)),
+        }
 
     @app.before_request
     def enforce_csrf():
@@ -265,9 +294,10 @@ def create_app(db=None):
             return None
         if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
             return None
-        expected = session.get("csrf_token")
+        if request.endpoint == "auth.logout" and "user_id" not in session:
+            return None
         supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
-        if not expected or not supplied or not secrets.compare_digest(expected, supplied):
+        if not validate_csrf_token(supplied):
             abort(400, description="CSRF validation failed")
 
     @app.after_request

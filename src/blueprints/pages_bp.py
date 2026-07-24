@@ -4,8 +4,8 @@
 from flask import Blueprint, redirect, render_template, request, url_for
 from loguru import logger
 
-from src.auth import get_current_user_id, get_current_username, login_required
-from src.dependencies import get_chart_service, get_fund_repo, get_fund_service, get_market_service
+from src.auth import admin_required, get_current_user_id, get_current_username, login_required
+from src.dependencies import get_chart_service, get_fund_repo, get_fund_service, get_market_service, get_user_repo
 from src.tab_enhancers import enhance_fund_tab_content
 
 pages_bp = Blueprint("pages", __name__)
@@ -41,6 +41,7 @@ def get_portfolio():
     add = request.args.get("add")
     delete = request.args.get("delete")
     user_id = get_current_user_id()
+    is_admin = get_user_repo().is_admin(user_id)
     fund_service = get_fund_service()
 
     fund_service.settle_pending_buys(user_id)
@@ -56,7 +57,7 @@ def get_portfolio():
         )
         fund_map = get_fund_repo().get_user_funds(user_id)
         shares_map = {code: data.get("shares", 0) for code, data in fund_map.items()}
-        fund_content = enhance_fund_tab_content(fund_content, shares_map)
+        fund_content = enhance_fund_tab_content(fund_content, shares_map, is_admin=is_admin)
     except Exception as e:
         fund_content = f"<p style='color:#f44336;'>数据加载失败: {str(e)}</p>"
 
@@ -170,6 +171,6 @@ def get_sector_funds():
 
 
 @pages_bp.route("/settings")
-@login_required
+@admin_required
 def get_settings():
     return render_template("pages/settings.html", username=get_current_username())

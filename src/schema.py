@@ -234,50 +234,63 @@ def migrate_legacy_database(db_path, apply=False):
         admin = conn.execute("SELECT id FROM users WHERE username='jiaming'").fetchone()
         admin_id = admin[0] if admin else None
         conn.execute("UPDATE users SET is_admin=CASE WHEN username='jiaming' THEN 1 ELSE 0 END")
-        conn.execute("UPDATE users SET password_reset_required=1")
 
-        if admin_id is not None:
-            rows = conn.execute(
-                "SELECT * FROM legacy_user_funds WHERE user_id=?", (admin_id,)
-            ).fetchall()
-            for row in rows:
-                keys = set(row.keys())
-                conn.execute(
-                    """INSERT OR REPLACE INTO fund_catalog
-                       (fund_code,fund_key,fund_name,sectors,establishment_date,
-                        estimate_history,estimate_history_2)
-                       VALUES(?,?,?,?,?,?,?)""",
-                    (
-                        row["fund_code"], row["fund_key"], row["fund_name"],
-                        row["sectors"] if "sectors" in keys and row["sectors"] else "[]",
-                        row["establishment_date"] if "establishment_date" in keys else None,
-                        row["estimate_history"] if "estimate_history" in keys and row["estimate_history"] else "{}",
-                        row["estimate_history_2"] if "estimate_history_2" in keys and row["estimate_history_2"] else "{}",
-                    ),
-                )
-                conn.execute(
-                    """INSERT INTO user_watchlist(user_id,fund_code,is_hold,shares,chart_default)
-                       VALUES(?,?,?,?,?)""",
-                    (
-                        admin_id, row["fund_code"], int(row["is_hold"] or 0),
-                        round(float(row["shares"] or 0), 2),
-                        int(row["chart_default"] or 0) if "chart_default" in keys else 0,
-                    ),
-                )
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM legacy_user_funds
+            ORDER BY CASE WHEN user_id=? THEN 0 ELSE 1 END, id
+            """,
+            (admin_id,),
+        ).fetchall()
+        for row in rows:
+            keys = set(row.keys())
+            conn.execute(
+                """INSERT OR IGNORE INTO fund_catalog
+                   (fund_code,fund_key,fund_name,sectors,establishment_date,
+                    estimate_history,estimate_history_2)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (
+                    row["fund_code"], row["fund_key"], row["fund_name"],
+                    row["sectors"] if "sectors" in keys and row["sectors"] else "[]",
+                    row["establishment_date"] if "establishment_date" in keys else None,
+                    row["estimate_history"] if "estimate_history" in keys and row["estimate_history"] else "{}",
+                    row["estimate_history_2"] if "estimate_history_2" in keys and row["estimate_history_2"] else "{}",
+                ),
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO user_watchlist
+                   (id,user_id,fund_code,is_hold,shares,chart_default)
+                   VALUES(?,?,?,?,?,?)""",
+                (
+                    row["id"], row["user_id"], row["fund_code"], int(row["is_hold"] or 0),
+                    row["shares"] if row["shares"] is not None else 0,
+                    int(row["chart_default"] or 0) if "chart_default" in keys else 0,
+                ),
+            )
 
-        other_users = conn.execute("SELECT id FROM users WHERE id != COALESCE(?, -1)", (admin_id,)).fetchall()
-        for user in other_users:
-            conn.execute("DELETE FROM fund_pending_buys WHERE user_id=?", (user[0],))
-            conn.execute("DELETE FROM fund_transactions WHERE user_id=?", (user[0],))
-            for code, key, name in EXAMPLE_FUNDS:
-                conn.execute(
-                    "INSERT OR IGNORE INTO fund_catalog(fund_code,fund_key,fund_name) VALUES(?,?,?)",
-                    (code, key, name),
-                )
-                conn.execute(
-                    "INSERT OR IGNORE INTO user_watchlist(user_id,fund_code) VALUES(?,?)",
-                    (user[0], code),
-                )
+        expected_watchlists = {
+            (
+                row["user_id"],
+                row["fund_code"],
+                int(row["is_hold"] or 0),
+                row["shares"] if row["shares"] is not None else 0,
+                int(row["chart_default"] or 0) if "chart_default" in row.keys() else 0,
+            )
+            for row in rows
+        }
+        actual_watchlists = {
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT user_id, fund_code, is_hold, shares, chart_default
+                FROM user_watchlist
+                """
+            )
+        }
+        if actual_watchlists != expected_watchlists:
+            raise RuntimeError("迁移前后用户自选、持有状态、份额或默认图表不一致")
+
         conn.execute("DROP TABLE legacy_user_funds")
         conn.commit()
         return {**summary, "migrated": True, "target_version": SCHEMA_VERSION}

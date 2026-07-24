@@ -4,7 +4,7 @@ import re
 from flask import url_for
 
 
-def enhance_fund_tab_content(content, shares_map=None):
+def enhance_fund_tab_content(content, shares_map=None, is_admin=False):
     """
     Enhance the fund tab content with operations panel, file operations, and shares input.
     Args:
@@ -12,12 +12,15 @@ def enhance_fund_tab_content(content, shares_map=None):
         shares_map: Dict mapping fund_code -> shares value (optional)
     """
     # 添加文件操作和持仓统计区域
+    fund_upload_control = """
+                <input type="file" id="uploadFile" accept=".json" style="display:none" onchange="uploadFundMap(this.files[0])">
+                <button class="btn btn-secondary fund-io-btn" onclick="document.getElementById('uploadFile').click()">📤 导入基金列表</button>
+    """ if is_admin else ""
     file_operations = f"""
         <div class="file-operations" style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
             <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                 <button class="btn btn-secondary fund-io-btn" onclick="downloadFundMap()">📥 导出基金列表</button>
-                <input type="file" id="uploadFile" accept=".json" style="display:none" onchange="uploadFundMap(this.files[0])">
-                <button class="btn btn-secondary fund-io-btn" onclick="document.getElementById('uploadFile').click()">📤 导入基金列表</button>
+                {fund_upload_control}
                 <input type="file" id="uploadTradeFile" accept=".xlsx" style="display:none" onchange="uploadTransactionRecords(this.files[0])">
                 <button class="btn btn-secondary fund-io-btn" onclick="document.getElementById('uploadTradeFile').click()">📑 导入交易记录</button>
             </div>
@@ -157,7 +160,13 @@ def enhance_fund_tab_content(content, shares_map=None):
     # 操作区域：把板块/删除操作放到"添加"按钮后，并用 | 分隔
     operations_panel = ""  # 兼容旧逻辑：不再单独渲染按钮面板
 
-    add_fund_area = """
+    admin_catalog_controls = """
+                <button class="btn btn-info" onclick="openFundSelectionModal('sector')">🏷️ 标注板块</button>
+                <span style="opacity:0.6; user-select:none;">|</span>
+                <button class="btn btn-warning" onclick="openFundSelectionModal('unsector')">🏷️ 删除板块</button>
+                <span style="opacity:0.6; user-select:none;">|</span>
+    """ if is_admin else ""
+    add_fund_area = f"""
         <div class="add-fund-input" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
             <input type="text" id="fundCodesInput"
                    placeholder="输入基金代码（逗号分隔，如：016858,007872）"
@@ -165,11 +174,8 @@ def enhance_fund_tab_content(content, shares_map=None):
             <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                 <button class="btn btn-primary" onclick="addFunds()">添加</button>
                 <span style="opacity:0.6; user-select:none;">|</span>
-                <button class="btn btn-info" onclick="openFundSelectionModal('sector')">🏷️ 标注板块</button>
-                <span style="opacity:0.6; user-select:none;">|</span>
-                <button class="btn btn-warning" onclick="openFundSelectionModal('unsector')">🏷️ 删除板块</button>
-                <span style="opacity:0.6; user-select:none;">|</span>
-                <button class="btn btn-danger" onclick="openFundSelectionModal('delete')">🗑️ 删除基金</button>
+                {admin_catalog_controls}
+                <button class="btn btn-danger" onclick="openFundSelectionModal('delete')">取消自选</button>
             </div>
         </div>
     """
@@ -265,7 +271,7 @@ def enhance_fund_tab_content(content, shares_map=None):
             <button class="btn btn-secondary" style="padding:6px 12px; font-size:12px;" onclick="backfillEstablishmentDates()">🗓️ 回填成立日期</button>
             <button class="btn btn-danger" style="padding:6px 12px; font-size:12px; opacity:0.78;" onclick="clearFundTransactionsDanger()">高级危险操作：清空交易记录</button>
         </div>
-    """
+    """ if is_admin else ""
 
     transaction_modal = """
         <div class="sector-modal" id="transactionModal">

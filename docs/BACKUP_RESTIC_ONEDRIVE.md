@@ -105,24 +105,11 @@ git status --short
 cat /etc/os-release
 ```
 
-### Debian或Ubuntu
+### Ubuntu
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y restic rclone
-```
-
-### Fedora
-
-```bash
-sudo dnf install -y restic rclone
-```
-
-### RHEL或CentOS Stream
-
-```bash
-sudo dnf install -y epel-release
-sudo dnf install -y restic rclone
 ```
 
 如果发行版没有Rclone或版本过旧，可以使用Rclone官方安装脚本：
@@ -190,7 +177,8 @@ rclone config
 2. 名称输入 `onedrive`。
 3. 存储类型选择 `Microsoft OneDrive`。
 4. `client_id`和`client_secret`通常留空。
-5. 询问是否使用浏览器自动认证时选择 `n`。
+5. 账户类型选择Personal or Business
+6. 询问是否使用浏览器自动认证时选择 `n`。
 
 服务器会提示在有浏览器的电脑上执行：
 
@@ -273,7 +261,35 @@ restic snapshots
 
 ### 7.1 生成SQLite一致性快照
 
-不要用 `cp` 复制正在运行的数据库。使用finance环境的Python调用SQLite Backup API：
+日常备份不需要停止FundEval服务。这里“不要复制运行中的SQLite文件”是指不能直接对
+`cache/fund_data.db`执行 `cp`、`rclone copy`或 `restic backup`，不是要求备份期间禁止数据库写入。
+
+SQLite Online Backup API通过数据库连接生成事务一致的时间点快照：
+
+- 页面刷新、行情写入和交易操作可以继续执行。
+- Backup API只在分批读取页面时短暂持有读锁，不会在Restic上传期间锁住运行库。
+- 备份过程中发生的新写入可能属于本次快照，也可能进入下一次快照，但不会产生“只写入一半”的数据库。
+- 在WAL模式下，Backup API会正确处理主数据库和WAL中的已提交事务；直接复制单个主数据库文件做不到这一点。
+- Restic上传的是生成完成后不再变化的暂存快照，上传速度不会影响生产数据库一致性。
+
+流程是：
+
+```text
+运行服务继续读写 cache/fund_data.db
+              │
+              │ SQLite Online Backup API
+              ▼
+生成一个一致时间点的 backup-staging/fund_data.db
+              │
+              │ Restic上传，运行库继续工作
+              ▼
+上传成功后删除暂存快照
+```
+
+只有替换生产数据库、执行破坏性schema迁移，或者Online Backup API持续失败需要离线排查时，
+才需要停止服务。
+
+使用finance环境的Python调用SQLite Backup API：
 
 ```bash
 cd ~/FundEval
@@ -324,6 +340,8 @@ restic snapshots --host fundeval-prod --tag fundeval
 restic check
 ```
 
+`restic snapshots`能看到新快照才代表业务数据已经提交到Restic仓库。只执行 `restic init`只会创建空仓库结构，不代表数据库已经备份。
+
 成功后删除明文暂存快照：
 
 ```bash
@@ -331,6 +349,45 @@ rm -f ~/FundEval/cache/backup-staging/fund_data.db
 ```
 
 运行库 `cache/fund_data.db`不能删除。
+
+### 7.3 OneDrive中为什么看不到fund_data.db
+
+Restic不会把原始文件名直接上传到OneDrive。它会加密、分块并使用内容哈希命名，因此OneDrive中的正常结构类似：
+
+```text
+FundEval/restic/
+├── config
+├── keys/
+├── snapshots/
+├── index/
+├── data/
+└── locks/
+```
+
+判断上传是否成功不能只在Finder中搜索 `fund_data.db`，应在服务器执行：
+
+```bash
+set -a
+. ~/.config/fundeval/restic.env
+set +a
+
+restic snapshots --host fundeval-prod --tag fundeval
+restic stats latest
+restic check
+rclone size onedrive:FundEval/restic
+rclone lsf onedrive:FundEval/restic/snapshots
+```
+
+预期：
+
+- `snapshots`至少有一条带 `fundeval`标签的记录。
+- `stats latest`显示非零文件数和数据量。
+- `check`成功。
+- OneDrive远端存在 `snapshots`、`index`和 `data`对象。
+
+macOS OneDrive启用Files On-Demand时，本地同步目录可能只有云端占位文件。此时 `du`显示的本地占用空间会远小于
+`ls -l`显示的逻辑文件大小，这是正常现象，不表示云端对象为空。需要判断云端数据量时以服务器上的
+`rclone size`和Restic命令为准。
 
 ## 8. 自动备份脚本要求
 
@@ -477,14 +534,27 @@ import sqlite3
 import sys
 
 with sqlite3.connect(sys.argv[1]) as conn:
-    print("integrity:", conn.execute("PRAGMA integrity_check").fetchone()[0])
+    tables = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    print("integrity_check:", conn.execute("PRAGMA integrity_check").fetchone()[0])
+    print("foreign_key_check:", conn.execute("PRAGMA foreign_key_check").fetchall())
     print("users:", conn.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+    if "schema_meta" not in tables:
+        raise SystemExit("恢复的是未迁移旧数据库：缺少 schema_meta")
+    print("schema_version:", conn.execute(
+        "SELECT value FROM schema_meta WHERE key='schema_version'"
+    ).fetchone())
     print("funds:", conn.execute("SELECT COUNT(*) FROM fund_catalog").fetchone()[0])
     print("transactions:", conn.execute("SELECT COUNT(*) FROM fund_transactions").fetchone()[0])
 PY
 ```
 
-`integrity`必须是 `ok`，其他数量应符合预期。
+`integrity_check`必须是 `ok`，`foreign_key_check`必须是空列表，
+`schema_version`必须与当前程序版本一致，其他数量应符合预期。结构完整性检查只能
+证明备份文件未损坏；表版本和业务数量检查用于确认备份源确实是当前生产数据库。
 
 ### 11.2 替换生产数据库
 

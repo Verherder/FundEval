@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 from src.database import Database
 from src.schema import migrate_legacy_database
+from src.security_validation import validate_password
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -67,8 +68,8 @@ def command_reset_password(args):
     confirmation = getpass.getpass("再次输入: ")
     if password != confirmation:
         raise SystemExit("两次输入的密码不一致")
-    if len(password) < 12:
-        raise SystemExit("密码长度至少为12个字符")
+    if not validate_password(password):
+        raise SystemExit("密码须为12-20位字母、数字或允许的安全符号")
     if not Database(args.database).reset_password(args.username, password):
         raise SystemExit("用户不存在")
     print("密码已更新，旧登录令牌已撤销")

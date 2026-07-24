@@ -74,8 +74,24 @@ def api_fund_add():
         logger.info(f"[API] /api/fund/add elapsed_ms={elapsed:.1f}")
 
 
-@api_fund_bp.route("/fund/backfill-establishment-dates", methods=["POST"])
+@api_fund_bp.route("/fund/catalog", methods=["GET"])
 @login_required
+def api_fund_catalog():
+    return jsonify(get_fund_repo().get_fund_catalog(get_current_user_id()))
+
+
+@api_fund_bp.route("/fund/watchlist/add", methods=["POST"])
+@login_required
+def api_fund_watchlist_add():
+    data = request.get_json(silent=True) or {}
+    codes = data.get("codes", "")
+    if not codes:
+        return {"success": False, "message": "请选择基金"}, 400
+    return get_fund_service().add_catalog_funds(get_current_user_id(), codes)
+
+
+@api_fund_bp.route("/fund/backfill-establishment-dates", methods=["POST"])
+@admin_required
 def api_backfill_establishment_dates():
     start = time.perf_counter()
     try:
@@ -187,7 +203,7 @@ def api_fund_remove_sector():
 
 
 @api_fund_bp.route("/fund/upload", methods=["POST"])
-@login_required
+@admin_required
 def api_fund_upload():
     start = time.perf_counter()
     try:
@@ -485,7 +501,7 @@ def api_fund_transaction_delete():
 
 
 @api_fund_bp.route("/fund/transactions/clear", methods=["POST"])
-@login_required
+@admin_required
 def api_fund_transactions_clear():
     try:
         data = request.json or {}
@@ -499,7 +515,7 @@ def api_fund_transactions_clear():
 
 
 @api_fund_bp.route("/fund/transactions/clear-all", methods=["POST"])
-@login_required
+@admin_required
 def api_fund_transactions_clear_all():
     try:
         data = request.json or {}
@@ -561,7 +577,12 @@ def api_portfolio_fund_table():
         )
         fund_map = get_fund_repo().get_user_funds(user_id)
         shares_map = {code: data.get("shares", 0) for code, data in fund_map.items()}
-        fund_table_html = enhance_fund_tab_content(fund_table_html, shares_map)
+        from src.dependencies import get_user_repo
+        fund_table_html = enhance_fund_tab_content(
+            fund_table_html,
+            shares_map,
+            is_admin=get_user_repo().is_admin(user_id),
+        )
         return jsonify({"success": True, "html": fund_table_html})
     except Exception as e:
         logger.error(f"获取基金表格失败: {e}")

@@ -506,6 +506,7 @@ async function openFundSelectionModal(operation) {
 
     // 设置标题
     const titles = {
+        'watchlist': '从公共基金池加入自选',
         'hold': '选择要标记持有的基金',
         'unhold': '选择要取消持有的基金',
         'sector': '选择要标注板块的基金',
@@ -516,18 +517,29 @@ async function openFundSelectionModal(operation) {
 
     // 获取所有基金列表
     try {
-        const response = await fetch('/api/fund/data');
-        const fundMap = await response.json();
-        allFunds = Object.entries(fundMap).map(([code, data]) => ({
-            code,
-            name: data.fund_name,
-            is_hold: data.is_hold,
-            sectors: data.sectors || []
-        }));
+        const response = await fetch(operation === 'watchlist' ? '/api/fund/catalog' : '/api/fund/data');
+        const payload = await response.json();
+        allFunds = operation === 'watchlist'
+            ? payload.map(data => ({
+                code: data.fund_code,
+                name: data.fund_name,
+                is_selected: data.is_selected,
+                is_hold: false,
+                sectors: data.sectors || []
+            }))
+            : Object.entries(payload).map(([code, data]) => ({
+                code,
+                name: data.fund_name,
+                is_hold: data.is_hold,
+                sectors: data.sectors || []
+            }));
 
         // 根据操作类型过滤基金列表
         let filteredFunds = allFunds;
         switch (operation) {
+            case 'watchlist':
+                filteredFunds = allFunds.filter(fund => !fund.is_selected);
+                break;
             case 'hold':
                 // 标记持有：只显示未持有的基金
                 filteredFunds = allFunds.filter(fund => !fund.is_hold);
@@ -610,6 +622,9 @@ async function confirmFundSelection() {
 
     // 根据操作类型执行相应的操作
     switch (currentOperation) {
+        case 'watchlist':
+            await addCatalogFunds(selectedFundsForOperation);
+            break;
         case 'hold':
             await markHold(selectedFundsForOperation);
             break;
@@ -630,6 +645,20 @@ async function confirmFundSelection() {
     }
 
     closeFundSelectionModal();
+}
+
+async function addCatalogFunds(codes) {
+    const response = await fetch('/api/fund/watchlist/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codes: codes.join(',') })
+    });
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+        throw new Error(result.message || '加入自选失败');
+    }
+    alert(result.message);
+    location.reload();
 }
 
 // 基金选择搜索

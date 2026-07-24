@@ -46,6 +46,15 @@ class UserRepo:
     def is_admin(self, user_id):
         return self._db.is_admin(user_id)
 
+    def list_users(self):
+        return self._db.list_users()
+
+    def set_user_admin(self, user_id, is_admin):
+        return self._db.set_user_admin(user_id, is_admin)
+
+    def set_user_locked(self, user_id, is_locked):
+        return self._db.set_user_locked(user_id, is_locked)
+
     def create_invitation(self, token_hash, created_by, expires_at):
         return self._db.create_invitation(token_hash, created_by, expires_at)
 
