@@ -8,7 +8,7 @@ if [[ -f "${PROJECT_DIR}/.env" ]]; then
     set +a
 fi
 RUNTIME_DIR="${FUNDEVAL_RUNTIME_DIR:-${PROJECT_DIR}/.runtime}"
-LOG_DIR="${FUNDEVAL_LOG_DIR:-${PROJECT_DIR}/cache/logs}"
+LOG_DIR="${FUNDEVAL_LOG_DIR:-${PROJECT_DIR}/logs}"
 PID_FILE="${RUNTIME_DIR}/fundeval.pid"
 ACCESS_LOG="${LOG_DIR}/gunicorn_access.log"
 ERROR_LOG="${LOG_DIR}/gunicorn_error.log"

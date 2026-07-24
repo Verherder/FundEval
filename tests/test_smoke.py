@@ -87,6 +87,36 @@ def test_reverse_proxy_prefix_is_preserved_after_login(client, test_db):
     assert 'src="/fundeval/static/js/settings.js?v=20260721a"' in html
 
 
+@pytest.mark.parametrize(
+    ("forwarded_proto", "expects_secure"),
+    [("http", False), ("https", True)],
+)
+def test_reverse_proxy_login_cookie_matches_external_scheme(
+    client, test_db, forwarded_proto, expects_secure
+):
+    client.application.config["SESSION_COOKIE_SECURE_MODE"] = "auto"
+    test_db.create_user("proxyuser", "proxy-password")
+    headers = {
+        "X-Forwarded-Prefix": "/fundeval",
+        "X-Forwarded-Proto": forwarded_proto,
+        "X-Forwarded-Host": "fund.example.com",
+    }
+
+    response = client.post(
+        "/login",
+        data={"username": "proxyuser", "password": "proxy-password"},
+        headers=headers,
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == "/fundeval/fund"
+    cookie = response.headers["Set-Cookie"]
+    assert cookie.startswith("fundeval_session=")
+    assert "Path=/fundeval" in cookie
+    assert ("; Secure" in cookie) is expects_secure
+
+
 def test_login_with_valid_credentials(client, test_db):
     """POST /login with valid credentials sets session and redirects."""
     test_db.create_user("user1", "pass123")

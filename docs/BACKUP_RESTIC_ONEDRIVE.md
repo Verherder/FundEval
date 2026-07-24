@@ -16,8 +16,8 @@
 ~/FundEval/
 ├── cache/                         # 整体不进入 Git
 │   ├── fund_data.db               # SQLite 明文运行库
-│   ├── logs/                      # 应用、Gunicorn和备份日志
 │   └── backup-staging/            # 备份时短暂存在的一致性快照
+├── logs/                          # 应用、Gunicorn和备份日志
 ├── scripts/
 ├── src/
 └── .env
@@ -79,7 +79,7 @@ git pull
 ```bash
 git submodule deinit -f cache
 git pull
-mkdir -p cache/logs cache/backup-staging
+mkdir -p logs cache/backup-staging
 cp -p "$HOME/fund_data.db.before-cache-conversion" cache/fund_data.db
 ```
 
@@ -132,8 +132,8 @@ command -v rclone
 
 ```bash
 cd ~/FundEval
-mkdir -p cache/logs cache/backup-staging
-chmod 700 cache cache/logs cache/backup-staging
+mkdir -p logs cache/backup-staging
+chmod 700 cache logs cache/backup-staging
 test -f cache/fund_data.db
 ```
 
@@ -141,7 +141,7 @@ test -f cache/fund_data.db
 
 ```text
 ~/FundEval/cache/fund_data.db
-~/FundEval/cache/logs/
+~/FundEval/logs/
 ```
 
 `.env` 不需要配置 `FUNDEVAL_DATA_DIR` 或 `FUNDEVAL_LOG_DIR`。如果以前设置过其他路径，应删除这两个变量，避免应用和备份读取不同数据库。
@@ -399,7 +399,7 @@ macOS OneDrive启用Files On-Demand时，本地同步目录可能只有云端占
 4. 执行 `PRAGMA integrity_check`。
 5. 使用Restic上传并打上 `fundeval` 标签。
 6. 无论成功或失败都删除明文暂存快照。
-7. 日志写入 `cache/logs/restic_backup.log`，不得打印密码或Token。
+7. 日志写入 `logs/restic_backup.log`，不得打印密码或Token。
 
 计划脚本路径：
 
@@ -461,7 +461,7 @@ systemctl --user list-timers fundeval-backup.timer
 ```bash
 systemctl --user start fundeval-backup.service
 journalctl --user -u fundeval-backup.service -n 100 --no-pager
-tail -n 100 ~/FundEval/cache/logs/restic_backup.log
+tail -n 100 ~/FundEval/logs/restic_backup.log
 ```
 
 ## 10. 保留策略和完整性检查

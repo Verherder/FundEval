@@ -26,7 +26,7 @@ if __name__ == "__main__":
             use_reloader=True,
             use_debugger=False,
             exclude_patterns=[
-                "cache/logs/*",
+                "logs/*",
                 "cache/*.db",
                 "cache/**/*.db",
                 "*.db-journal",

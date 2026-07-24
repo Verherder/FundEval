@@ -10,5 +10,6 @@ CLAUDE.md
 *.log
 package*.json
 cache/
+logs/
 .runtime/
 dist/

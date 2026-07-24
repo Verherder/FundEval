@@ -7,7 +7,7 @@ if [[ -f "${PROJECT_DIR}/.env" ]]; then
     source "${PROJECT_DIR}/.env"
     set +a
 fi
-LOG_DIR="${FUNDEVAL_LOG_DIR:-${PROJECT_DIR}/cache/logs}"
+LOG_DIR="${FUNDEVAL_LOG_DIR:-${PROJECT_DIR}/logs}"
 RUNTIME_DIR="${FUNDEVAL_RUNTIME_DIR:-${PROJECT_DIR}/.runtime}"
 PID_FILE="${RUNTIME_DIR}/fundeval.pid"
 RETENTION_DAYS="${FUNDEVAL_LOG_RETENTION_DAYS:-14}"

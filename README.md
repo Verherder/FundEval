@@ -7,7 +7,7 @@ FundEval 参考MiniFund继续演进，定位为“可交易记录、可收益评
 
 - [多用户数据隔离说明](docs/DATA_ISOLATION.md)
 - [Restic + OneDrive 备份方案与实施指引](docs/BACKUP_RESTIC_ONEDRIVE.md)
-- [服务器部署、迁移与加密备份](docs/DEPLOYMENT.md)
+- [服务器更新操作手册](docs/DEPLOYMENT.md)
 - [重构后架构说明](docs/refactor/ARCHITECTURE.md)
 
 ![基金持仓页](imgs/持仓.png)
@@ -105,7 +105,7 @@ mamba run -n finance python -m pip install -r requirements.txt
 从工具安装到自动备份和恢复演练见
 [Restic + OneDrive从零部署手册](docs/BACKUP_RESTIC_ONEDRIVE.md)。
 
-运行数据库和日志默认位于 `cache/fund_data.db`、`cache/logs/`；`cache/`整体不进入Git。
+运行数据库和日志默认位于 `cache/fund_data.db`、`logs/`；两个目录都不进入Git。
 可通过环境变量覆盖运行参数，例如：
 
 ```bash
@@ -123,7 +123,7 @@ FUNDEVAL_BIND=127.0.0.1:8888 FUNDEVAL_THREADS=12 ./scripts/restart.sh
 服务器上建议加入当前部署用户的 crontab，每天零点 10 分执行：
 
 ```cron
-10 0 * * * $HOME/FundEval/scripts/rotate_logs.sh >> $HOME/FundEval/cache/logs/rotate.log 2>&1
+10 0 * * * $HOME/FundEval/scripts/rotate_logs.sh >> $HOME/FundEval/logs/rotate.log 2>&1
 ```
 
 调整归档保留天数：

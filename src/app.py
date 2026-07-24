@@ -12,8 +12,9 @@ from pathlib import Path
 
 import urllib3
 from dotenv import load_dotenv
-from flask import Flask, abort, request, session
+from flask import Flask, abort, has_request_context, request, session
 from loguru import logger
+from flask.sessions import SecureCookieSessionInterface
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from src.dependencies import init_dependencies
@@ -54,7 +55,7 @@ def _load_secret_key(db):
 
 def _setup_logging():
     """Configure loguru: stderr + rotating file."""
-    log_dir = Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "cache" / "logs"))
+    log_dir = Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "logs"))
     log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     logger.remove()
     logger.add(sys.stderr, level="INFO")
@@ -92,10 +93,10 @@ def _setup_environment():
 
 def _ensure_directories():
     Path(os.environ.get("FUNDEVAL_DATA_DIR", _PROJECT_ROOT / "cache")).mkdir(parents=True, exist_ok=True, mode=0o700)
-    Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "cache" / "logs")).mkdir(parents=True, exist_ok=True, mode=0o700)
+    Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "logs")).mkdir(parents=True, exist_ok=True, mode=0o700)
 
 
-_LOG_DIR = Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "cache" / "logs"))
+_LOG_DIR = Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "logs"))
 IMPORT_DETAIL_LOG_PATH = str(_LOG_DIR / "transaction_import.log")
 SERVER_LOG_PATH = str(_LOG_DIR / "fund_server.log")
 LOG_CLEANUP_STATE_PATH = str(_LOG_DIR / ".log_cleanup_state")
@@ -245,6 +246,24 @@ class FilteredWSGIRequestLogger:
         return self.app(environ, start_response)
 
 
+class ProxyAwareSessionInterface(SecureCookieSessionInterface):
+    """Scope the session cookie to the proxied app and its effective scheme."""
+
+    def get_cookie_secure(self, app):
+        mode = str(app.config.get("SESSION_COOKIE_SECURE_MODE", "auto")).lower()
+        if mode == "auto":
+            return bool(has_request_context() and request.is_secure)
+        return mode in {"1", "true", "yes", "on"}
+
+    def get_cookie_path(self, app):
+        configured = app.config.get("SESSION_COOKIE_PATH")
+        if configured:
+            return configured
+        if has_request_context():
+            return request.script_root or "/"
+        return "/"
+
+
 def create_app(db=None):
     """Create and configure the Flask application."""
     _setup_logging()
@@ -256,10 +275,12 @@ def create_app(db=None):
     app = Flask(__name__, template_folder="templates", static_folder="static")
     _server_cfg = get_server_config()
     app.secret_key = _load_secret_key(db)
+    app.session_interface = ProxyAwareSessionInterface()
     app.config.update(
+        SESSION_COOKIE_NAME=os.environ.get("FUNDEVAL_SESSION_COOKIE_NAME", "fundeval_session"),
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
-        SESSION_COOKIE_SECURE=os.environ.get("FUNDEVAL_SECURE_COOKIE", "0") == "1",
+        SESSION_COOKIE_SECURE_MODE=os.environ.get("FUNDEVAL_SECURE_COOKIE", "auto"),
         MAX_CONTENT_LENGTH=16 * 1024 * 1024,
     )
 

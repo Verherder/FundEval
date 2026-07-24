@@ -23,7 +23,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 IMPORT_JOB_STORE = {}
 IMPORT_JOB_LOCK = threading.Lock()
-IMPORT_DETAIL_LOG_PATH = str(Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "cache" / "logs")) / "transaction_import.log")
+IMPORT_DETAIL_LOG_PATH = str(Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "logs")) / "transaction_import.log")
 
 
 # ── job state helpers ──────────────────────────────────────────────────
