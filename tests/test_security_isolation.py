@@ -144,6 +144,41 @@ def test_signed_csrf_login_logout_and_repeated_logout():
     assert client.post("/logout", data={"csrf_token": logout_token}).status_code == 302
 
 
+def test_stale_login_csrf_uses_strict_same_origin_fallback():
+    from src.app import create_app
+
+    db = Database(":memory:")
+    db.create_user("staleuser", "ValidPassword12!")
+    app = create_app(db=db)
+    app.config["TESTING"] = False
+    client = app.test_client()
+    proxy_headers = {
+        "X-Forwarded-Prefix": "/fundeval",
+        "X-Forwarded-Proto": "https",
+        "X-Forwarded-Host": "fund.example.com",
+    }
+    form = {
+        "username": "staleuser",
+        "password": "ValidPassword12!",
+        "csrf_token": "stale-token",
+    }
+
+    rejected = client.post(
+        "/login",
+        data=form,
+        headers={**proxy_headers, "Origin": "https://attacker.example"},
+    )
+    assert rejected.status_code == 400
+
+    accepted = client.post(
+        "/login",
+        data=form,
+        headers={**proxy_headers, "Origin": "https://fund.example.com"},
+    )
+    assert accepted.status_code == 302
+    assert accepted.headers["Location"] == "/fundeval/fund"
+
+
 def test_signed_csrf_token_survives_app_recreation():
     from flask import session
     from src.app import create_app

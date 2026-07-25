@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import urllib3
 from dotenv import load_dotenv
@@ -94,6 +95,21 @@ def _setup_environment():
 def _ensure_directories():
     Path(os.environ.get("FUNDEVAL_DATA_DIR", _PROJECT_ROOT / "cache")).mkdir(parents=True, exist_ok=True, mode=0o700)
     Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "logs")).mkdir(parents=True, exist_ok=True, mode=0o700)
+
+
+def _request_has_same_origin():
+    expected = urlsplit(request.host_url)
+    source = request.headers.get("Origin") or request.headers.get("Referer")
+    if not source:
+        return False
+    supplied = urlsplit(source)
+    return (
+        supplied.scheme.lower(),
+        supplied.netloc.lower(),
+    ) == (
+        expected.scheme.lower(),
+        expected.netloc.lower(),
+    )
 
 
 _LOG_DIR = Path(os.environ.get("FUNDEVAL_LOG_DIR", _PROJECT_ROOT / "logs"))
@@ -319,6 +335,9 @@ def create_app(db=None):
             return None
         supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
         if not validate_csrf_token(supplied):
+            if request.endpoint == "auth.login" and _request_has_same_origin():
+                logger.warning("登录页 CSRF 令牌已失效，已通过同源校验继续登录")
+                return None
             abort(400, description="CSRF validation failed")
 
     @app.after_request
