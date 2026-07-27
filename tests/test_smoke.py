@@ -87,6 +87,18 @@ def test_reverse_proxy_prefix_is_preserved_after_login(client, test_db):
     assert 'src="/fundeval/static/js/settings.js?v=20260721a"' in html
 
 
+def test_portfolio_loads_chart_js_from_local_static(client, test_db):
+    test_db.create_user("chartuser", "chart-password")
+    client.post("/login", data={"username": "chartuser", "password": "chart-password"})
+
+    response = client.get("/portfolio")
+    html = response.get_data(as_text=True)
+
+    assert 'src="/static/vendor/chart.js/chart.umd.min.js"' in html
+    assert "cdn.jsdelivr.net" not in html
+    assert client.get("/static/vendor/chart.js/chart.umd.min.js").status_code == 200
+
+
 @pytest.mark.parametrize(
     ("forwarded_proto", "expects_secure"),
     [("http", False), ("https", True)],

@@ -172,11 +172,15 @@ def build_fund_table(lan_fund, cancel_event=None):
         name = row[1]
         if name.startswith("⭐ "):
             name = name[2:]
+        sector_html = ""
         if "🏷️" in name and "<span" in name:
-            name = name.replace(" <span", "<br><span", 1)
+            name, sector_span = name.split("<span", 1)
+            name = name.removesuffix("<br>").rstrip()
+            sector_html = f"<br><span{sector_span}"
         name_cell = (
             f'<span class="fund-name-cell" data-code="{code}" '
             f'style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;">{name}</span>'
+            f'{sector_html}'
         )
         now_time = row[2]
         net_value_text = row[3]

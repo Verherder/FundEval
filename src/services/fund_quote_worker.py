@@ -163,7 +163,11 @@ class FundQuoteWorker:
                 if sectors:
                     sector_display = ", ".join(sectors)
                     if is_return:
-                        fund_name = f"{fund_name} <span style='color: #8b949e; font-size: 12px;'>🏷️ {sector_display}</span>"
+                        fund_name = (
+                            f"{fund_name} <span class='fund-sector-tags' "
+                            f"style='color: #8b949e; font-size: 12px; cursor: default;'>"
+                            f"🏷️ {sector_display}</span>"
+                        )
                     else:
                         fund_name = f"({sector_display}) {fund_name}"
                 consecutive_info = f"{consecutive_count}天 {consecutive_growth}"

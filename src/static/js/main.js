@@ -130,6 +130,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!window._fundHoldStarListenerAdded) {
         window._fundHoldStarListenerAdded = true;
         document.body.addEventListener('click', async function(e) {
+            if (e.target.closest('.fund-sector-tags')) return;
             const star = e.target.closest('.fund-hold-star');
             const codeCell = !star ? e.target.closest('.fund-code-cell') : null;
             const nameCell = !star ? e.target.closest('.fund-name-cell') : null;
@@ -584,7 +585,7 @@ function renderFundSelectionList(funds) {
             <div style="flex: 1;">
                 <div style="font-weight: 600;">${fund.code} - ${fund.name}</div>
                 ${fund.is_hold ? '<span style="color: #667eea; font-size: 12px;">⭐ 持有</span>' : ''}
-                ${fund.sectors && fund.sectors.length > 0 ? `<span style="color: #8b949e; font-size: 12px;"> 🏷️ ${fund.sectors.join(', ')}</span>` : ''}
+                ${fund.sectors && fund.sectors.length > 0 ? `<span class="fund-sector-tags" style="color: #8b949e; font-size: 12px; cursor: default;"> 🏷️ ${fund.sectors.join(', ')}</span>` : ''}
             </div>
         </div>
     `).join('');

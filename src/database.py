@@ -1716,9 +1716,10 @@ class Database:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                           SELECT fund_code, fund_key, fund_name
-                           FROM user_watchlist
-                           WHERE user_id = ? AND chart_default = 1
+                           SELECT w.fund_code, c.fund_key, c.fund_name
+                           FROM user_watchlist AS w
+                           JOIN fund_catalog AS c ON c.fund_code = w.fund_code
+                           WHERE w.user_id = ? AND w.chart_default = 1
                            ''', (user_id,))
             row = cursor.fetchone()
             conn.close()
