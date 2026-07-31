@@ -1,235 +1,147 @@
-# FundEval Restic + OneDrive 从零部署手册
+# FundEval Restic + OneDrive 备份操作手册
 
-## 1. 最终目录和数据流
+本文按实际操作顺序组织：检查状态、准备工具、配置工具、检查数据库、调整环境、手工备份、
+验证恢复、按需修正、启用定时任务，最后才解除旧 `cache` Git 仓库。
 
-本手册假设：
+## 1. 目标和约定
 
-- 服务器项目目录是 `~/FundEval`。
-- 当前登录用户就是 FundEval 的部署和运行用户。
-- 数据库、日志和备份暂存文件都放在 `~/FundEval/cache`。
-- 服务器尚未安装 Restic、Rclone 或 OneDrive 客户端。
-- `cache/` 整体位于项目 `.gitignore`，不再是 Git 子模块。
-
-最终目录：
+服务器约定：
 
 ```text
-~/FundEval/
-├── cache/                         # 整体不进入 Git
-│   ├── fund_data.db               # SQLite 明文运行库
-│   └── backup-staging/            # 备份时短暂存在的一致性快照
-├── logs/                          # 应用、Gunicorn和备份日志
-├── scripts/
-├── src/
-└── .env
-
-~/.config/rclone/rclone.conf       # OneDrive OAuth凭据
-~/.config/fundeval/restic.env      # Restic仓库配置
-~/.config/fundeval/restic-password # Restic解密密码
+项目目录       ~/FundEval
+运行数据库     ~/FundEval/cache/fund_data.db
+一致性暂存库   ~/FundEval/cache/backup-staging/fund_data.db
+备份日志       ~/FundEval/logs/restic_backup.log
+Restic仓库     rclone:onedrive:FundEval/restic
 ```
 
 数据流：
 
 ```text
-~/FundEval/cache/fund_data.db
-       │ SQLite Online Backup API
-       ▼
-~/FundEval/cache/backup-staging/fund_data.db
-       │ Restic分块、去重、加密和校验
-       ▼
-Rclone通过Microsoft API上传
-       ▼
-OneDrive/FundEval/restic
+运行中的SQLite
+    -> SQLite Online Backup API生成一致性暂存库
+    -> Restic加密、分块、去重
+    -> Rclone通过Microsoft API写入OneDrive
 ```
 
-OneDrive不是运行盘。服务器不安装桌面OneDrive客户端，也不挂载OneDrive目录。日常是服务器向OneDrive备份；灾难恢复时才从OneDrive读取。
+服务备份期间可以继续运行。禁止直接备份正在写入的 `fund_data.db`，也禁止把 OneDrive
+挂载成运行数据库目录。Restic 密码丢失后无法恢复，必须另存到服务器以外的密码管理器。
 
-默认目标：
+## 2. 检查当前状态
 
-| 项目 | 默认值 |
-| --- | --- |
-| 备份频率 | 每6小时 |
-| RPO | 最多6小时 |
-| 日版本 | 14个 |
-| 周版本 | 8个 |
-| 月版本 | 12个 |
-| 完整性检查 | 每周一次 |
-| 恢复演练 | 每月一次 |
-
-## 2. 从旧cache子模块安全切换
-
-主仓库维护端已经完成 `cache` 子模块解除和 `.gitignore` 配置。服务器拉取包含该改动的版本前，
-必须先在项目目录外保存数据库副本：
+登录服务器后执行：
 
 ```bash
 cd ~/FundEval
+pwd
+./scripts/status.sh
 test -f cache/fund_data.db && echo "数据库存在"
-git submodule status
-cp -p cache/fund_data.db "$HOME/fund_data.db.before-cache-conversion"
-chmod 600 "$HOME/fund_data.db.before-cache-conversion"
-```
-
-然后更新项目：
-
-```bash
-git pull
-```
-
-如果Git因旧子模块状态拒绝更新，不要使用 `git reset --hard`。确认外部数据库副本存在后，执行：
-
-```bash
-git submodule deinit -f cache
-git pull
-mkdir -p logs cache/backup-staging
-cp -p "$HOME/fund_data.db.before-cache-conversion" cache/fund_data.db
-```
-
-更新后检查：
-
-```bash
-test -f ~/FundEval/cache/fund_data.db
-git submodule status
-git check-ignore -v cache/fund_data.db
+ls -lh cache/fund_data.db
 git status --short
+git check-ignore -v cache/fund_data.db
 ```
 
-预期是 `git submodule status` 不再列出cache，`git check-ignore`显示由项目 `.gitignore`忽略，
-并且Git不再列出cache内部文件变化。本地 `cache/fund_data.db`必须仍然存在。
-
-旧私有数据仓库的历史清理必须等OneDrive恢复演练成功后再做。
-
-## 3. 安装Restic和Rclone
-
-先识别Linux发行版：
+检查 `cache` 是否仍被识别为旧数据仓库：
 
 ```bash
-cat /etc/os-release
+test -d cache/.git && echo "仍存在旧 cache Git 仓库"
+git submodule status
 ```
 
-### Ubuntu
+此时不要删除 `cache/.git`。必须先完成第 7 节恢复验证。
+
+检查已有工具和配置：
+
+```bash
+command -v restic || true
+command -v rclone || true
+restic version 2>/dev/null || true
+rclone version 2>/dev/null || true
+test -f ~/.config/rclone/rclone.conf && echo "Rclone配置存在"
+test -f ~/.config/fundeval/restic.env && echo "Restic配置存在"
+test -f ~/.config/fundeval/restic-password && echo "Restic密码存在"
+```
+
+已经完成过首次备份时，再检查现有仓库：
+
+```bash
+set -a
+. ~/.config/fundeval/restic.env
+set +a
+restic snapshots --host fundeval-prod --tag fundeval
+```
+
+能看到快照表示仓库已经初始化。不要再次执行 `restic init`，继续第 4 节。
+
+## 3. 准备和配置工具
+
+本节只补充第 2 节确认缺少的内容。已有工具、Rclone remote、Restic 密码或仓库不要重建。
+
+### 3.1 安装工具
+
+Ubuntu/Debian：
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y restic rclone
-```
-
-如果发行版没有Rclone或版本过旧，可以使用Rclone官方安装脚本：
-
-```bash
-sudo -v
-curl https://rclone.org/install.sh | sudo bash
-```
-
-安装完成必须确认：
-
-```bash
+sudo apt-get install -y restic rclone util-linux
 restic version
 rclone version
-command -v restic
-command -v rclone
+command -v flock
 ```
 
-## 4. 准备项目和cache目录
+### 3.2 配置 Rclone OneDrive
+
+已有名为 `onedrive` 的 remote 时只验证：
 
 ```bash
-cd ~/FundEval
-mkdir -p logs cache/backup-staging
-chmod 700 cache logs cache/backup-staging
-test -f cache/fund_data.db
+rclone listremotes
+rclone lsd onedrive:
 ```
 
-项目默认直接使用：
-
-```text
-~/FundEval/cache/fund_data.db
-~/FundEval/logs/
-```
-
-`.env` 不需要配置 `FUNDEVAL_DATA_DIR` 或 `FUNDEVAL_LOG_DIR`。如果以前设置过其他路径，应删除这两个变量，避免应用和备份读取不同数据库。
-
-检查实际Python环境和服务状态：
-
-```bash
-./scripts/fundctl.sh environment
-./scripts/status.sh
-```
-
-若数据库仍是旧schema，先按部署文档执行：
-
-```bash
-./scripts/stop.sh
-./scripts/fundctl.sh migrate --dry-run
-./scripts/fundctl.sh migrate
-./scripts/fundctl.sh reset-password jiaming
-./scripts/start.sh
-```
-
-## 5. 在无浏览器服务器授权OneDrive
-
-服务器执行：
+没有时执行：
 
 ```bash
 rclone config
 ```
 
-配置选择：
+依次选择：
 
-1. 选择 `n` 新建remote。
-2. 名称输入 `onedrive`。
-3. 存储类型选择 `Microsoft OneDrive`。
-4. `client_id`和`client_secret`通常留空。
-5. 账户类型选择Personal or Business
-6. 询问是否使用浏览器自动认证时选择 `n`。
+1. `n`：新建 remote。
+2. 名称：`onedrive`。
+3. 类型：Microsoft OneDrive。
+4. `client_id`、`client_secret` 留空。
+5. 选择实际账户类型。
+6. 无浏览器服务器选择不自动打开浏览器。
 
-服务器会提示在有浏览器的电脑上执行：
+在有浏览器且 Rclone 版本相近的电脑执行：
 
 ```bash
 rclone authorize "onedrive"
 ```
 
-在电脑浏览器登录目标Microsoft账号，将输出的Token JSON完整粘贴回服务器。官方建议两台机器使用相同Rclone版本。
-
-完成后检查配置位置和权限：
+把输出的 Token JSON 完整粘贴回服务器。随后验证：
 
 ```bash
-rclone config file
 chmod 600 ~/.config/rclone/rclone.conf
-```
-
-验证连接：
-
-```bash
 rclone lsd onedrive:
 rclone mkdir onedrive:FundEval/restic
-rclone lsd onedrive:FundEval
 ```
 
-禁止执行：
+不要执行 `rclone sync ~/FundEval/cache ...`、`rclone bisync` 或把 OneDrive mount 到
+`cache/`，这些方式无法保证运行中 SQLite 的一致性，并可能同步误删除。
 
-```text
-rclone mount onedrive: .../cache
-rclone bisync .../cache onedrive:...
-rclone sync ~/FundEval/cache onedrive:...
-```
+### 3.3 配置 Restic
 
-这些命令可能把运行中的SQLite文件、不完整状态或误删除同步到云端。
-
-## 6. 初始化Restic仓库
-
-创建配置目录：
+首次配置时执行：
 
 ```bash
 mkdir -p ~/.config/fundeval
 chmod 700 ~/.config/fundeval
-```
-
-生成Restic密码：
-
-```bash
 openssl rand -base64 48 > ~/.config/fundeval/restic-password
 chmod 600 ~/.config/fundeval/restic-password
 ```
 
-创建 `~/.config/fundeval/restic.env`：
+创建配置：
 
 ```bash
 cat > ~/.config/fundeval/restic.env <<EOF
@@ -240,131 +152,117 @@ EOF
 chmod 600 ~/.config/fundeval/restic.env
 ```
 
-将Restic密码另存到密码管理器。密码丢失后，OneDrive中的备份无法恢复。
-
-加载配置并初始化：
+立即把 `restic-password` 的内容保存到服务器之外的密码管理器。然后初始化一次：
 
 ```bash
 set -a
 . ~/.config/fundeval/restic.env
 set +a
 restic init
-```
-
-`restic init`只执行一次。验证：
-
-```bash
 restic snapshots
 ```
 
-## 7. 首次手工备份
+`restic init` 只在新建空仓库时执行一次。已有仓库执行它会报仓库已经初始化，这是操作
+路径错误，不需要重建仓库或密码。
 
-### 7.1 生成SQLite一致性快照
+## 4. 检查数据库状态
 
-日常备份不需要停止FundEval服务。这里“不要复制运行中的SQLite文件”是指不能直接对
-`cache/fund_data.db`执行 `cp`、`rclone copy`或 `restic backup`，不是要求备份期间禁止数据库写入。
-
-SQLite Online Backup API通过数据库连接生成事务一致的时间点快照：
-
-- 页面刷新、行情写入和交易操作可以继续执行。
-- Backup API只在分批读取页面时短暂持有读锁，不会在Restic上传期间锁住运行库。
-- 备份过程中发生的新写入可能属于本次快照，也可能进入下一次快照，但不会产生“只写入一半”的数据库。
-- 在WAL模式下，Backup API会正确处理主数据库和WAL中的已提交事务；直接复制单个主数据库文件做不到这一点。
-- Restic上传的是生成完成后不再变化的暂存快照，上传速度不会影响生产数据库一致性。
-
-流程是：
-
-```text
-运行服务继续读写 cache/fund_data.db
-              │
-              │ SQLite Online Backup API
-              ▼
-生成一个一致时间点的 backup-staging/fund_data.db
-              │
-              │ Restic上传，运行库继续工作
-              ▼
-上传成功后删除暂存快照
-```
-
-只有替换生产数据库、执行破坏性schema迁移，或者Online Backup API持续失败需要离线排查时，
-才需要停止服务。
-
-使用finance环境的Python调用SQLite Backup API：
+先只读检查，不停止服务：
 
 ```bash
 cd ~/FundEval
-mamba run -n finance python - \
-  "$HOME/FundEval/cache/fund_data.db" \
-  "$HOME/FundEval/cache/backup-staging/fund_data.db" <<'PY'
-import os
+mamba run -n finance python - <<'PY'
 import sqlite3
-import sys
 
-source, target = sys.argv[1:3]
-temp = target + ".tmp"
-for path in (temp, target):
-    if os.path.exists(path):
-        os.unlink(path)
-with sqlite3.connect(source) as src, sqlite3.connect(temp) as dst:
-    src.backup(dst)
-    result = dst.execute("PRAGMA integrity_check").fetchone()[0]
-    if result != "ok":
-        raise SystemExit(f"SQLite integrity_check failed: {result}")
-os.chmod(temp, 0o600)
-os.replace(temp, target)
+path = "cache/fund_data.db"
+with sqlite3.connect(path) as conn:
+    tables = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    print("integrity_check:", conn.execute("PRAGMA integrity_check").fetchone()[0])
+    print("foreign_key_check:", conn.execute("PRAGMA foreign_key_check").fetchall())
+    print("schema_version:", conn.execute(
+        "SELECT value FROM schema_meta WHERE key='schema_version'"
+    ).fetchone()[0] if "schema_meta" in tables else "不存在")
+    for table in ("users", "fund_catalog", "user_watchlist", "fund_transactions"):
+        value = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] if table in tables else "不存在"
+        print(f"{table}: {value}")
 PY
 ```
 
-确认：
-
-```bash
-ls -lh cache/backup-staging/fund_data.db
-```
-
-### 7.2 上传到OneDrive
-
-```bash
-set -a
-. ~/.config/fundeval/restic.env
-set +a
-
-restic backup "$HOME/FundEval/cache/backup-staging/fund_data.db" \
-  --host fundeval-prod \
-  --tag fundeval
-```
-
-查看快照并检查仓库：
-
-```bash
-restic snapshots --host fundeval-prod --tag fundeval
-restic check
-```
-
-`restic snapshots`能看到新快照才代表业务数据已经提交到Restic仓库。只执行 `restic init`只会创建空仓库结构，不代表数据库已经备份。
-
-成功后删除明文暂存快照：
-
-```bash
-rm -f ~/FundEval/cache/backup-staging/fund_data.db
-```
-
-运行库 `cache/fund_data.db`不能删除。
-
-### 7.3 OneDrive中为什么看不到fund_data.db
-
-Restic不会把原始文件名直接上传到OneDrive。它会加密、分块并使用内容哈希命名，因此OneDrive中的正常结构类似：
+当前程序的预期结果：
 
 ```text
-FundEval/restic/
-├── config
-├── keys/
-├── snapshots/
-├── index/
-├── data/
-└── locks/
+integrity_check: ok
+foreign_key_check: []
+schema_version: 2
 ```
 
-判断上传是否成功不能只在Finder中搜索 `fund_data.db`，应在服务器执行：
+记录四张业务表的数量，恢复验证时必须对比。若完整性检查失败，停止写入并先排查，不要
+将已知损坏的库作为新基线。若 schema 不是 2，按部署文档执行对应迁移；不要在备份脚本
+中自动迁移数据库。
+
+## 5. 调整目录和脚本
+
+准备目录并限制权限：
+
+```bash
+cd ~/FundEval
+mkdir -p cache/backup-staging logs .runtime
+chmod 700 cache cache/backup-staging logs .runtime
+chmod 600 cache/fund_data.db
+```
+
+确认项目中的脚本存在：
+
+```bash
+test -x scripts/restic_backup.sh
+test -x scripts/restic_maintenance.sh
+```
+
+若刚从 Git 拉取后没有执行权限：
+
+```bash
+chmod 700 scripts/restic_backup.sh scripts/restic_maintenance.sh
+```
+
+`restic_backup.sh` 会：
+
+1. 使用 `flock` 防止并发运行。
+2. 用 SQLite Online Backup API 生成时间点一致的暂存库。
+3. 对暂存库执行完整性和外键检查。
+4. 备份暂存库以及项目 `.env`。
+5. 上传成功或失败后都删除明文暂存库。
+
+它不会停止 FundEval，也不会修改运行数据库。
+
+## 6. 尝试备份一次
+
+启动手工备份：
+
+```bash
+cd ~/FundEval
+./scripts/restic_backup.sh
+```
+
+脚本正常时终端可能没有输出，因为详细输出写入日志。检查：
+
+```bash
+tail -n 100 ~/FundEval/logs/restic_backup.log
+test ! -f ~/FundEval/cache/backup-staging/fund_data.db \
+  && echo "暂存库已清理"
+```
+
+日志末尾必须出现 `backup complete`，并包含 Restic 新快照信息。
+
+## 7. 验证备份结果
+
+仅看到 OneDrive 中存在 `data/`、`index/` 和 `snapshots/` 目录不能证明业务数据库可恢复。
+必须同时完成仓库检查和实际恢复。
+
+### 7.1 检查仓库和远端
 
 ```bash
 set -a
@@ -378,41 +276,74 @@ rclone size onedrive:FundEval/restic
 rclone lsf onedrive:FundEval/restic/snapshots
 ```
 
-预期：
+要求：
 
-- `snapshots`至少有一条带 `fundeval`标签的记录。
-- `stats latest`显示非零文件数和数据量。
-- `check`成功。
-- OneDrive远端存在 `snapshots`、`index`和 `data`对象。
+- 最新快照时间与刚才的手工备份一致。
+- `stats latest` 的文件数和数据量非零。
+- `restic check` 成功。
+- Rclone 能看到远端 Restic 对象。
 
-macOS OneDrive启用Files On-Demand时，本地同步目录可能只有云端占位文件。此时 `du`显示的本地占用空间会远小于
-`ls -l`显示的逻辑文件大小，这是正常现象，不表示云端对象为空。需要判断云端数据量时以服务器上的
-`rclone size`和Restic命令为准。
+### 7.2 恢复到临时目录
 
-## 8. 自动备份脚本要求
+恢复验证不会覆盖运行库：
 
-项目中的长期备份脚本应执行：
-
-1. 通过 `flock` 防止并发备份。
-2. 使用 `~/FundEval/cache/fund_data.db`作为源库。
-3. 通过SQLite Backup API生成 `cache/backup-staging/fund_data.db`。
-4. 执行 `PRAGMA integrity_check`。
-5. 使用Restic上传并打上 `fundeval` 标签。
-6. 无论成功或失败都删除明文暂存快照。
-7. 日志写入 `logs/restic_backup.log`，不得打印密码或Token。
-
-计划脚本路径：
-
-```text
-~/FundEval/scripts/restic_backup.sh
-~/FundEval/scripts/restic_maintenance.sh
+```bash
+rm -rf /tmp/fundeval-restore
+mkdir -m 700 /tmp/fundeval-restore
+restic restore latest \
+  --host fundeval-prod \
+  --tag fundeval \
+  --target /tmp/fundeval-restore
+find /tmp/fundeval-restore -name fund_data.db -type f
 ```
 
-在这些脚本实际加入项目并完成一次手工验证前，不要配置定时器。
+验证恢复数据库：
 
-## 9. 用户级systemd定时器
+```bash
+RESTORED_DB="$(find /tmp/fundeval-restore -name fund_data.db -type f | head -n 1)"
+test -n "$RESTORED_DB"
 
-脚本实现后创建目录：
+mamba run -n finance python - "$RESTORED_DB" <<'PY'
+import sqlite3
+import sys
+
+with sqlite3.connect(sys.argv[1]) as conn:
+    print("integrity_check:", conn.execute("PRAGMA integrity_check").fetchone()[0])
+    print("foreign_key_check:", conn.execute("PRAGMA foreign_key_check").fetchall())
+    print("schema_version:", conn.execute(
+        "SELECT value FROM schema_meta WHERE key='schema_version'"
+    ).fetchone()[0])
+    for table in ("users", "fund_catalog", "user_watchlist", "fund_transactions"):
+        print(f"{table}:", conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+PY
+```
+
+恢复库必须满足：完整性为 `ok`、外键错误为空、schema 为 2，四张业务表数量与第 4 节
+记录一致。验证完成后删除临时明文文件：
+
+```bash
+rm -rf /tmp/fundeval-restore
+```
+
+## 8. 按需调整和故障处理
+
+| 现象 | 处理 |
+| --- | --- |
+| `restic: command not found` | 回到 3.1 安装工具 |
+| 无法加载 `restic.env` | 检查文件路径、权限和内容 |
+| `repository does not exist` | 仅确认是新仓库后执行一次 `restic init` |
+| `wrong password or no key found` | 恢复原来的 Restic 密码，不要初始化新仓库 |
+| Rclone Token 过期 | 运行 `rclone config reconnect onedrive:` |
+| SQLite `database is locked` | 等待当前长事务结束后重试，不要直接复制数据库文件 |
+| 完整性或外键检查失败 | 停止上线该快照，保留现场并排查运行库 |
+| 最新快照时间未变化 | 查看 `logs/restic_backup.log` 和网络错误 |
+| 暂存库未删除 | 确认没有备份进程后删除 `cache/backup-staging/fund_data.db*` |
+
+调整后重新执行第 6、7 节，直到手工备份和恢复验证都成功，再配置定时器。
+
+## 9. 设置定时器
+
+使用部署用户的 systemd user timer，不使用 root 运行备份。
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -436,7 +367,7 @@ ExecStart=%h/FundEval/scripts/restic_backup.sh
 
 ```ini
 [Unit]
-Description=Run FundEval backup every six hours
+Description=Back up FundEval every six hours
 
 [Timer]
 OnCalendar=*-*-* 00,06,12,18:20:00
@@ -447,181 +378,115 @@ RandomizedDelaySec=300
 WantedBy=timers.target
 ```
 
-让退出SSH后用户定时器继续运行：
+创建每周维护服务 `~/.config/systemd/user/fundeval-maintenance.service`：
+
+```ini
+[Unit]
+Description=Check and prune FundEval Restic repository
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/FundEval
+ExecStart=%h/FundEval/scripts/restic_maintenance.sh
+```
+
+创建 `~/.config/systemd/user/fundeval-maintenance.timer`：
+
+```ini
+[Unit]
+Description=Maintain FundEval Restic repository weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target
+```
+
+启用：
 
 ```bash
 sudo loginctl enable-linger "$USER"
 systemctl --user daemon-reload
 systemctl --user enable --now fundeval-backup.timer
-systemctl --user list-timers fundeval-backup.timer
+systemctl --user enable --now fundeval-maintenance.timer
+systemctl --user list-timers 'fundeval-*'
 ```
 
-立即试运行：
+立即通过 systemd 再测试一次：
 
 ```bash
 systemctl --user start fundeval-backup.service
-journalctl --user -u fundeval-backup.service -n 100 --no-pager
+systemctl --user status fundeval-backup.service --no-pager
+journalctl --user -u fundeval-backup.service -n 50 --no-pager
 tail -n 100 ~/FundEval/logs/restic_backup.log
 ```
 
-## 10. 保留策略和完整性检查
+第二天检查定时任务确实产生了新快照，不要只看 timer 显示 `active`。
 
-加载配置：
+## 10. 解除旧 cache Git 仓库
 
-```bash
-set -a
-. ~/.config/fundeval/restic.env
-set +a
-```
+只有第 7 节恢复验证成功后才执行。
 
-首次只预览：
+主仓库已经通过 `.gitignore` 忽略 `cache/`，但旧子模块可能留下 `cache/.git`，导致 IDE
+继续显示数据库修改。先重命名保留一段观察期：
 
 ```bash
-restic forget \
-  --host fundeval-prod \
-  --tag fundeval \
-  --keep-daily 14 \
-  --keep-weekly 8 \
-  --keep-monthly 12 \
-  --dry-run
+cd ~/FundEval
+test -d cache/.git
+mv cache/.git cache/.git.retired-$(date +%Y%m%d)
+git status --short
+test -f cache/fund_data.db
+./scripts/status.sh
 ```
 
-确认无误后去掉 `--dry-run`并增加 `--prune`。`prune`网络读写较多，建议每周执行一次，而不是每6小时执行。
-
-每周至少执行：
+重命名不会修改或删除数据库。连续观察自动备份和恢复至少 7 天后，再删除退休的 Git
+元数据；不要删除 `cache/fund_data.db`：
 
 ```bash
-restic check
+find cache -maxdepth 1 -type d -name '.git.retired-*' -print
 ```
 
-定期执行更完整但耗时更长的检查：
+确认输出路径正确后再手工删除对应目录。旧私有 Git 数据仓库可以停止推送。
 
-```bash
-restic check --read-data
-```
+## 11. 生产恢复
 
-## 11. 恢复演练
-
-### 11.1 恢复到临时目录
-
-```bash
-set -a
-. ~/.config/fundeval/restic.env
-set +a
-
-rm -rf /tmp/fundeval-restore
-mkdir -m 700 /tmp/fundeval-restore
-
-restic restore latest \
-  --host fundeval-prod \
-  --path "$HOME/FundEval/cache/backup-staging/fund_data.db" \
-  --target /tmp/fundeval-restore
-```
-
-恢复后的路径包含原始绝对路径。查找文件：
-
-```bash
-find /tmp/fundeval-restore -name fund_data.db -type f
-```
-
-设定恢复文件路径并验证：
-
-```bash
-RESTORED_DB="$(find /tmp/fundeval-restore -name fund_data.db -type f | head -n 1)"
-
-mamba run -n finance python - "$RESTORED_DB" <<'PY'
-import sqlite3
-import sys
-
-with sqlite3.connect(sys.argv[1]) as conn:
-    tables = {
-        row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )
-    }
-    print("integrity_check:", conn.execute("PRAGMA integrity_check").fetchone()[0])
-    print("foreign_key_check:", conn.execute("PRAGMA foreign_key_check").fetchall())
-    print("users:", conn.execute("SELECT COUNT(*) FROM users").fetchone()[0])
-    if "schema_meta" not in tables:
-        raise SystemExit("恢复的是未迁移旧数据库：缺少 schema_meta")
-    print("schema_version:", conn.execute(
-        "SELECT value FROM schema_meta WHERE key='schema_version'"
-    ).fetchone())
-    print("funds:", conn.execute("SELECT COUNT(*) FROM fund_catalog").fetchone()[0])
-    print("transactions:", conn.execute("SELECT COUNT(*) FROM fund_transactions").fetchone()[0])
-PY
-```
-
-`integrity_check`必须是 `ok`，`foreign_key_check`必须是空列表，
-`schema_version`必须与当前程序版本一致，其他数量应符合预期。结构完整性检查只能
-证明备份文件未损坏；表版本和业务数量检查用于确认备份源确实是当前生产数据库。
-
-### 11.2 替换生产数据库
-
-只有恢复演练验证通过后才能替换：
+先按第 7.2 节恢复并验证到临时目录。确认无误后才替换：
 
 ```bash
 cd ~/FundEval
 ./scripts/stop.sh
-
-cp -p cache/fund_data.db cache/fund_data.db.before-restore
+cp -p cache/fund_data.db "cache/fund_data.before-restore-$(date +%Y%m%d%H%M%S).db"
 install -m 600 "$RESTORED_DB" cache/fund_data.db
-
 ./scripts/start.sh
 ./scripts/status.sh
 ```
 
-检查登录、自选基金、交易数量、持仓和个人收益曲线。确认正常后再删除：
+登录检查用户、自选、持仓、交易和收益曲线。确认正常后立即产生一份新备份。
 
-```bash
-rm -f ~/FundEval/cache/fund_data.db.before-restore
-rm -rf /tmp/fundeval-restore
-```
+新服务器恢复还需要：项目代码、`restic-password`、Rclone 授权配置和项目 `.env`。
+`restic-password` 与 Rclone 配置不能只备份在同一个 Restic 仓库中，否则无法打开仓库。
 
-## 12. 新服务器从零恢复
+## 12. 验收清单
 
-新服务器只需：
+- 运行数据库完整性为 `ok`，外键错误为空，schema 为 2。
+- 手工备份日志以 `backup complete` 结束。
+- Restic 最新快照时间正确且 `restic check` 成功。
+- 已实际恢复数据库并核对四张业务表数量。
+- 暂存目录没有遗留明文数据库。
+- systemd 手工试跑成功，定时器能产生后续快照。
+- Restic 密码已保存在服务器以外。
+- 完成上述检查后才解除 `cache/.git`。
 
-1. 将项目部署到 `~/FundEval`。
-2. 安装finance环境、项目依赖、Restic和Rclone。
-3. 重新授权同一个OneDrive账号，或安全复制 `rclone.conf`。
-4. 恢复 `restic-password`和 `restic.env`。
-5. 按第11节恢复数据库。
-6. 将恢复库安装到 `~/FundEval/cache/fund_data.db`。
-7. 配置项目 `.env`并启动服务。
+## 13. 参考资料
 
-服务器不需要安装OneDrive客户端。
-
-## 13. 停止使用Git数据仓库
-
-首次OneDrive备份和恢复演练成功后：
-
-1. 确认主仓库已经忽略整个 `cache/`。
-2. 确认新提交不再包含cache子模块指针。
-3. 停止向旧FundEval-data仓库推送数据库。
-4. 连续观察至少7天自动备份结果。
-5. 再处理旧私有仓库中的明文数据库历史和访问凭据。
-
-不要在同一任务中同时写Git数据仓库和Restic仓库。
-
-## 14. 验收清单
-
-- `~/FundEval/cache/fund_data.db`存在且应用正常读取。
-- `git status`不显示 `cache`内部文件变化。
-- `rclone lsd onedrive:`成功。
-- `restic snapshots`能看到至少两个不同时间的快照。
-- `restic check`成功。
-- 恢复库的 `PRAGMA integrity_check`返回 `ok`。
-- 恢复库用户、基金和交易数量符合预期。
-- 自动任务退出后 `cache/backup-staging`不残留明文快照。
-- Restic密码和Rclone配置已在服务器以外安全保存。
-
-## 15. 官方资料
-
-- [Restic安装](https://restic.readthedocs.io/en/stable/020_installation.html)
-- [Restic通过Rclone使用其他存储](https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html)
-- [Restic恢复](https://restic.readthedocs.io/en/stable/050_restore.html)
-- [Rclone安装](https://rclone.org/install/)
-- [Rclone无浏览器服务器授权](https://rclone.org/remote_setup/)
-- [Rclone Microsoft OneDrive](https://rclone.org/onedrive/)
+- [Restic 安装](https://restic.readthedocs.io/en/stable/020_installation.html)
+- [Restic 使用 Rclone 后端](https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html)
+- [Restic 恢复](https://restic.readthedocs.io/en/stable/050_restore.html)
+- [Rclone 安装](https://rclone.org/install/)
+- [Rclone 无浏览器授权](https://rclone.org/remote_setup/)
+- [Rclone OneDrive](https://rclone.org/onedrive/)
 - [SQLite Online Backup API](https://www.sqlite.org/backup.html)

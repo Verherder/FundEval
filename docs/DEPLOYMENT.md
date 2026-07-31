@@ -302,52 +302,18 @@ https://你的域名/fundeval/
 
 ## 8. 向现有 Restic 仓库追加备份
 
-服务可以保持运行。使用 SQLite Online Backup API 创建一致性暂存库：
+服务可以保持运行。统一使用项目备份脚本，它会通过 SQLite Online Backup API 创建一致性
+暂存库、校验、上传并清理暂存文件：
 
 ```bash
 cd ~/FundEval
-mkdir -p cache/backup-staging
-chmod 700 cache/backup-staging
-mamba run -n finance python - \
-  "$HOME/FundEval/cache/fund_data.db" \
-  "$HOME/FundEval/cache/backup-staging/fund_data.db" <<'PY'
-import os
-import sqlite3
-import sys
-
-source, target = sys.argv[1:3]
-temp = target + ".tmp"
-for path in (temp, target):
-    if os.path.exists(path):
-        os.unlink(path)
-with sqlite3.connect(source) as src, sqlite3.connect(temp) as dst:
-    src.backup(dst)
-    result = dst.execute("PRAGMA integrity_check").fetchone()[0]
-    if result != "ok":
-        raise SystemExit(f"integrity_check failed: {result}")
-os.chmod(temp, 0o600)
-os.replace(temp, target)
-PY
+./scripts/restic_backup.sh
+tail -n 100 logs/restic_backup.log
 ```
 
-上传到已经存在的 Restic 仓库：
+日志应以 `backup complete` 结束。数据库检查、首次配置、实际恢复验证、定时任务和解除旧
+`cache/.git` 的完整顺序见：
 
-```bash
-set -a
-. ~/.config/fundeval/restic.env
-set +a
-restic backup "$HOME/FundEval/cache/backup-staging/fund_data.db" \
-  --host fundeval-prod \
-  --tag fundeval
-restic snapshots --host fundeval-prod --tag fundeval
-restic check
-rm -f ~/FundEval/cache/backup-staging/fund_data.db
-```
-
-应看到一条新的快照。OneDrive 中不会直接出现可读的 `fund_data.db`，Restic 会将其加密、
-分块并保存为 `data/`、`index/` 和 `snapshots/` 等对象。
-
-完整的自动备份、保留策略和恢复演练见
 [Restic + OneDrive 备份手册](BACKUP_RESTIC_ONEDRIVE.md)。
 
 ## 9. 日常启停和更新
