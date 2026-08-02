@@ -5,7 +5,7 @@ from flask import Blueprint, redirect, render_template, request, url_for
 from loguru import logger
 
 from src.auth import admin_required, get_current_user_id, get_current_username, login_required
-from src.dependencies import get_chart_service, get_fund_repo, get_fund_service, get_market_service, get_user_repo
+from src.dependencies import get_fund_repo, get_fund_service, get_market_service, get_user_repo
 from src.tab_enhancers import enhance_fund_tab_content
 
 pages_bp = Blueprint("pages", __name__)
@@ -66,7 +66,6 @@ def get_portfolio():
     default_fund = None
     fund_chart_data = None
     fund_chart_info = {}
-    chart_service = get_chart_service()
     fund_repo = get_fund_repo()
 
     if user_funds:
@@ -89,11 +88,6 @@ def get_portfolio():
                     "fund_key": user_funds[first_code]["fund_key"],
                     "fund_name": user_funds[first_code]["fund_name"],
                 }
-
-        if default_fund:
-            result = chart_service.get_fund_chart_data(user_id, default_fund["fund_code"])
-            if result:
-                fund_chart_data = result.get("chart_data")
 
         for code, data in user_funds.items():
             fund_chart_info[code] = {
