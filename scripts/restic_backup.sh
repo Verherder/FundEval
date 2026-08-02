@@ -13,11 +13,31 @@ ENV_NAME="${FUNDEVAL_ENV_NAME:-finance}"
 
 mkdir -p "${RUNTIME_DIR}" "${STAGING_DIR}" "${LOG_DIR}"
 chmod 700 "${RUNTIME_DIR}" "${STAGING_DIR}" "${LOG_DIR}"
+exec 3>&1
 exec >>"${LOG_FILE}" 2>&1
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] backup start"
-[[ -f "${RESTIC_ENV}" ]] || { echo "Missing ${RESTIC_ENV}"; exit 1; }
-[[ -f "${SOURCE_DB}" ]] || { echo "Missing ${SOURCE_DB}"; exit 1; }
+status() {
+    local message="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    printf '%s\n' "${message}"
+    printf '%s\n' "${message}" >&3
+}
+
+fatal() {
+    status "ERROR: $* (details: ${LOG_FILE})"
+    exit 1
+}
+
+on_error() {
+    local exit_code=$?
+    trap - ERR
+    status "ERROR: backup failed with exit code ${exit_code} (details: ${LOG_FILE})"
+    exit "${exit_code}"
+}
+trap on_error ERR
+
+status "FundEval backup started"
+[[ -f "${RESTIC_ENV}" ]] || fatal "Missing ${RESTIC_ENV}"
+[[ -f "${SOURCE_DB}" ]] || fatal "Missing ${SOURCE_DB}"
 
 set -a
 source "${RESTIC_ENV}"
@@ -25,7 +45,7 @@ set +a
 
 exec 9>"${RUNTIME_DIR}/restic.lock"
 if ! flock -n 9; then
-    echo "Another Restic task is already running; skip"
+    status "Another Restic task is already running; skipped"
     exit 0
 fi
 
@@ -75,9 +95,12 @@ os.chmod(target_path, 0o600)
 PY
 
 mv "${TEMP_DB}" "${SNAPSHOT_DB}"
+status "SQLite snapshot created and validated"
 BACKUP_PATHS=("${SNAPSHOT_DB}")
 [[ -f "${PROJECT_DIR}/.env" ]] && BACKUP_PATHS+=("${PROJECT_DIR}/.env")
 
+status "Uploading encrypted snapshot to Restic repository"
 restic backup "${BACKUP_PATHS[@]}" --host fundeval-prod --tag fundeval
-restic snapshots --host fundeval-prod --tag fundeval --latest 1
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] backup complete"
+status "Restic upload completed; latest snapshot:"
+restic snapshots --host fundeval-prod --tag fundeval --latest 1 --compact | tee /dev/fd/3
+status "FundEval backup completed successfully"

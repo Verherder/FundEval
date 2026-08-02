@@ -247,7 +247,16 @@ cd ~/FundEval
 ./scripts/restic_backup.sh
 ```
 
-脚本正常时终端可能没有输出，因为详细输出写入日志。检查：
+终端会直接显示以下关键节点：
+
+- 备份开始。
+- SQLite 一致性快照生成并校验完成。
+- 开始上传。
+- 上传完成及最新快照摘要。
+- 最终成功，或者错误及日志位置。
+
+Restic 文件扫描、上传统计等详细信息写入日志。正常执行完毕并看到
+`FundEval backup completed successfully` 时，不需要再查看日志。只有失败或排障时执行：
 
 ```bash
 tail -n 100 ~/FundEval/logs/restic_backup.log
@@ -255,7 +264,7 @@ test ! -f ~/FundEval/cache/backup-staging/fund_data.db \
   && echo "暂存库已清理"
 ```
 
-日志末尾必须出现 `backup complete`，并包含 Restic 新快照信息。
+日志末尾也会保留完整的执行过程。
 
 ## 7. 验证备份结果
 
@@ -319,11 +328,106 @@ PY
 ```
 
 恢复库必须满足：完整性为 `ok`、外键错误为空、schema 为 2，四张业务表数量与第 4 节
-记录一致。验证完成后删除临时明文文件：
+记录一致。
+
+### 7.3 使用 8888 端口通过现有 Nginx 人工验证
+
+结构检查通过后，可以暂时停止生产服务，让恢复库临时占用现有的 `127.0.0.1:8888`。
+Nginx `/fundeval/` 配置不需要修改，验证期间通过原地址访问。该方式会造成短暂停机。
+
+不要直接让临时服务写恢复原件，因为登录会更新登录尝试记录；先创建验证副本：
 
 ```bash
+cd ~/FundEval
+RESTORED_DB="$(find /tmp/fundeval-restore -name fund_data.db -type f | head -n 1)"
+test -n "$RESTORED_DB"
+
+VERIFY_ROOT=/tmp/fundeval-restored-runtime
+rm -rf "$VERIFY_ROOT"
+mkdir -m 700 -p "$VERIFY_ROOT/logs"
+install -m 600 "$RESTORED_DB" "$VERIFY_ROOT/fund_data.db"
+```
+
+停止生产服务并确认 8888 已释放：
+
+```bash
+cd ~/FundEval
+./scripts/stop.sh
+./scripts/status.sh || true
+! curl -fsS http://127.0.0.1:8888/ >/dev/null
+```
+
+加载项目配置，使用恢复库副本在 `127.0.0.1:8888` 启动临时 Gunicorn。临时服务使用独立
+数据库、日志和 PID，不会修改生产数据库：
+
+```bash
+cd ~/FundEval
+set -a
+. ./.env
+set +a
+
+PYTHON_BIN="$HOME/miniforge3/envs/${FUNDEVAL_ENV_NAME:-finance}/bin/python"
+test -x "$PYTHON_BIN"
+
+FUNDEVAL_DATA_DIR=/tmp/fundeval-restored-runtime \
+FUNDEVAL_LOG_DIR=/tmp/fundeval-restored-runtime/logs \
+FUNDEVAL_RUNTIME_DIR=/tmp/fundeval-restored-runtime/runtime \
+FUNDEVAL_START_BACKGROUND_TASKS=0 \
+"$PYTHON_BIN" -m gunicorn run:app \
+  --daemon \
+  --bind 127.0.0.1:8888 \
+  --workers 1 \
+  --worker-class gthread \
+  --threads 4 \
+  --timeout 120 \
+  --pid /tmp/fundeval-restored-runtime/gunicorn.pid \
+  --access-logfile /tmp/fundeval-restored-runtime/logs/access.log \
+  --error-logfile /tmp/fundeval-restored-runtime/logs/error.log
+
+curl -I http://127.0.0.1:8888/
+cat /tmp/fundeval-restored-runtime/gunicorn.pid
+```
+
+浏览器直接访问原生产地址：
+
+```text
+https://你的域名/fundeval/
+```
+
+使用恢复库中的原账号登录，人工核对用户、自选、持仓、交易记录、收益和曲线。此时页面
+展示的是恢复数据库副本；不要在验证期间录入正式交易或修改生产数据。
+
+验证完成后，先停止临时服务：
+
+```bash
+VERIFY_PID="$(cat /tmp/fundeval-restored-runtime/gunicorn.pid)"
+kill "$VERIFY_PID"
+for i in $(seq 1 30); do
+  kill -0 "$VERIFY_PID" 2>/dev/null || break
+  sleep 1
+done
+! kill -0 "$VERIFY_PID" 2>/dev/null
+! curl -fsS http://127.0.0.1:8888/ >/dev/null
+```
+
+然后恢复生产服务：
+
+```bash
+cd ~/FundEval
+./scripts/start.sh
+./scripts/status.sh
+curl -I http://127.0.0.1:8888/
+```
+
+确认生产服务恢复后，才删除临时明文数据库：
+
+```bash
+rm -rf /tmp/fundeval-restored-runtime
 rm -rf /tmp/fundeval-restore
 ```
+
+若临时服务启动失败，直接执行 `./scripts/start.sh` 恢复生产服务，并查看
+`/tmp/fundeval-restored-runtime/logs/error.log`。`~/FundEval/cache/fund_data.db` 在整个验证过程中保持不变。
 
 ## 8. 按需调整和故障处理
 
@@ -473,7 +577,7 @@ install -m 600 "$RESTORED_DB" cache/fund_data.db
 ## 12. 验收清单
 
 - 运行数据库完整性为 `ok`，外键错误为空，schema 为 2。
-- 手工备份日志以 `backup complete` 结束。
+- 手工备份终端与日志均以 `FundEval backup completed successfully` 结束。
 - Restic 最新快照时间正确且 `restic check` 成功。
 - 已实际恢复数据库并核对四张业务表数量。
 - 暂存目录没有遗留明文数据库。
